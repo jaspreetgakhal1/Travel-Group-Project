@@ -17,8 +17,18 @@ An AI-assisted travel planning web app that helps users create smart itineraries
 - `backend/` – API
 - `docs/` – user stories, journey map, timeline
 
-## Setup (coming soon)
-Steps will be added after the frontend and backend are initialized.
+# Setup (More coming soon)
+# Frontend
+cd frontend
+npm install
+npm run dev
+
+# Backend
+cd backend
+npm install
+npm start
+
+
 
 
 ## WEEKLY PLANNER
