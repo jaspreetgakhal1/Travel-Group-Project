@@ -2,10 +2,10 @@
 An AI-assisted travel planning web app that helps users create smart itineraries, estimate budgets, and plan accessible trips.
 
 # Team Members
-- Jaspreet Singh Gakhal Student ID: 8542862   Role: Full-Stack Developer
-- Hirenkumar patel      Student ID: 9029986   Role: Full-Stack Developer
-- Gopichand Bollipalli  Student ID: 8981927   Role: Full-Stack Developer
-- Fenilkumar Chaudhari  Student ID: 9000510   Role: Full-Stack Developer
+- Jaspreet Singh Gakhal Student ID: 8542862  
+- Hirenkumar patel      Student ID: 9029986   
+- Gopichand Bollipalli  Student ID: 8981927  
+- Fenilkumar Chaudhari  Student ID: 9000510   
 
 ## Planned Tech Stack
 - Frontend: React, Tailwind, css, bootstrap
