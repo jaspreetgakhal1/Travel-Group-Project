@@ -17,16 +17,19 @@ An AI-assisted travel planning web app that helps users create smart itineraries
 - `backend/` – API
 - `docs/` – user stories, journey map, timeline
 
-# Setup (More coming soon)
-# Frontend
+
+## Setup (more coming soon)
+
+### Frontend
 cd frontend
 npm install
 npm run dev
 
-# Backend
+### Backend
 cd backend
 npm install
 npm start
+
 
 
 
