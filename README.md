@@ -1,24 +1,24 @@
 # Travel Group Project ✈️
 An AI-assisted travel planning web app that helps users create smart itineraries, estimate budgets, and plan accessible trips.
 
-# Team Members
+# Team Members 👥
 - Jaspreet Singh Gakhal Student ID: 8542862  
 - Hirenkumar patel      Student ID: 9029986   
 - Gopichand Bollipalli  Student ID: 8981927  
 - Fenilkumar Chaudhari  Student ID: 9000510   
 
-## Planned Tech Stack
+## Planned Tech Stack 🛠️
 - Frontend: React, Tailwind, css, bootstrap
 - Backend: Node.js + Express
 - Database: PostgreSQL (optional / planned)
 
-## Project Structure (in progress)
+## Project Structure 📁 (in progress)
 - `frontend/` – UI
 - `backend/` – API
 - `docs/` – user stories, journey map, timeline
 
 
-### Setup ( more coming soon)
+### Setup  ( more coming soon)
 
 ## Frontend
 cd frontend 
