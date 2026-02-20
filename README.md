@@ -275,8 +275,8 @@ npx prisma generate
 
 ## Author
 
-Jaspreet Singh Gakhal
-Conestoga College – Computer Programming
+Jaspreet Gakhal, Hiren Patel, Gopichand & Fenil
+Conestoga College
 
 ---
 
