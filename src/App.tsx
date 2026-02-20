@@ -17,14 +17,19 @@ import {
   type TripLifecycleStatus,
 } from './utils/paymentProcessor';
 import ChatInterfaceView from './views/ChatInterfaceView';
+import MainFeed from './components/MainFeed';
+import Sidebar from './components/Sidebar';
 import DiscoveryFeedView from './views/DiscoveryFeedView';
+import type { FeedPost } from './types/feed';
 import ExpenseTrackerView from './views/ExpenseTrackerView';
+import DashboardView from './views/DashboardView';
 import GroupChatView from './views/GroupChatView';
 import HeroView from './views/HeroView';
 import OnboardingQuizView from './views/OnboardingQuizView';
 import ReviewSystemView from './views/ReviewSystemView';
 import TripDetailView from './views/TripDetailView';
 import VerificationGateView from './views/VerificationGateView';
+import { loginWithCredentials, registerWithCredentials, uploadVerificationDocument } from './services/authApi';
 
 const DEFAULT_INTRO_PERIOD_MS = 24 * 60 * 60 * 1000;
 const configuredIntroPeriod = Number(import.meta.env.VITE_INTRO_PERIOD_MS);
@@ -32,6 +37,9 @@ const INTRO_PERIOD_MS =
   Number.isFinite(configuredIntroPeriod) && configuredIntroPeriod > 0
     ? configuredIntroPeriod
     : DEFAULT_INTRO_PERIOD_MS;
+
+const AUTH_TOKEN_STORAGE_KEY = 'splitngo_auth_token';
+const USER_SESSION_STORAGE_KEY = 'splitngo_user_session';
 
 type ScreenName =
   | 'home'
@@ -49,6 +57,7 @@ type ScreenName =
   | 'groupChat'
   | 'reviews';
 type AuthMode = 'signin' | 'signup';
+type ActiveView = 'feed' | 'dashboard';
 type SocialProvider = 'Google' | 'Microsoft' | 'Facebook';
 
 type AuthForm = {
@@ -65,12 +74,43 @@ type AuthErrors = {
 
 type UserSession = {
   name: string;
+  firstName: string;
+  lastName: string;
+  countryCode: string;
+  mobileNumber: string;
+  email: string;
+  profileImageDataUrl: string | null;
   provider: 'Email' | SocialProvider;
   dna: UserDNA | null;
   isVerified: boolean;
   toursCompleted: number;
   ratingAverage: number;
   ratingCount: number;
+};
+
+type ProfileForm = {
+  firstName: string;
+  lastName: string;
+  countryCode: string;
+  mobileNumber: string;
+  email: string;
+  profileImageDataUrl: string | null;
+};
+
+type ProfileErrors = {
+  firstName?: string;
+  lastName?: string;
+  countryCode?: string;
+  mobileNumber?: string;
+  email?: string;
+  profileImageDataUrl?: string;
+};
+
+type EditableProfileField = 'firstName' | 'lastName' | 'countryCode' | 'email';
+
+type CountryCodeOption = {
+  value: string;
+  label: string;
 };
 
 type PublicProfile = {
@@ -89,15 +129,227 @@ type TripRuntime = {
   hasReviewed: boolean;
 };
 
-const createSession = (name: string, provider: 'Email' | SocialProvider): UserSession => ({
-  name,
-  provider,
-  dna: null,
-  isVerified: false,
-  toursCompleted: 0,
-  ratingAverage: 0,
-  ratingCount: 0,
+const feedFillTargets = [60, 72, 48, 81, 56, 68];
+const requiredPeopleTargets = [5, 4, 6, 5, 4, 7];
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const US_MOBILE_PATTERN = /^\(\d{3}\)-\d{3}-\d{4}$/;
+const MAX_VERIFICATION_DOCUMENT_BYTES = 5 * 1024 * 1024;
+const countryCodeOptions: CountryCodeOption[] = [
+  { value: '+1', label: 'US (+1)' },
+  { value: '+44', label: 'UK (+44)' },
+  { value: '+91', label: 'IN (+91)' },
+  { value: '+61', label: 'AU (+61)' },
+  { value: '+971', label: 'UAE (+971)' },
+];
+
+const formatMobileNumber = (rawValue: string): string => {
+  const digits = rawValue.replace(/\D/g, '').slice(0, 10);
+  const area = digits.slice(0, 3);
+  const prefix = digits.slice(3, 6);
+  const line = digits.slice(6, 10);
+
+  if (!digits) {
+    return '';
+  }
+
+  if (digits.length <= 3) {
+    return `(${area}`;
+  }
+
+  if (digits.length <= 6) {
+    return `(${area})-${prefix}`;
+  }
+
+  return `(${area})-${prefix}-${line}`;
+};
+
+const fileToDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+        return;
+      }
+
+      reject(new Error('Unable to read file contents.'));
+    };
+    reader.onerror = () => {
+      reject(new Error('Unable to read file contents.'));
+    };
+    reader.readAsDataURL(file);
+  });
+
+const getTravelerType = (trip: Trip): string => {
+  if (trip.tripDNA.pace === 'Active' && trip.tripDNA.socialEnergy >= 7) {
+    return 'High-energy social explorers';
+  }
+
+  if (trip.tripDNA.pace === 'Active') {
+    return 'Adventure-focused planners';
+  }
+
+  if (trip.tripDNA.socialEnergy >= 7) {
+    return 'Outgoing city connectors';
+  }
+
+  return 'Calm collaborative travelers';
+};
+
+const getRouteLabel = (route: string): string => {
+  const stops = route
+    .split('->')
+    .map((stop) => stop.trim())
+    .filter(Boolean);
+
+  if (stops.length >= 2) {
+    return `${stops[0]} to ${stops[stops.length - 1]}`;
+  }
+
+  return route;
+};
+
+const createInitialFeedPosts = (): FeedPost[] => {
+  const startAnchor = new Date();
+  startAnchor.setHours(0, 0, 0, 0);
+  startAnchor.setDate(startAnchor.getDate() + 9);
+
+  return tripCatalog.map((trip, index) => {
+    const durationDays = Number.parseInt(trip.duration, 10) || 7;
+    const startDate = new Date(startAnchor);
+    startDate.setDate(startAnchor.getDate() + index * 8);
+
+    const endDate = new Date(startDate);
+    endDate.setDate(startDate.getDate() + durationDays - 1);
+
+    return {
+      id: trip.id,
+      title: trip.title,
+      hostName: trip.hostName,
+      isVerified: trip.isVerified,
+      imageUrl: trip.imageUrl,
+      location: getRouteLabel(trip.route),
+      cost: trip.priceShare,
+      durationDays,
+      requiredPeople: requiredPeopleTargets[index % requiredPeopleTargets.length],
+      spotsFilledPercent: feedFillTargets[index % feedFillTargets.length],
+      expectations: trip.partnerExpectations,
+      travelerType: getTravelerType(trip),
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+    };
+  });
+};
+
+const splitDisplayName = (displayName: string): { firstName: string; lastName: string } => {
+  const cleanedName = displayName.trim();
+  if (!cleanedName) {
+    return { firstName: '', lastName: '' };
+  }
+
+  const [firstName = '', ...lastNameParts] = cleanedName.split(/\s+/);
+  return {
+    firstName,
+    lastName: lastNameParts.join(' '),
+  };
+};
+
+const getDisplayName = (firstName: string, lastName: string, fallback = 'Traveler'): string => {
+  const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
+  return fullName || fallback;
+};
+
+const createProfileForm = (session: UserSession | null): ProfileForm => ({
+  firstName: session?.firstName ?? '',
+  lastName: session?.lastName ?? '',
+  countryCode: session?.countryCode ?? countryCodeOptions[0].value,
+  mobileNumber: session?.mobileNumber ?? '',
+  email: session?.email ?? '',
+  profileImageDataUrl: session?.profileImageDataUrl ?? null,
 });
+
+const getStoredUserSession = (): UserSession | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(USER_SESSION_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<UserSession>;
+    if (!parsed) {
+      return null;
+    }
+
+    const provider = parsed.provider;
+    if (provider !== 'Email' && provider !== 'Google' && provider !== 'Microsoft' && provider !== 'Facebook') {
+      return null;
+    }
+
+    const persistedName = typeof parsed.name === 'string' ? parsed.name.trim() : '';
+    const persistedFirstName = typeof parsed.firstName === 'string' ? parsed.firstName.trim() : '';
+    const persistedLastName = typeof parsed.lastName === 'string' ? parsed.lastName.trim() : '';
+    const fallbackName = persistedName || `${persistedFirstName} ${persistedLastName}`.trim();
+    if (!fallbackName) {
+      return null;
+    }
+
+    const derivedNameParts = splitDisplayName(fallbackName);
+    const firstName = persistedFirstName || derivedNameParts.firstName || 'Traveler';
+    const lastName = persistedLastName || derivedNameParts.lastName;
+    const countryCode =
+      typeof parsed.countryCode === 'string' && countryCodeOptions.some((option) => option.value === parsed.countryCode)
+        ? parsed.countryCode
+        : countryCodeOptions[0].value;
+    const mobileNumber = typeof parsed.mobileNumber === 'string' ? parsed.mobileNumber : '';
+    const email = typeof parsed.email === 'string' ? parsed.email : '';
+    const profileImageDataUrl = typeof parsed.profileImageDataUrl === 'string' ? parsed.profileImageDataUrl : null;
+
+    return {
+      name: getDisplayName(firstName, lastName, fallbackName),
+      firstName,
+      lastName,
+      countryCode,
+      mobileNumber,
+      email,
+      profileImageDataUrl,
+      provider,
+      dna: parsed.dna ?? null,
+      isVerified: Boolean(parsed.isVerified),
+      toursCompleted: typeof parsed.toursCompleted === 'number' ? parsed.toursCompleted : 0,
+      ratingAverage: typeof parsed.ratingAverage === 'number' ? parsed.ratingAverage : 0,
+      ratingCount: typeof parsed.ratingCount === 'number' ? parsed.ratingCount : 0,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const createSession = (name: string, provider: 'Email' | SocialProvider): UserSession => {
+  const cleanedName = name.trim();
+  const { firstName: rawFirstName, lastName: rawLastName } = splitDisplayName(cleanedName);
+  const firstName = rawFirstName || cleanedName || 'Traveler';
+  const lastName = rawLastName;
+
+  return {
+    name: getDisplayName(firstName, lastName, cleanedName || 'Traveler'),
+    firstName,
+    lastName,
+    countryCode: countryCodeOptions[0].value,
+    mobileNumber: '',
+    email: '',
+    profileImageDataUrl: null,
+    provider,
+    dna: null,
+    isVerified: false,
+    toursCompleted: 0,
+    ratingAverage: 0,
+    ratingCount: 0,
+  };
+};
 
 const createInitialTripRuntime = (): Record<string, TripRuntime> =>
   tripCatalog.reduce<Record<string, TripRuntime>>((accumulator, trip) => {
@@ -174,19 +426,29 @@ const renderSidebarIcon = (icon: NavIcon): React.ReactNode => {
 
 function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenName>('home');
+  const [activeView, setActiveView] = useState<ActiveView>('feed');
   const [activeCategory, setActiveCategory] = useState<ExpenseCategory>('Transport');
   const [costs, setCosts] = useState<Record<ExpenseCategory, number>>(initialCosts);
   const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null);
   const [activeGroupTripId, setActiveGroupTripId] = useState<string | null>(null);
+  const [feedPosts, setFeedPosts] = useState<FeedPost[]>(() => createInitialFeedPosts());
+  const [sentRequestPostIds, setSentRequestPostIds] = useState<string[]>([]);
 
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authForm, setAuthForm] = useState<AuthForm>({ userId: '', password: '', confirmPassword: '' });
   const [authErrors, setAuthErrors] = useState<AuthErrors>({});
   const [authMessage, setAuthMessage] = useState<string>('');
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [systemNotice, setSystemNotice] = useState<string>('');
 
-  const [userSession, setUserSession] = useState<UserSession | null>(null);
+  const [userSession, setUserSession] = useState<UserSession | null>(() => getStoredUserSession());
   const [isAccountPanelOpen, setIsAccountPanelOpen] = useState(false);
+  const [profileForm, setProfileForm] = useState<ProfileForm>(() => createProfileForm(getStoredUserSession()));
+  const [profileErrors, setProfileErrors] = useState<ProfileErrors>({});
+  const [isProfileEditing, setIsProfileEditing] = useState(false);
+  const [verificationDocumentFile, setVerificationDocumentFile] = useState<File | null>(null);
+  const [verificationDocumentError, setVerificationDocumentError] = useState('');
+  const [isVerificationUploading, setIsVerificationUploading] = useState(false);
 
   const [publicProfiles, setPublicProfiles] = useState<Record<string, PublicProfile>>(() =>
     createInitialPublicProfiles(),
@@ -224,11 +486,41 @@ function App() {
     }
 
     setUserSession(createSession('Google User', 'Google'));
-    setCurrentScreen('onboarding');
-    setSystemNotice('Google login successful. Complete your Travel DNA onboarding.');
+    setActiveView('feed');
+    setCurrentScreen('home');
+    setSystemNotice('Google login successful. Your Main Feed is ready.');
     sessionStorage.removeItem('google_oauth_state');
     window.history.replaceState({}, document.title, window.location.pathname);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (!userSession) {
+      window.localStorage.removeItem(USER_SESSION_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(USER_SESSION_STORAGE_KEY, JSON.stringify(userSession));
+  }, [userSession]);
+
+  useEffect(() => {
+    if (!userSession) {
+      setProfileForm(createProfileForm(null));
+      setProfileErrors({});
+      setIsProfileEditing(false);
+      setVerificationDocumentFile(null);
+      setVerificationDocumentError('');
+      return;
+    }
+
+    if (!isProfileEditing) {
+      setProfileForm(createProfileForm(userSession));
+      setProfileErrors({});
+    }
+  }, [isProfileEditing, userSession]);
 
   const matchedTrips = useMemo(
     () =>
@@ -325,6 +617,13 @@ function App() {
       return;
     }
 
+    if (userSession && (targetScreen === 'home' || targetScreen === 'discovery' || targetScreen === 'dashboard')) {
+      setCurrentScreen(targetScreen);
+      setActiveView(targetScreen === 'dashboard' ? 'dashboard' : 'feed');
+      setIsAccountPanelOpen(false);
+      return;
+    }
+
     setCurrentScreen(targetScreen);
     setIsAccountPanelOpen(false);
   };
@@ -397,6 +696,46 @@ function App() {
     setSystemNotice('');
   };
 
+  const handleFeedDismiss = (postId: string) => {
+    setFeedPosts((previous) => previous.filter((post) => post.id !== postId));
+    setSentRequestPostIds((previous) => previous.filter((id) => id !== postId));
+  };
+
+  const handleFeedJoinRequest = (post: FeedPost) => {
+    setSentRequestPostIds((previous) => (previous.includes(post.id) ? previous : [...previous, post.id]));
+    setSystemNotice(`Join request sent to ${post.hostName} for "${post.title}".`);
+  };
+
+  const handleFeedShare = async (post: FeedPost) => {
+    const shareText = `${post.title} | ${post.location} | $${post.cost.toFixed(0)} | ${post.durationDays} days`;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: post.title,
+          text: shareText,
+          url: window.location.href,
+        });
+        setSystemNotice('Trip post shared successfully.');
+        return;
+      } catch {
+        // Ignore and fall through to clipboard fallback.
+      }
+    }
+
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(shareText);
+        setSystemNotice('Trip summary copied to clipboard.');
+        return;
+      } catch {
+        // Ignore and fall through to final notice.
+      }
+    }
+
+    setSystemNotice('Sharing is not available in this browser.');
+  };
+
   const handleAuthFieldChange = (field: keyof AuthForm, value: string) => {
     setAuthForm((previous) => ({ ...previous, [field]: value }));
   };
@@ -409,7 +748,8 @@ function App() {
 
       if (!clientId) {
         setUserSession(createSession('Google User', 'Google'));
-        setCurrentScreen('onboarding');
+        setActiveView('feed');
+        setCurrentScreen('home');
         setSystemNotice('VITE_GOOGLE_CLIENT_ID missing. Logged in with demo Google session.');
         return;
       }
@@ -436,8 +776,9 @@ function App() {
 
     window.open(providerLoginUrls[provider], '_blank', 'noopener,noreferrer');
     setUserSession(createSession(`${provider} User`, provider));
-    setCurrentScreen('onboarding');
-    setSystemNotice(`${provider} login page opened in a new tab. Continue onboarding here.`);
+    setActiveView('feed');
+    setCurrentScreen('home');
+    setSystemNotice(`${provider} login page opened in a new tab. Main Feed unlocked.`);
   };
 
   const validateAuth = (): boolean => {
@@ -465,35 +806,69 @@ function App() {
     return Object.keys(errors).length === 0;
   };
 
-  const handleAuthSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!validateAuth()) {
       setAuthMessage('Please fix the validation errors.');
       return;
     }
 
-    if (authMode === 'signin') {
-      setUserSession(createSession(authForm.userId, 'Email'));
-      setAuthMessage('');
-      setCurrentScreen('onboarding');
-      setSystemNotice('Sign in successful. Complete onboarding and verification.');
-      return;
-    }
+    setIsAuthLoading(true);
+    setAuthMessage('');
 
-    setAuthMessage(`Account created for ${authForm.userId}. You can now sign in (demo).`);
-    setAuthMode('signin');
-    setAuthForm((previous) => ({ ...previous, confirmPassword: '' }));
+    try {
+      if (authMode === 'signin') {
+        const loginResponse = await loginWithCredentials({
+          userId: authForm.userId.trim(),
+          password: authForm.password,
+        });
+
+        window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, loginResponse.token);
+        const nextSession = createSession(loginResponse.user.userId, 'Email');
+        setUserSession({
+          ...nextSession,
+          isVerified: Boolean(loginResponse.user.isVerified),
+        });
+        setAuthForm({ userId: '', password: '', confirmPassword: '' });
+        setActiveView('feed');
+        setCurrentScreen('home');
+        setSystemNotice('Sign in successful. Welcome to your Main Feed.');
+        return;
+      }
+
+      await registerWithCredentials({
+        userId: authForm.userId.trim(),
+        password: authForm.password,
+      });
+
+      setAuthMessage(`Account created for ${authForm.userId}. You can now sign in.`);
+      setAuthMode('signin');
+      setAuthForm((previous) => ({ ...previous, password: '', confirmPassword: '' }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Authentication request failed.';
+      setAuthMessage(message);
+    } finally {
+      setIsAuthLoading(false);
+    }
   };
 
   const handleSignOut = () => {
+    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    window.localStorage.removeItem(USER_SESSION_STORAGE_KEY);
     setUserSession(null);
     setAuthMode('signin');
     setAuthErrors({});
     setAuthMessage('');
     setAuthForm({ userId: '', password: '', confirmPassword: '' });
+    setActiveView('feed');
+    setFeedPosts(createInitialFeedPosts());
+    setSentRequestPostIds([]);
     setCurrentScreen('home');
     setIsAccountPanelOpen(false);
     setActiveGroupTripId(null);
+    setVerificationDocumentFile(null);
+    setVerificationDocumentError('');
+    setIsVerificationUploading(false);
     setIsEmergencyAlertActive(false);
     setEmergencyMessage('');
     setSystemNotice('Signed out.');
@@ -509,6 +884,207 @@ function App() {
     setUserSession((previous) => (previous ? { ...previous, isVerified: true } : previous));
     setCurrentScreen('home');
     setSystemNotice('Verification completed. Verified Badge granted.');
+  };
+
+  const handleProfileFieldChange = (field: EditableProfileField, value: string) => {
+    setProfileForm((previous) => ({ ...previous, [field]: value }));
+    setProfileErrors((previous) => ({ ...previous, [field]: undefined }));
+  };
+
+  const handleMobileNumberChange = (value: string) => {
+    const formattedValue = formatMobileNumber(value);
+    setProfileForm((previous) => ({ ...previous, mobileNumber: formattedValue }));
+    setProfileErrors((previous) => ({ ...previous, mobileNumber: undefined }));
+  };
+
+  const handleProfileImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setProfileErrors((previous) => ({ ...previous, profileImageDataUrl: 'Please select a valid image file.' }));
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const imageDataUrl = typeof reader.result === 'string' ? reader.result : null;
+      if (!imageDataUrl) {
+        setProfileErrors((previous) => ({ ...previous, profileImageDataUrl: 'Unable to load selected image.' }));
+        return;
+      }
+
+      setProfileForm((previous) => ({ ...previous, profileImageDataUrl: imageDataUrl }));
+      setProfileErrors((previous) => ({ ...previous, profileImageDataUrl: undefined }));
+    };
+    reader.readAsDataURL(file);
+    event.target.value = '';
+  };
+
+  const handleVerificationDocumentSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    if (file.size > MAX_VERIFICATION_DOCUMENT_BYTES) {
+      setVerificationDocumentFile(null);
+      setVerificationDocumentError('Document must be 5MB or less.');
+      event.target.value = '';
+      return;
+    }
+
+    setVerificationDocumentFile(file);
+    setVerificationDocumentError('');
+    event.target.value = '';
+  };
+
+  const handleUploadVerificationDocument = async () => {
+    if (!userSession) {
+      return;
+    }
+
+    if (!verificationDocumentFile) {
+      setVerificationDocumentError('Please select a document to upload.');
+      return;
+    }
+
+    const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    if (!authToken) {
+      setVerificationDocumentError('You are not authenticated. Please sign in again.');
+      return;
+    }
+
+    setIsVerificationUploading(true);
+    setVerificationDocumentError('');
+
+    try {
+      const documentDataUrl = await fileToDataUrl(verificationDocumentFile);
+      const uploadResponse = await uploadVerificationDocument(
+        {
+          documentName: verificationDocumentFile.name,
+          mimeType: verificationDocumentFile.type || 'application/octet-stream',
+          documentDataUrl,
+          documentSize: verificationDocumentFile.size,
+        },
+        authToken,
+      );
+
+      setUserSession((previous) =>
+        previous
+          ? {
+              ...previous,
+              isVerified: Boolean(uploadResponse.user.isVerified),
+            }
+          : previous,
+      );
+      setVerificationDocumentFile(null);
+      setSystemNotice(uploadResponse.message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Document upload failed.';
+      setVerificationDocumentError(message);
+    } finally {
+      setIsVerificationUploading(false);
+    }
+  };
+
+  const validateProfileForm = (): boolean => {
+    const errors: ProfileErrors = {};
+    const firstName = profileForm.firstName.trim();
+    const lastName = profileForm.lastName.trim();
+    const countryCode = profileForm.countryCode.trim();
+    const mobileNumber = profileForm.mobileNumber.trim();
+    const email = profileForm.email.trim();
+
+    if (!firstName) {
+      errors.firstName = 'First name is required.';
+    }
+
+    if (!lastName) {
+      errors.lastName = 'Last name is required.';
+    }
+
+    if (!countryCode) {
+      errors.countryCode = 'Country code is required.';
+    }
+
+    if (!mobileNumber) {
+      errors.mobileNumber = 'Mobile number is required.';
+    } else if (!US_MOBILE_PATTERN.test(mobileNumber)) {
+      errors.mobileNumber = 'Use format (xxx)-xxx-xxxx.';
+    }
+
+    if (!email) {
+      errors.email = 'Email is required.';
+    } else if (!EMAIL_PATTERN.test(email)) {
+      errors.email = 'Enter a valid email address.';
+    }
+
+    setProfileErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleProfileEdit = () => {
+    if (!userSession) {
+      return;
+    }
+
+    setProfileForm(createProfileForm(userSession));
+    setProfileErrors({});
+    setIsProfileEditing(true);
+  };
+
+  const handleProfileCancel = () => {
+    setProfileForm(createProfileForm(userSession));
+    setProfileErrors({});
+    setIsProfileEditing(false);
+  };
+
+  const handleProfileSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!userSession) {
+      return;
+    }
+
+    if (!validateProfileForm()) {
+      setSystemNotice('Please fix profile validation errors.');
+      return;
+    }
+
+    const firstName = profileForm.firstName.trim();
+    const lastName = profileForm.lastName.trim();
+    const countryCode = profileForm.countryCode.trim();
+    const mobileNumber = profileForm.mobileNumber.trim();
+    const email = profileForm.email.trim().toLowerCase();
+    const name = getDisplayName(firstName, lastName, userSession.name);
+
+    setUserSession((previous) =>
+      previous
+        ? {
+            ...previous,
+            name,
+            firstName,
+            lastName,
+            countryCode,
+            mobileNumber,
+            email,
+            profileImageDataUrl: profileForm.profileImageDataUrl,
+          }
+        : previous,
+    );
+    setProfileForm((previous) => ({
+      ...previous,
+      firstName,
+      lastName,
+      countryCode,
+      mobileNumber,
+      email,
+    }));
+    setProfileErrors({});
+    setIsProfileEditing(false);
+    setSystemNotice('Profile saved successfully.');
   };
 
   const handleCommitAndPay = () => {
@@ -668,6 +1244,14 @@ function App() {
     [costs],
   );
 
+  const isSocialExperienceScreen =
+    currentScreen === 'home' || currentScreen === 'discovery' || currentScreen === 'dashboard';
+
+  const completedTripsMetric = Math.max(userSession?.toursCompleted ?? 0, completedTripsCount, 6);
+  const totalConnectionsMetric = Math.max(hostProfiles.length * 9 + (userSession?.ratingCount ?? 0), 24);
+  const walletCapacity = 5000;
+  const availableFundsMetric = Math.max(900, walletCapacity - escrowStats.totalPaid + escrowStats.totalReleased);
+
   const isWorkspaceScreen =
     currentScreen === 'dashboard' || currentScreen === 'expenses' || currentScreen === 'chat';
 
@@ -678,72 +1262,227 @@ function App() {
     'safety-center': 'dashboard',
   };
 
-  const getTopNavClass = (screen: ScreenName) =>
-    currentScreen === screen
+  const getTopNavClass = (screen: ScreenName) => {
+    const isSocialActive =
+      userSession && isSocialExperienceScreen
+        ? (screen === 'discovery' && activeView === 'feed') || (screen === 'dashboard' && activeView === 'dashboard')
+        : false;
+
+    return currentScreen === screen || isSocialActive
       ? 'border-b-2 border-accent text-accent'
       : 'border-b-2 border-transparent text-primary/80 transition hover:text-primary';
+  };
 
   const getSidebarClass = (screen: ScreenName) =>
     currentScreen === screen
       ? 'flex w-full items-center gap-3 rounded-card bg-primary px-3 py-2.5 text-sm font-semibold text-white shadow-sm'
       : 'flex w-full items-center gap-3 rounded-card px-3 py-2.5 text-sm font-semibold text-primary transition hover:bg-primary/5';
 
-  const renderProfileScreen = () => (
-    <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
-      <article className="rounded-card bg-white/95 p-8 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Public Profile</p>
-            <h2 className="mt-1 text-3xl font-black text-primary">{userSession?.name ?? 'Traveler'}</h2>
-          </div>
-          {userSession?.isVerified ? (
-            <span className="inline-flex items-center gap-2 rounded-full bg-success/20 px-4 py-2 text-sm font-semibold text-primary ring-1 ring-success/40">
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-success text-xs text-white">
-                ?
+  const renderProfileScreen = () => {
+    const displayName = getDisplayName(profileForm.firstName, profileForm.lastName, userSession?.name ?? 'Traveler');
+    const profileInitial = displayName.charAt(0).toUpperCase() || 'T';
+    const inputClassName =
+      'interactive-input w-full rounded-card border border-primary/15 bg-background/80 px-4 py-3 text-sm text-primary outline-none disabled:cursor-not-allowed disabled:bg-background/40 disabled:text-primary/70';
+
+    return (
+      <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
+        <article className="rounded-card bg-white/95 p-8 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Profile</p>
+              <h2 className="mt-1 text-3xl font-black text-primary">{displayName}</h2>
+              <p className="mt-1 text-sm text-primary/80">Update your profile details from the side menu.</p>
+            </div>
+            {userSession?.isVerified ? (
+              <span className="rounded-full bg-success/20 px-4 py-2 text-sm font-semibold text-primary ring-1 ring-success/40">
+                Verified Badge
               </span>
-              Verified Badge
-            </span>
-          ) : (
-            <span className="rounded-full bg-primary/5 px-4 py-2 text-sm font-semibold text-primary">
-              Not Verified
-            </span>
-          )}
-        </div>
+            ) : (
+              <span className="rounded-full bg-primary/5 px-4 py-2 text-sm font-semibold text-primary">
+                Not Verified
+              </span>
+            )}
+          </div>
 
-        <div className="mt-6 grid gap-4 sm:grid-cols-3">
-          <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-            <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Tours Completed</p>
-            <p className="mt-1 text-2xl font-black text-primary">{userSession?.toursCompleted ?? 0}</p>
-          </div>
-          <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-            <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Average Rating</p>
-            <p className="mt-1 text-2xl font-black text-primary">
-              {userSession?.ratingCount ? userSession.ratingAverage.toFixed(2) : 'N/A'}
-            </p>
-          </div>
-          <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-            <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Provider</p>
-            <p className="mt-1 text-2xl font-black text-primary">{userSession?.provider ?? 'Email'}</p>
-          </div>
-        </div>
+          <form className="mt-6 space-y-5" onSubmit={handleProfileSubmit} noValidate>
+            <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-primary/10 ring-1 ring-primary/20">
+                    {profileForm.profileImageDataUrl ? (
+                      <img
+                        src={profileForm.profileImageDataUrl}
+                        alt="Profile preview"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <span className="text-2xl font-black text-primary">{profileInitial}</span>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-primary">Profile Picture</p>
+                    <p className="text-xs text-primary/75">Select and upload from gallery.</p>
+                  </div>
+                </div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleProfileImageChange}
+                  disabled={!isProfileEditing}
+                  className="text-sm text-primary file:mr-3 file:rounded-card file:border-0 file:bg-accent file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                />
+              </div>
+              {profileErrors.profileImageDataUrl ? (
+                <p className="mt-2 text-xs font-medium text-red-600">{profileErrors.profileImageDataUrl}</p>
+              ) : null}
+            </div>
 
-        <div className="mt-6">
-          <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Community Reputation</p>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            {hostProfiles.slice(0, 4).map((profile) => (
-              <article key={profile.name} className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-                <p className="text-sm font-semibold text-primary">{profile.name}</p>
-                <p className="mt-1 text-sm text-primary/80">Tours: {profile.toursCompleted}</p>
-                <p className="text-sm text-primary/80">
-                  Rating: {profile.ratingAverage.toFixed(2)} ({profile.ratingCount})
-                </p>
-              </article>
-            ))}
-          </div>
-        </div>
-      </article>
-    </section>
-  );
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-primary">First Name</span>
+                <input
+                  type="text"
+                  value={profileForm.firstName}
+                  onChange={(event) => handleProfileFieldChange('firstName', event.target.value)}
+                  disabled={!isProfileEditing}
+                  className={inputClassName}
+                  placeholder="Enter first name"
+                />
+                {profileErrors.firstName ? (
+                  <p className="mt-1 text-xs font-medium text-red-600">{profileErrors.firstName}</p>
+                ) : null}
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-primary">Last Name</span>
+                <input
+                  type="text"
+                  value={profileForm.lastName}
+                  onChange={(event) => handleProfileFieldChange('lastName', event.target.value)}
+                  disabled={!isProfileEditing}
+                  className={inputClassName}
+                  placeholder="Enter last name"
+                />
+                {profileErrors.lastName ? (
+                  <p className="mt-1 text-xs font-medium text-red-600">{profileErrors.lastName}</p>
+                ) : null}
+              </label>
+
+              <div className="block sm:col-span-2">
+                <span className="mb-1 block text-sm font-semibold text-primary">Mobile Number</span>
+                <div className="grid gap-3 sm:grid-cols-[180px_1fr]">
+                  <div>
+                    <select
+                      value={profileForm.countryCode}
+                      onChange={(event) => handleProfileFieldChange('countryCode', event.target.value)}
+                      disabled={!isProfileEditing}
+                      className={inputClassName}
+                    >
+                      {countryCodeOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    {profileErrors.countryCode ? (
+                      <p className="mt-1 text-xs font-medium text-red-600">{profileErrors.countryCode}</p>
+                    ) : null}
+                  </div>
+
+                  <div>
+                    <input
+                      type="tel"
+                      value={profileForm.mobileNumber}
+                      onChange={(event) => handleMobileNumberChange(event.target.value)}
+                      disabled={!isProfileEditing}
+                      className={inputClassName}
+                      placeholder="(xxx)-xxx-xxxx"
+                    />
+                    {profileErrors.mobileNumber ? (
+                      <p className="mt-1 text-xs font-medium text-red-600">{profileErrors.mobileNumber}</p>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              <label className="block sm:col-span-2">
+                <span className="mb-1 block text-sm font-semibold text-primary">Email</span>
+                <input
+                  type="email"
+                  value={profileForm.email}
+                  onChange={(event) => handleProfileFieldChange('email', event.target.value)}
+                  disabled={!isProfileEditing}
+                  className={inputClassName}
+                  placeholder="Enter email address"
+                />
+                {profileErrors.email ? (
+                  <p className="mt-1 text-xs font-medium text-red-600">{profileErrors.email}</p>
+                ) : null}
+              </label>
+            </div>
+
+            <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+              <p className="text-sm font-semibold text-primary">Verified Document</p>
+              <p className="mt-1 text-xs text-primary/75">
+                Upload an identity document. Successful upload marks your profile as verified.
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <input
+                  type="file"
+                  accept=".pdf,image/*,.doc,.docx"
+                  onChange={handleVerificationDocumentSelect}
+                  disabled={isVerificationUploading}
+                  className="text-sm text-primary file:mr-3 file:rounded-card file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                <button
+                  type="button"
+                  onClick={handleUploadVerificationDocument}
+                  disabled={isVerificationUploading || !verificationDocumentFile}
+                  className="interactive-btn rounded-card bg-success px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isVerificationUploading ? 'Uploading...' : 'Upload Document'}
+                </button>
+              </div>
+              {verificationDocumentFile ? (
+                <p className="mt-2 text-xs text-primary/80">Selected: {verificationDocumentFile.name}</p>
+              ) : null}
+              {verificationDocumentError ? (
+                <p className="mt-2 text-xs font-medium text-red-600">{verificationDocumentError}</p>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              {isProfileEditing ? (
+                <>
+                  <button
+                    type="submit"
+                    className="interactive-btn rounded-card bg-accent px-5 py-2.5 text-sm font-semibold text-white"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleProfileCancel}
+                    className="interactive-btn rounded-card border border-primary/20 bg-background/80 px-5 py-2.5 text-sm font-semibold text-primary"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleProfileEdit}
+                  className="interactive-btn rounded-card bg-primary px-5 py-2.5 text-sm font-semibold text-white"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+          </form>
+        </article>
+      </section>
+    );
+  };
 
   const renderHistoryScreen = () => {
     const completedTrips = Object.entries(tripRuntimeById)
@@ -801,6 +1540,33 @@ function App() {
     </section>
   );
 
+  const renderSocialExperience = () => (
+    <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-6">
+      <div className="grid gap-5 lg:grid-cols-[220px_1fr]">
+        <Sidebar activeView={activeView} onChangeView={setActiveView} />
+        <section className="rounded-card border border-primary/10 bg-white/85 p-4 shadow-lg sm:p-5">
+          {activeView === 'feed' ? (
+            <MainFeed
+              posts={feedPosts}
+              sentRequestPostIds={sentRequestPostIds}
+              onJoinRequest={handleFeedJoinRequest}
+              onSharePost={handleFeedShare}
+              onDismissPost={handleFeedDismiss}
+            />
+          ) : (
+            <DashboardView
+              totalCompletedTrips={completedTripsMetric}
+              totalConnections={totalConnectionsMetric}
+              activePosts={feedPosts.length}
+              availableFunds={availableFundsMetric}
+              walletCapacity={walletCapacity}
+            />
+          )}
+        </section>
+      </div>
+    </section>
+  );
+
   const renderAuthScreen = () => {
     return (
       <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
@@ -832,6 +1598,7 @@ function App() {
                     type="text"
                     value={authForm.userId}
                     onChange={(event) => handleAuthFieldChange('userId', event.target.value)}
+                    disabled={isAuthLoading}
                     className="interactive-input w-full rounded-card border border-primary/15 bg-background/80 px-4 py-3 text-sm text-primary outline-none"
                     placeholder="your_id"
                   />
@@ -844,6 +1611,7 @@ function App() {
                     type="password"
                     value={authForm.password}
                     onChange={(event) => handleAuthFieldChange('password', event.target.value)}
+                    disabled={isAuthLoading}
                     className="interactive-input w-full rounded-card border border-primary/15 bg-background/80 px-4 py-3 text-sm text-primary outline-none"
                     placeholder="Enter password"
                   />
@@ -859,6 +1627,7 @@ function App() {
                       type="password"
                       value={authForm.confirmPassword}
                       onChange={(event) => handleAuthFieldChange('confirmPassword', event.target.value)}
+                      disabled={isAuthLoading}
                       className="interactive-input w-full rounded-card border border-primary/15 bg-background/80 px-4 py-3 text-sm text-primary outline-none"
                       placeholder="Re-enter password"
                     />
@@ -870,14 +1639,16 @@ function App() {
 
                 <button
                   type="submit"
+                  disabled={isAuthLoading}
                   className="interactive-btn w-full rounded-card bg-accent px-4 py-3 text-sm font-semibold text-white"
                 >
-                  {authMode === 'signin' ? 'Sign In' : 'Create Account'}
+                  {isAuthLoading ? 'Please wait...' : authMode === 'signin' ? 'Sign In' : 'Create Account'}
                 </button>
               </form>
 
               <button
                 type="button"
+                disabled={isAuthLoading}
                 onClick={() => {
                   setAuthMode(authMode === 'signin' ? 'signup' : 'signin');
                   setAuthErrors({});
@@ -1037,14 +1808,28 @@ function App() {
           <div className="hidden items-center gap-8 text-sm font-medium md:flex">
             <button
               type="button"
-              onClick={() => handleNavigation('discovery')}
+              onClick={() => {
+                if (userSession) {
+                  setActiveView('feed');
+                  setCurrentScreen('home');
+                  return;
+                }
+                handleNavigation('discovery');
+              }}
               className={getTopNavClass('discovery')}
             >
               Discover
             </button>
             <button
               type="button"
-              onClick={() => handleNavigation('dashboard')}
+              onClick={() => {
+                if (userSession) {
+                  setActiveView('dashboard');
+                  setCurrentScreen('dashboard');
+                  return;
+                }
+                handleNavigation('dashboard');
+              }}
               className={getTopNavClass('dashboard')}
             >
               Trips
@@ -1084,8 +1869,8 @@ function App() {
       </header>
 
       {systemNotice ? (
-        <div className="mx-auto mt-4 w-full max-w-7xl px-6">
-          <div className="flex items-start justify-between gap-3 rounded-card border border-primary/15 bg-white/95 px-4 py-3 text-sm text-primary shadow-sm">
+        <div className="pointer-events-none fixed left-1/2 top-4 z-[140] w-[min(92vw,760px)] -translate-x-1/2 px-2">
+          <div className="pointer-events-auto flex items-start justify-between gap-3 rounded-card border border-primary/20 bg-white/98 px-4 py-3 text-sm text-primary shadow-2xl ring-1 ring-primary/10 backdrop-blur-sm">
             <p>{systemNotice}</p>
             <button
               type="button"
@@ -1099,7 +1884,9 @@ function App() {
       ) : null}
 
       <main>
-        {isWorkspaceScreen ? (
+        {userSession && isSocialExperienceScreen ? (
+          renderSocialExperience()
+        ) : isWorkspaceScreen ? (
           <section id="trips" className="mx-auto w-full max-w-7xl px-6 pb-16 pt-6">
             <div className="grid gap-5 lg:grid-cols-[220px_1fr]">
               <aside className="rounded-card bg-white/95 p-4 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">

@@ -3,10 +3,10 @@ var config = {
     theme: {
         extend: {
             colors: {
-                background: '#EFF5F7',
-                primary: '#123247',
-                accent: '#EF6C3F',
-                success: '#2D9C8C',
+                background: '#F4F1DE',
+                primary: '#3D405B',
+                accent: '#E07A5F',
+                success: '#81B29A',
             },
             borderRadius: {
                 card: '16px',
