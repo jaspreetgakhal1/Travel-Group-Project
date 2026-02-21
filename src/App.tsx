@@ -29,6 +29,9 @@ import OnboardingQuizView from './views/OnboardingQuizView';
 import ReviewSystemView from './views/ReviewSystemView';
 import TripDetailView from './views/TripDetailView';
 import VerificationGateView from './views/VerificationGateView';
+import CreateTripView, { type CreateTripPayload } from './views/CreateTripView';
+import AboutUsView from './views/AboutUsView';
+import ContactUsView from './views/ContactUsView';
 import { loginWithCredentials, registerWithCredentials, uploadVerificationDocument } from './services/authApi';
 
 const DEFAULT_INTRO_PERIOD_MS = 24 * 60 * 60 * 1000;
@@ -40,11 +43,16 @@ const INTRO_PERIOD_MS =
 
 const AUTH_TOKEN_STORAGE_KEY = 'splitngo_auth_token';
 const USER_SESSION_STORAGE_KEY = 'splitngo_user_session';
+const POST_AUTH_REDIRECT_STORAGE_KEY = 'splitngo_post_auth_redirect';
+const SYSTEM_NOTICE_AUTO_DISMISS_MS = 3000;
 
 type ScreenName =
   | 'home'
   | 'discovery'
   | 'auth'
+  | 'aboutUs'
+  | 'contactUs'
+  | 'createTrip'
   | 'dashboard'
   | 'expenses'
   | 'chat'
@@ -433,6 +441,7 @@ function App() {
   const [activeGroupTripId, setActiveGroupTripId] = useState<string | null>(null);
   const [feedPosts, setFeedPosts] = useState<FeedPost[]>(() => createInitialFeedPosts());
   const [sentRequestPostIds, setSentRequestPostIds] = useState<string[]>([]);
+  const [userCreatedTrips, setUserCreatedTrips] = useState<Trip[]>([]);
 
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authForm, setAuthForm] = useState<AuthForm>({ userId: '', password: '', confirmPassword: '' });
@@ -440,6 +449,14 @@ function App() {
   const [authMessage, setAuthMessage] = useState<string>('');
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [systemNotice, setSystemNotice] = useState<string>('');
+  const [postAuthRedirectScreen, setPostAuthRedirectScreen] = useState<ScreenName | null>(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    const storedRedirect = window.sessionStorage.getItem(POST_AUTH_REDIRECT_STORAGE_KEY);
+    return storedRedirect === 'createTrip' ? 'createTrip' : null;
+  });
 
   const [userSession, setUserSession] = useState<UserSession | null>(() => getStoredUserSession());
   const [isAccountPanelOpen, setIsAccountPanelOpen] = useState(false);
@@ -485,13 +502,44 @@ function App() {
       return;
     }
 
+    const redirectTarget = postAuthRedirectScreen;
+    setPostAuthRedirectScreen(null);
     setUserSession(createSession('Google User', 'Google'));
     setActiveView('feed');
-    setCurrentScreen('home');
-    setSystemNotice('Google login successful. Your Main Feed is ready.');
+    setCurrentScreen(redirectTarget === 'createTrip' ? 'createTrip' : 'home');
+    setSystemNotice(
+      redirectTarget === 'createTrip'
+        ? 'Google login successful. Continue creating your trip.'
+        : 'Google login successful. Your Main Feed is ready.',
+    );
     sessionStorage.removeItem('google_oauth_state');
     window.history.replaceState({}, document.title, window.location.pathname);
-  }, []);
+  }, [postAuthRedirectScreen]);
+
+  useEffect(() => {
+    if (!systemNotice) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setSystemNotice('');
+    }, SYSTEM_NOTICE_AUTO_DISMISS_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [systemNotice]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (!postAuthRedirectScreen) {
+      window.sessionStorage.removeItem(POST_AUTH_REDIRECT_STORAGE_KEY);
+      return;
+    }
+
+    window.sessionStorage.setItem(POST_AUTH_REDIRECT_STORAGE_KEY, postAuthRedirectScreen);
+  }, [postAuthRedirectScreen]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -522,21 +570,23 @@ function App() {
     }
   }, [isProfileEditing, userSession]);
 
+  const allTrips = useMemo(() => [...userCreatedTrips, ...tripCatalog], [userCreatedTrips]);
+
   const matchedTrips = useMemo(
     () =>
-      tripCatalog.map((trip) => ({
+      allTrips.map((trip) => ({
         trip,
         matchScore: userSession?.dna ? getMatchScore(userSession.dna, trip.tripDNA) : trip.matchPercentage,
       })),
-    [userSession?.dna],
+    [allTrips, userSession?.dna],
   );
 
   const activeGroupTrip = useMemo(() => {
     if (!activeGroupTripId) {
       return null;
     }
-    return tripCatalog.find((trip) => trip.id === activeGroupTripId) ?? null;
-  }, [activeGroupTripId]);
+    return allTrips.find((trip) => trip.id === activeGroupTripId) ?? null;
+  }, [activeGroupTripId, allTrips]);
 
   const activeGroupRuntime = useMemo(() => {
     if (!activeGroupTripId) {
@@ -575,6 +625,9 @@ function App() {
       'home',
       'discovery',
       'auth',
+      'aboutUs',
+      'contactUs',
+      'createTrip',
       'dashboard',
       'expenses',
       'chat',
@@ -592,7 +645,12 @@ function App() {
       return;
     }
 
+    if (targetScreen !== 'auth' && targetScreen !== 'createTrip' && postAuthRedirectScreen === 'createTrip') {
+      setPostAuthRedirectScreen(null);
+    }
+
     const requiresSession: ScreenName[] = [
+      'createTrip',
       'dashboard',
       'expenses',
       'chat',
@@ -606,6 +664,12 @@ function App() {
     ];
 
     if (requiresSession.includes(targetScreen) && !userSession) {
+      if (targetScreen === 'createTrip') {
+        setPostAuthRedirectScreen('createTrip');
+        setAuthMode('signin');
+        setAuthErrors({});
+        setAuthMessage('');
+      }
       setCurrentScreen('auth');
       setSystemNotice('Please sign in to continue.');
       return;
@@ -639,9 +703,93 @@ function App() {
   };
 
   const handleOpenTrip = (tripId: string) => {
-    const foundTrip = tripCatalog.find((trip) => trip.id === tripId) ?? null;
+    const foundTrip = allTrips.find((trip) => trip.id === tripId) ?? null;
     setSelectedTrip(foundTrip);
     setCurrentScreen('tripDetails');
+  };
+
+  const handleHostTrip = () => {
+    setIsAccountPanelOpen(false);
+
+    if (userSession) {
+      setPostAuthRedirectScreen(null);
+      setCurrentScreen('createTrip');
+      setSystemNotice('Set up your trip and publish your host request.');
+      return;
+    }
+
+    setPostAuthRedirectScreen('createTrip');
+    setAuthMode('signin');
+    setAuthErrors({});
+    setAuthMessage('');
+    setCurrentScreen('auth');
+    setSystemNotice('Sign in to host your trip.');
+  };
+
+  const handleCreateTrip = (payload: CreateTripPayload) => {
+    if (!userSession) {
+      setCurrentScreen('auth');
+      setSystemNotice('Please sign in to continue.');
+      return;
+    }
+
+    const newTripId = `trip-user-${Date.now()}`;
+    const budgetRange = Math.max(1, Math.min(10, Math.round(payload.budget / 250)));
+    const preferredTravelers =
+      payload.interestedIn === 'Unspecified' ? 'Unspecified' : `${payload.interestedIn} travelers`;
+
+    const createdTrip: Trip = {
+      id: newTripId,
+      title: `${userSession.firstName || userSession.name} Hosted Trip`,
+      hostName: userSession.name,
+      priceShare: payload.budget,
+      matchPercentage: 82,
+      tripDNA: {
+        socialEnergy: 6,
+        budgetRange,
+        pace: 'Active',
+      },
+      imageUrl: payload.posterImageUrls[0],
+      isVerified: Boolean(userSession.isVerified),
+      route: 'Custom route',
+      duration: '7 Days',
+      totalExpectedFromPartner: payload.budget * payload.peopleRequired,
+      partnerExpectations: payload.expectations,
+      notes: `Preferred travelers: ${preferredTravelers}. ${
+        payload.onlyVerifiedUsers ? 'Verified users only.' : 'Open to all users.'
+      }`,
+      highlights: payload.expectations.slice(0, 3),
+    };
+
+    setUserCreatedTrips((previous) => [createdTrip, ...previous]);
+    setTripRuntimeById((previous) => ({
+      ...previous,
+      [newTripId]: {
+        status: 'Open',
+        introEndsAt: null,
+        escrowSummary: null,
+        hasReleasedCheckInFunds: false,
+        hasReviewed: false,
+      },
+    }));
+    setPublicProfiles((previous) => {
+      if (previous[userSession.name]) {
+        return previous;
+      }
+
+      return {
+        ...previous,
+        [userSession.name]: {
+          name: userSession.name,
+          toursCompleted: userSession.toursCompleted,
+          ratingAverage: userSession.ratingAverage,
+          ratingCount: userSession.ratingCount,
+          isVerified: Boolean(userSession.isVerified),
+        },
+      };
+    });
+    setCurrentScreen('discovery');
+    setSystemNotice('Trip post created and added to Discover.');
   };
 
   const handleJoinChat = (tripId: string) => {
@@ -669,7 +817,7 @@ function App() {
       return;
     }
 
-    const trip = tripCatalog.find((item) => item.id === tripId);
+    const trip = allTrips.find((item) => item.id === tripId);
     if (!trip) {
       return;
     }
@@ -747,10 +895,16 @@ function App() {
         (import.meta.env.VITE_GOOGLE_REDIRECT_URI as string | undefined) ?? window.location.origin;
 
       if (!clientId) {
+        const redirectTarget = postAuthRedirectScreen;
+        setPostAuthRedirectScreen(null);
         setUserSession(createSession('Google User', 'Google'));
         setActiveView('feed');
-        setCurrentScreen('home');
-        setSystemNotice('VITE_GOOGLE_CLIENT_ID missing. Logged in with demo Google session.');
+        setCurrentScreen(redirectTarget === 'createTrip' ? 'createTrip' : 'home');
+        setSystemNotice(
+          redirectTarget === 'createTrip'
+            ? 'Google demo login successful. Continue creating your trip.'
+            : 'VITE_GOOGLE_CLIENT_ID missing. Logged in with demo Google session.',
+        );
         return;
       }
 
@@ -775,10 +929,16 @@ function App() {
     };
 
     window.open(providerLoginUrls[provider], '_blank', 'noopener,noreferrer');
+    const redirectTarget = postAuthRedirectScreen;
+    setPostAuthRedirectScreen(null);
     setUserSession(createSession(`${provider} User`, provider));
     setActiveView('feed');
-    setCurrentScreen('home');
-    setSystemNotice(`${provider} login page opened in a new tab. Main Feed unlocked.`);
+    setCurrentScreen(redirectTarget === 'createTrip' ? 'createTrip' : 'home');
+    setSystemNotice(
+      redirectTarget === 'createTrip'
+        ? `${provider} login started. Continue creating your trip.`
+        : `${provider} login page opened in a new tab. Main Feed unlocked.`,
+    );
   };
 
   const validateAuth = (): boolean => {
@@ -825,14 +985,20 @@ function App() {
 
         window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, loginResponse.token);
         const nextSession = createSession(loginResponse.user.userId, 'Email');
+        const redirectTarget = postAuthRedirectScreen;
+        setPostAuthRedirectScreen(null);
         setUserSession({
           ...nextSession,
           isVerified: Boolean(loginResponse.user.isVerified),
         });
         setAuthForm({ userId: '', password: '', confirmPassword: '' });
         setActiveView('feed');
-        setCurrentScreen('home');
-        setSystemNotice('Sign in successful. Welcome to your Main Feed.');
+        setCurrentScreen(redirectTarget === 'createTrip' ? 'createTrip' : 'home');
+        setSystemNotice(
+          redirectTarget === 'createTrip'
+            ? 'Sign in successful. Continue creating your trip.'
+            : 'Sign in successful. Welcome to your Main Feed.',
+        );
         return;
       }
 
@@ -859,6 +1025,7 @@ function App() {
     setAuthMode('signin');
     setAuthErrors({});
     setAuthMessage('');
+    setPostAuthRedirectScreen(null);
     setAuthForm({ userId: '', password: '', confirmPassword: '' });
     setActiveView('feed');
     setFeedPosts(createInitialFeedPosts());
@@ -1487,7 +1654,7 @@ function App() {
   const renderHistoryScreen = () => {
     const completedTrips = Object.entries(tripRuntimeById)
       .filter(([, runtime]) => runtime.status === 'Completed')
-      .map(([tripId]) => tripCatalog.find((trip) => trip.id === tripId))
+      .map(([tripId]) => allTrips.find((trip) => trip.id === tripId))
       .filter((trip): trip is Trip => trip !== undefined);
 
     return (
@@ -1540,6 +1707,16 @@ function App() {
     </section>
   );
 
+  const renderCreateTripScreen = () =>
+    userSession ? (
+      <CreateTripView
+        hostName={userSession.name}
+        onTripCreated={handleCreateTrip}
+      />
+    ) : (
+      renderAuthScreen()
+    );
+
   const renderSocialExperience = () => (
     <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-6">
       <div className="grid gap-5 lg:grid-cols-[220px_1fr]">
@@ -1569,55 +1746,98 @@ function App() {
 
   const renderAuthScreen = () => {
     return (
-      <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
-        <div className="auth-enter relative overflow-hidden rounded-[28px] border border-primary/10 bg-white/85 p-4 shadow-2xl backdrop-blur-xl sm:p-6">
-          <div className="pointer-events-none absolute -left-20 -top-16 h-56 w-56 rounded-full bg-success/25 blur-3xl" />
-          <div className="pointer-events-none absolute -bottom-24 -right-14 h-64 w-64 rounded-full bg-accent/20 blur-3xl" />
+      <section className="mx-auto w-full max-w-6xl px-6 pb-16 pt-10">
+        <div className="auth-enter relative overflow-hidden rounded-[30px] border border-primary/10 bg-white/90 shadow-2xl backdrop-blur-xl">
+          <div className="pointer-events-none absolute -left-20 -top-20 h-64 w-64 rounded-full bg-success/20 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-24 -right-20 h-72 w-72 rounded-full bg-accent/25 blur-3xl" />
 
-          <div className="relative grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
-            <article className="rounded-card bg-white/95 p-8 shadow-lg ring-1 ring-primary/10">
-              <div className="mb-5 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/65">Account Access</p>
-                  <h2 className="mt-1 text-3xl font-black text-primary">
-                    {authMode === 'signin' ? 'Welcome Back' : 'Create Account'}
-                  </h2>
-                  <p className="mt-1 text-sm text-primary/75">
-                    After sign in, you will complete the Travel DNA quiz and Identity Verification.
-                  </p>
-                </div>
-                <span className="rounded-full bg-primary/5 px-3 py-1 text-xs font-semibold text-primary">
-                  {authMode === 'signin' ? 'Sign In' : 'Sign Up'}
-                </span>
+          <div className="relative grid lg:grid-cols-[1.1fr_0.9fr]">
+            <article className="rounded-t-[30px] bg-gradient-to-br from-primary via-primary to-accent p-8 text-white sm:p-10 lg:rounded-l-[30px] lg:rounded-tr-none">
+              <p className="inline-block rounded-full bg-white/15 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white/85">
+                SplitNGo Access
+              </p>
+              <h2 className="mt-4 text-3xl font-black leading-tight sm:text-4xl">
+                Travel Better With Verified Group Experiences
+              </h2>
+              <p className="mt-3 text-sm text-white/90 sm:text-base">
+                Continue with Google to access discovery, hosting, and collaboration features in one secure flow.
+              </p>
+
+              <ul className="mt-6 space-y-2 text-sm text-white/90">
+                <li>Smart traveler matching based on trip vibe.</li>
+                <li>Host tools with clear expectations and budget.</li>
+                <li>Verification-aware onboarding and support.</li>
+              </ul>
+            </article>
+
+            <article className="rounded-b-[30px] bg-white/95 p-8 sm:p-10 lg:rounded-b-none lg:rounded-r-[30px]">
+              <div className="inline-flex rounded-card border border-primary/15 bg-background/70 p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('signin');
+                    setAuthErrors({});
+                    setAuthMessage('');
+                  }}
+                  className={
+                    authMode === 'signin'
+                      ? 'rounded-card bg-white px-4 py-2 text-sm font-semibold text-primary shadow-sm'
+                      : 'rounded-card px-4 py-2 text-sm font-semibold text-primary/75'
+                  }
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('signup');
+                    setAuthErrors({});
+                    setAuthMessage('');
+                  }}
+                  className={
+                    authMode === 'signup'
+                      ? 'rounded-card bg-white px-4 py-2 text-sm font-semibold text-primary shadow-sm'
+                      : 'rounded-card px-4 py-2 text-sm font-semibold text-primary/75'
+                  }
+                >
+                  Sign Up
+                </button>
               </div>
 
-              <form className="space-y-4" onSubmit={handleAuthSubmit} noValidate>
+              <h3 className="mt-4 text-3xl font-black text-primary">
+                {authMode === 'signin' ? 'Sign In With Email' : 'Create Your Account'}
+              </h3>
+              <p className="mt-2 text-sm text-primary/80">
+                {authMode === 'signin'
+                  ? 'Enter your Email ID and Password to continue.'
+                  : 'Use your Email ID and Password to create your account.'}
+              </p>
+
+              <form className="mt-5 space-y-4" onSubmit={handleAuthSubmit} noValidate>
                 <label className="block">
-                  <span className="mb-1 block text-sm font-semibold text-primary">Enter your id</span>
+                  <span className="mb-1 block text-sm font-semibold text-primary">Enter your Email ID</span>
                   <input
-                    type="text"
+                    type="email"
                     value={authForm.userId}
                     onChange={(event) => handleAuthFieldChange('userId', event.target.value)}
                     disabled={isAuthLoading}
-                    className="interactive-input w-full rounded-card border border-primary/15 bg-background/80 px-4 py-3 text-sm text-primary outline-none"
-                    placeholder="your_id"
+                    className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
+                    placeholder="you@example.com"
                   />
                   {authErrors.userId ? <p className="mt-1 text-xs font-medium text-red-600">{authErrors.userId}</p> : null}
                 </label>
 
                 <label className="block">
-                  <span className="mb-1 block text-sm font-semibold text-primary">Password</span>
+                  <span className="mb-1 block text-sm font-semibold text-primary">Enter your Password</span>
                   <input
                     type="password"
                     value={authForm.password}
                     onChange={(event) => handleAuthFieldChange('password', event.target.value)}
                     disabled={isAuthLoading}
-                    className="interactive-input w-full rounded-card border border-primary/15 bg-background/80 px-4 py-3 text-sm text-primary outline-none"
+                    className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
                     placeholder="Enter password"
                   />
-                  {authErrors.password ? (
-                    <p className="mt-1 text-xs font-medium text-red-600">{authErrors.password}</p>
-                  ) : null}
+                  {authErrors.password ? <p className="mt-1 text-xs font-medium text-red-600">{authErrors.password}</p> : null}
                 </label>
 
                 {authMode === 'signup' ? (
@@ -1628,7 +1848,7 @@ function App() {
                       value={authForm.confirmPassword}
                       onChange={(event) => handleAuthFieldChange('confirmPassword', event.target.value)}
                       disabled={isAuthLoading}
-                      className="interactive-input w-full rounded-card border border-primary/15 bg-background/80 px-4 py-3 text-sm text-primary outline-none"
+                      className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
                       placeholder="Re-enter password"
                     />
                     {authErrors.confirmPassword ? (
@@ -1637,61 +1857,65 @@ function App() {
                   </label>
                 ) : null}
 
-                <button
-                  type="submit"
-                  disabled={isAuthLoading}
-                  className="interactive-btn w-full rounded-card bg-accent px-4 py-3 text-sm font-semibold text-white"
-                >
-                  {isAuthLoading ? 'Please wait...' : authMode === 'signin' ? 'Sign In' : 'Create Account'}
-                </button>
+                <div className="flex items-center justify-between gap-3">
+                  {authMode === 'signin' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const email = authForm.userId.trim();
+                        if (!email || !EMAIL_PATTERN.test(email)) {
+                          setAuthMessage('Enter a valid email to reset password.');
+                          return;
+                        }
+                        setAuthMessage(`Password reset link sent to ${email} (demo message).`);
+                      }}
+                      className="interactive-btn text-xs font-semibold text-primary underline decoration-accent decoration-2 underline-offset-4"
+                    >
+                      Forgot Password?
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={isAuthLoading}
+                    className="interactive-btn rounded-card bg-accent px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-65"
+                  >
+                    {isAuthLoading ? 'Please wait...' : authMode === 'signin' ? 'Sign In' : 'Sign Up'}
+                  </button>
+                </div>
               </form>
+
+              <div className="mt-6 flex items-center gap-3">
+                <div className="h-px flex-1 bg-primary/15" />
+                <span className="text-xs font-semibold uppercase tracking-[0.12em] text-primary/55">Or</span>
+                <div className="h-px flex-1 bg-primary/15" />
+              </div>
 
               <button
                 type="button"
+                onClick={() => handleSocialLogin('Google')}
                 disabled={isAuthLoading}
-                onClick={() => {
-                  setAuthMode(authMode === 'signin' ? 'signup' : 'signin');
-                  setAuthErrors({});
-                  setAuthMessage('');
-                }}
-                className="interactive-btn mt-4 text-sm font-semibold text-primary underline decoration-accent decoration-2 underline-offset-4"
+                className="interactive-btn mt-4 flex w-full items-center justify-center gap-3 rounded-card border border-primary/15 bg-white px-4 py-3 text-sm font-semibold text-primary shadow-sm transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-65"
               >
-                {authMode === 'signin' ? 'No account? Sign up here' : 'Already have an account? Sign in'}
+                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-base font-bold text-primary ring-1 ring-primary/15">
+                  G
+                </span>
+                Continue with Google
               </button>
 
-              {authMessage ? <p className="mt-4 text-sm font-medium text-primary">{authMessage}</p> : null}
-            </article>
-
-            <article className="rounded-card bg-primary p-8 text-white shadow-lg ring-1 ring-primary/20">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75">Quick Login</p>
-              <h3 className="mt-1 text-2xl font-black">Continue With</h3>
-              <p className="mt-1 text-sm text-white/80">
-                Google uses OAuth redirect URL. Microsoft and Facebook open their login pages in a new tab.
-              </p>
-
-              <div className="mt-5 space-y-3">
-                <button
-                  type="button"
-                  onClick={() => handleSocialLogin('Google')}
-                  className="interactive-btn w-full rounded-card border border-white/20 bg-white/10 px-4 py-3 text-left text-sm font-semibold text-white backdrop-blur-sm hover:bg-white/20"
+              {authMessage ? (
+                <p
+                  className={`mt-4 text-sm font-medium ${
+                    authMessage.includes('Account created') || authMessage.includes('Password reset link sent')
+                      ? 'text-primary'
+                      : 'text-red-600'
+                  }`}
                 >
-                  Login with Google
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSocialLogin('Microsoft')}
-                  className="interactive-btn w-full rounded-card border border-white/20 bg-white/10 px-4 py-3 text-left text-sm font-semibold text-white backdrop-blur-sm hover:bg-white/20"
-                >
-                  Login with Microsoft
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSocialLogin('Facebook')}
-                  className="interactive-btn w-full rounded-card border border-white/20 bg-white/10 px-4 py-3 text-left text-sm font-semibold text-white backdrop-blur-sm hover:bg-white/20"
-                >
-                  Login with Facebook
-                </button>
-              </div>
+                  {authMessage}
+                </p>
+              ) : null}
             </article>
           </div>
         </div>
@@ -1702,9 +1926,15 @@ function App() {
   const renderMainContent = () => {
     switch (currentScreen) {
       case 'home':
-        return <HeroView onExploreTrip={handleOpenTrip} />;
+        return <HeroView onExploreTrip={handleOpenTrip} onHostTrip={handleHostTrip} />;
       case 'discovery':
         return <DiscoveryFeedView trips={matchedTrips} onViewTrip={handleOpenTrip} onJoinChat={handleJoinChat} />;
+      case 'aboutUs':
+        return <AboutUsView />;
+      case 'contactUs':
+        return <ContactUsView />;
+      case 'createTrip':
+        return renderCreateTripScreen();
       case 'onboarding':
         return userSession ? (
           <OnboardingQuizView
@@ -1822,6 +2052,20 @@ function App() {
             </button>
             <button
               type="button"
+              onClick={() => handleNavigation('aboutUs')}
+              className={getTopNavClass('aboutUs')}
+            >
+              About Us
+            </button>
+            <button
+              type="button"
+              onClick={() => handleNavigation('contactUs')}
+              className={getTopNavClass('contactUs')}
+            >
+              Contact Us
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 if (userSession) {
                   setActiveView('dashboard');
@@ -1870,12 +2114,12 @@ function App() {
 
       {systemNotice ? (
         <div className="pointer-events-none fixed left-1/2 top-4 z-[140] w-[min(92vw,760px)] -translate-x-1/2 px-2">
-          <div className="pointer-events-auto flex items-start justify-between gap-3 rounded-card border border-primary/20 bg-white/98 px-4 py-3 text-sm text-primary shadow-2xl ring-1 ring-primary/10 backdrop-blur-sm">
+          <div className="pointer-events-auto flex items-start justify-between gap-3 rounded-card border border-slate-700/80 bg-slate-900/95 px-4 py-3 text-sm text-white shadow-2xl ring-1 ring-black/40 backdrop-blur-sm">
             <p>{systemNotice}</p>
             <button
               type="button"
               onClick={() => setSystemNotice('')}
-              className="interactive-btn rounded-card border border-primary/20 px-2 py-1 text-xs font-semibold text-primary"
+              className="interactive-btn rounded-card border border-white/35 bg-white/15 px-2 py-1 text-xs font-semibold text-white hover:bg-white/25"
             >
               Dismiss
             </button>
@@ -2016,6 +2260,13 @@ function App() {
                 className="interactive-btn w-full rounded-card bg-background/80 px-4 py-3 text-left text-sm font-semibold text-primary ring-1 ring-primary/10"
               >
                 Dashboard
+              </button>
+              <button
+                type="button"
+                onClick={() => handleNavigation('createTrip')}
+                className="interactive-btn w-full rounded-card bg-background/80 px-4 py-3 text-left text-sm font-semibold text-primary ring-1 ring-primary/10"
+              >
+                Create Trip
               </button>
             </nav>
 

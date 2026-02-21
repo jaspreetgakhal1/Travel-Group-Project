@@ -1,4 +1,7 @@
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
+const DUMMY_USER_ID = 'test@gmail.com';
+const DUMMY_PASSWORD = '123456';
+const DUMMY_AUTH_TOKEN = 'splitngo_dummy_auth_token';
 
 type AuthRequest = {
   userId: string;
@@ -34,6 +37,16 @@ type VerifyDocumentResponse = {
 };
 
 const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
+
+const isDummyCredentials = (userId: string, password: string): boolean =>
+  userId.trim().toLowerCase() === DUMMY_USER_ID && password === DUMMY_PASSWORD;
+
+const createDummyUser = (isVerified = false): AuthenticatedUser => ({
+  id: 'dummy-user',
+  userId: DUMMY_USER_ID,
+  provider: 'Email',
+  isVerified,
+});
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
   try {
@@ -79,10 +92,27 @@ const request = async <T>(path: string, body: object, authToken?: string): Promi
 export const registerWithCredentials = async (requestBody: AuthRequest): Promise<RegisterResponse> =>
   request<RegisterResponse>('/api/auth/register', requestBody);
 
-export const loginWithCredentials = async (requestBody: AuthRequest): Promise<LoginResponse> =>
-  request<LoginResponse>('/api/auth/login', requestBody);
+export const loginWithCredentials = async (requestBody: AuthRequest): Promise<LoginResponse> => {
+  if (isDummyCredentials(requestBody.userId, requestBody.password)) {
+    return {
+      token: DUMMY_AUTH_TOKEN,
+      user: createDummyUser(false),
+    };
+  }
+
+  return request<LoginResponse>('/api/auth/login', requestBody);
+};
 
 export const uploadVerificationDocument = async (
   requestBody: VerifyDocumentRequest,
   authToken: string,
-): Promise<VerifyDocumentResponse> => request<VerifyDocumentResponse>('/api/auth/verify-document', requestBody, authToken);
+): Promise<VerifyDocumentResponse> => {
+  if (authToken === DUMMY_AUTH_TOKEN) {
+    return {
+      message: 'Document uploaded and profile verified.',
+      user: createDummyUser(true),
+    };
+  }
+
+  return request<VerifyDocumentResponse>('/api/auth/verify-document', requestBody, authToken);
+};

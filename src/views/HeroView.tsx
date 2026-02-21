@@ -82,9 +82,10 @@ const communityPulse: CommunityPulse[] = [
 
 type HeroViewProps = {
   onExploreTrip: (tripId: string) => void;
+  onHostTrip: () => void;
 };
 
-const HeroView: React.FC<HeroViewProps> = ({ onExploreTrip }) => {
+const HeroView: React.FC<HeroViewProps> = ({ onExploreTrip, onHostTrip }) => {
   return (
     <section className="relative isolate overflow-hidden bg-transparent px-6 pb-16 pt-10 text-primary sm:pb-20">
       <div className="pointer-events-none absolute -left-20 top-0 h-64 w-64 rounded-full bg-accent/20 blur-3xl" />
@@ -152,6 +153,34 @@ const HeroView: React.FC<HeroViewProps> = ({ onExploreTrip }) => {
             Search Trips
           </button>
         </form>
+      </div>
+
+      <div className="mx-auto mt-8 w-full max-w-7xl">
+        <article
+          className="relative overflow-hidden rounded-card bg-cover bg-center shadow-2xl ring-1 ring-white/25"
+          style={{
+            backgroundImage:
+              "url('https://images.unsplash.com/photo-1526772662000-3f88f10405ff?auto=format&fit=crop&w=1600&q=80')",
+          }}
+        >
+          <div className="grid min-h-[300px] items-end bg-gradient-to-r from-primary/90 via-primary/70 to-primary/45 p-8 sm:p-10">
+            <div className="max-w-3xl">
+              <p className="inline-block rounded-full bg-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white/85">
+                Host Corner
+              </p>
+              <h3 className="mt-4 text-3xl font-black leading-tight text-white sm:text-4xl">
+                Want to travel but can&apos;t find the right crowd? Host a trip.
+              </h3>
+              <button
+                type="button"
+                onClick={onHostTrip}
+                className="interactive-btn mt-5 rounded-card bg-white px-5 py-2.5 text-sm font-semibold text-primary transition hover:bg-white/90"
+              >
+                Host
+              </button>
+            </div>
+          </div>
+        </article>
       </div>
 
       <div className="mx-auto mt-10 w-full max-w-7xl">
