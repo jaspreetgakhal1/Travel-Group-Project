@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for server\src\routes\authRoutes.js
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -425,3 +426,4 @@ router.post('/verify-document', async (request, response) => {
 });
 
 export default router;
+

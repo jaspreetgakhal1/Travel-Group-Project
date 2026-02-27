@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\views\ChatInterfaceView.tsx
+import React from 'react';
 import type { ChatMessage } from '../models/dashboardModel';
 
 type ChatInterfaceViewProps = {
@@ -60,3 +61,4 @@ const ChatInterfaceView: React.FC<ChatInterfaceViewProps> = ({ messages }) => {
 };
 
 export default ChatInterfaceView;
+

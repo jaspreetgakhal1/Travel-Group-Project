@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\components\travel-dna\DNAOverlayChart.tsx
 import type { TravelDNA } from '../../models/dnaModel';
 import TravelDNARadarChart from './TravelDNARadarChart';
 
@@ -22,3 +23,4 @@ function DNAOverlayChart({ userDNA, organizerDNA, className = '' }: DNAOverlayCh
 }
 
 export default DNAOverlayChart;
+

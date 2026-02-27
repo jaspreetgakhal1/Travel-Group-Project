@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\GroupChatView.tsx
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ChatMessage } from '../models/dashboardModel';
 import type { Trip } from '../models/tripModel';
@@ -134,3 +135,4 @@ const GroupChatView: React.FC<GroupChatViewProps> = ({
 };
 
 export default GroupChatView;
+

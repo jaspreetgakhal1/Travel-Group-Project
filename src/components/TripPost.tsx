@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\components\TripPost.tsx
 import { useEffect, useMemo, useState } from 'react';
 import type { FeedPost } from '../types/feed';
 import type { TripDNAMatch } from '../services/matchApi';
@@ -369,3 +370,4 @@ function TripPost({
 }
 
 export default TripPost;
+

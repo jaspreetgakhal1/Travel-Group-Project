@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\DashboardView.tsx
 import { useEffect, useMemo, useState } from 'react';
 
 type DashboardViewProps = {
@@ -132,3 +133,4 @@ function DashboardView({
 }
 
 export default DashboardView;
+

@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\controllers\AppController.tsx
+import React from 'react';
 import DiscoveryFeedController from './DiscoveryFeedController';
 import UserDashboardController from './UserDashboardController';
 import HeroView from '../views/HeroView';
@@ -21,3 +22,4 @@ const AppController: React.FC = () => {
 };
 
 export default AppController;
+

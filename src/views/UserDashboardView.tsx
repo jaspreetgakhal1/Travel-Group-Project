@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\views\UserDashboardView.tsx
+import React from 'react';
 import type { NavIcon, NavItem } from '../models/dashboardModel';
 
 type UserDashboardViewProps = {
@@ -88,3 +89,4 @@ const UserDashboardView: React.FC<UserDashboardViewProps> = ({ navItems, chatPan
 };
 
 export default UserDashboardView;
+

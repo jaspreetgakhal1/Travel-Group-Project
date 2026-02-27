@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\views\HeroView.tsx
+import React from 'react';
 
 type HomeStat = {
   label: string;
@@ -262,3 +263,4 @@ const HeroView: React.FC<HeroViewProps> = ({ onExploreTrip, onHostTrip }) => {
 };
 
 export default HeroView;
+

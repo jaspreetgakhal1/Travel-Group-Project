@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\services\authApi.ts
 import { defaultUserDNA, normalizeTravelDNA, type UserDNA } from '../models/dnaModel';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
@@ -267,3 +268,4 @@ export const updateTravelDNA = async (travelDNA: UserDNA, authToken: string): Pr
     travelDNA: normalizeTravelDNA(response.travelDNA),
   };
 };
+

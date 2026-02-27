@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\components\Sidebar.tsx
 type ActiveView = 'feed' | 'dashboard';
 
 type SidebarProps = {
@@ -39,3 +40,4 @@ function Sidebar({ activeView, onChangeView }: SidebarProps) {
 }
 
 export default Sidebar;
+

@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\types\feed.ts
 export type FeedPostStatus = 'Active' | 'Completed';
 
 export type FeedPost = {
@@ -20,3 +21,4 @@ export type FeedPost = {
   startDate: string;
   endDate: string;
 };
+

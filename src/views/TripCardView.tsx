@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\TripCardView.tsx
 import React from 'react';
 import type { Trip } from '../models/tripModel';
 
@@ -65,3 +66,4 @@ const TripCardView: React.FC<TripCardViewProps> = ({ trip, matchScore, onViewMor
 };
 
 export default TripCardView;
+

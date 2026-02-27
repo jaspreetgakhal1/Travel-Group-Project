@@ -1,4 +1,5 @@
-﻿export type ChatMessage = {
+// Added by Codex: project documentation comment for src\models\dashboardModel.ts
+export type ChatMessage = {
   id: string;
   sender: string;
   content: string;
@@ -55,3 +56,4 @@ export const initialCosts: Record<ExpenseCategory, number> = {
   Food: 320,
   Tickets: 180,
 };
+

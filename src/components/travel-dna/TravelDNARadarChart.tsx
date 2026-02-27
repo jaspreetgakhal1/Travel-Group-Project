@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\components\travel-dna\TravelDNARadarChart.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { TRAVEL_DNA_DIMENSIONS, defaultUserDNA, type TravelDNA } from '../../models/dnaModel';
 
@@ -189,3 +190,4 @@ function TravelDNARadarChart({
 }
 
 export default TravelDNARadarChart;
+

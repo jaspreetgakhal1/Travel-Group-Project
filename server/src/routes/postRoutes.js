@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for server\src\routes\postRoutes.js
 import express from 'express';
 import { Post } from '../models/Post.js';
 import { User } from '../models/User.js';
@@ -487,3 +488,4 @@ router.delete('/:postId', async (request, response) => {
 });
 
 export default router;
+

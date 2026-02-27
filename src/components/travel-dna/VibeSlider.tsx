@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\components\travel-dna\VibeSlider.tsx
 import type { TravelDNAField } from '../../models/dnaModel';
 
 type VibeSliderProps = {
@@ -40,3 +41,4 @@ function VibeSlider({ id, label, lowLabel, highLabel, value, disabled = false, o
 }
 
 export default VibeSlider;
+

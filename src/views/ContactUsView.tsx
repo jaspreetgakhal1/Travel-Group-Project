@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\ContactUsView.tsx
 import React, { useEffect, useRef, useState } from 'react';
 
 type ChatRole = 'user' | 'ai';
@@ -213,3 +214,4 @@ const ContactUsView: React.FC = () => {
 };
 
 export default ContactUsView;
+

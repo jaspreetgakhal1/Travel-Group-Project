@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\DiscoveryFeedView.tsx
 import React from 'react';
 import type { Trip } from '../models/tripModel';
 import TripCardView from './TripCardView';
@@ -39,3 +40,4 @@ const DiscoveryFeedView: React.FC<DiscoveryFeedViewProps> = ({ trips, onViewTrip
 };
 
 export default DiscoveryFeedView;
+

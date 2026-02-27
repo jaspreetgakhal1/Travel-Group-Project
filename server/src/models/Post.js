@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for server\src\models\Post.js
 import mongoose from 'mongoose';
 
 const postSchema = new mongoose.Schema(
@@ -98,3 +99,4 @@ const postSchema = new mongoose.Schema(
 );
 
 export const Post = mongoose.model('Post', postSchema);
+

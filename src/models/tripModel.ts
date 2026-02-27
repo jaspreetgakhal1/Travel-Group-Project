@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\models\tripModel.ts
 import type { TripDNA } from './dnaModel';
 
 export interface Trip {
@@ -169,3 +170,4 @@ export const tripCatalog: Trip[] = [
     highlights: ['Island boat day', 'Salsa night', 'Historic city bike ride'],
   },
 ];
+

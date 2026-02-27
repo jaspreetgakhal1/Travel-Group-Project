@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\utils\getMatchScore.ts
 import {
   TRAVEL_DNA_DIMENSIONS,
   clampTravelDNAValue,
@@ -24,3 +25,4 @@ export const getMatchScore = (userDNA: UserDNA, tripDNA: TripDNA): number => {
   const percentage = (1 - distance / MAX_EUCLIDEAN_DISTANCE) * 100;
   return Math.max(0, Math.min(100, Math.round(percentage)));
 };
+

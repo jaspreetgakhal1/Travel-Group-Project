@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\components\TripCard.tsx
+import React from 'react';
 import type { Trip } from '../types/trip';
 
 type TripCardProps = {
@@ -49,3 +50,4 @@ const TripCard: React.FC<TripCardProps> = ({ trip }) => {
 };
 
 export default TripCard;
+
