@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 type InterestedInOption = 'Male' | 'Female' | 'Unspecified';
 
@@ -13,7 +13,11 @@ export type CreateTripPayload = {
 
 type CreateTripViewProps = {
   hostName: string;
-  onTripCreated: (payload: CreateTripPayload) => void;
+  mode?: 'create' | 'edit';
+  initialPayload?: CreateTripPayload;
+  isSubmitting?: boolean;
+  onTripCreated: (payload: CreateTripPayload) => void | Promise<void>;
+  onCancel?: () => void;
 };
 
 const MAX_POSTER_IMAGES = 4;
@@ -41,7 +45,17 @@ const readFileAsDataUrl = (file: File): Promise<string> =>
     reader.readAsDataURL(file);
   });
 
-const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated }) => {
+const normalizeExpectation = (value: string): string => value.trim().toLowerCase();
+
+const CreateTripView: React.FC<CreateTripViewProps> = ({
+  hostName,
+  mode = 'create',
+  initialPayload,
+  isSubmitting = false,
+  onTripCreated,
+  onCancel,
+}) => {
+  const isEditMode = mode === 'edit';
   const [posterImageDataUrls, setPosterImageDataUrls] = useState<string[]>([]);
   const [peopleRequired, setPeopleRequired] = useState(4);
   const [budget, setBudget] = useState('');
@@ -51,22 +65,52 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
   const [interestedIn, setInterestedIn] = useState<InterestedInOption>('Unspecified');
   const [onlyVerifiedUsers, setOnlyVerifiedUsers] = useState(false);
   const [formError, setFormError] = useState('');
+  const [isLocalSubmitting, setIsLocalSubmitting] = useState(false);
+  const isBusy = isSubmitting || isLocalSubmitting;
 
   const expectationOptions = useMemo(
     () => [...DEFAULT_EXPECTATION_OPTIONS, ...customExpectations],
     [customExpectations],
   );
 
-  const resetForm = () => {
-    setPosterImageDataUrls([]);
-    setPeopleRequired(4);
-    setBudget('');
-    setSelectedExpectations([]);
-    setCustomExpectations([]);
+  const applyPayloadToForm = (payload?: CreateTripPayload) => {
+    const sourcePayload = payload ?? {
+      posterImageUrls: [],
+      peopleRequired: 4,
+      budget: 0,
+      expectations: [],
+      interestedIn: 'Unspecified' as InterestedInOption,
+      onlyVerifiedUsers: false,
+    };
+    const customFromPayload = sourcePayload.expectations.filter(
+      (expectation) =>
+        !DEFAULT_EXPECTATION_OPTIONS.some(
+          (defaultExpectation) => normalizeExpectation(defaultExpectation) === normalizeExpectation(expectation),
+        ),
+    );
+
+    setPosterImageDataUrls(sourcePayload.posterImageUrls);
+    setPeopleRequired(sourcePayload.peopleRequired);
+    setBudget(sourcePayload.budget > 0 ? sourcePayload.budget.toString() : '');
+    setSelectedExpectations(sourcePayload.expectations);
+    setCustomExpectations(customFromPayload);
     setExpectationDraft('');
-    setInterestedIn('Unspecified');
-    setOnlyVerifiedUsers(false);
+    setInterestedIn(sourcePayload.interestedIn);
+    setOnlyVerifiedUsers(sourcePayload.onlyVerifiedUsers);
     setFormError('');
+  };
+
+  useEffect(() => {
+    applyPayloadToForm(initialPayload);
+  }, [initialPayload]);
+
+  const resetForm = () => {
+    if (isEditMode) {
+      applyPayloadToForm(initialPayload);
+      return;
+    }
+
+    applyPayloadToForm(undefined);
   };
 
   const handlePosterImageChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -154,7 +198,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
     );
   };
 
-  const handleCreateTripSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleCreateTripSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     if (posterImageDataUrls.length === 0) {
@@ -173,24 +217,37 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
       return;
     }
 
-    onTripCreated({
-      posterImageUrls: posterImageDataUrls,
-      peopleRequired,
-      budget: parsedBudget,
-      expectations: selectedExpectations,
-      interestedIn,
-      onlyVerifiedUsers,
-    });
-    resetForm();
+    setIsLocalSubmitting(true);
+    try {
+      await onTripCreated({
+        posterImageUrls: posterImageDataUrls,
+        peopleRequired,
+        budget: parsedBudget,
+        expectations: selectedExpectations,
+        interestedIn,
+        onlyVerifiedUsers,
+      });
+
+      if (!isEditMode) {
+        resetForm();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save trip right now.';
+      setFormError(message);
+    } finally {
+      setIsLocalSubmitting(false);
+    }
   };
 
   return (
     <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
       <article className="rounded-card bg-white/95 p-8 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
         <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Host A Trip</p>
-        <h2 className="mt-1 text-3xl font-black text-primary">Create Trip</h2>
+        <h2 className="mt-1 text-3xl font-black text-primary">{isEditMode ? 'Edit Trip' : 'Create Trip'}</h2>
         <p className="mt-2 text-sm text-primary/80">
-          Create your group trip post, set expectations, and define who can join. Host: {hostName}
+          {isEditMode
+            ? `Update your group trip post details and expectations. Host: ${hostName}`
+            : `Create your group trip post, set expectations, and define who can join. Host: ${hostName}`}
         </p>
 
         <form className="mt-6 space-y-5" onSubmit={handleCreateTripSubmit} noValidate>
@@ -231,6 +288,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
               <div className="mt-3 inline-flex items-center gap-3 rounded-card border border-primary/15 bg-white px-3 py-2">
                 <button
                   type="button"
+                  disabled={isBusy}
                   onClick={() => handlePeopleCounterStep('decrement')}
                   className="interactive-btn h-8 w-8 rounded-card border border-primary/20 text-sm font-bold text-primary"
                 >
@@ -239,6 +297,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
                 <span className="min-w-8 text-center text-sm font-semibold text-primary">{peopleRequired}</span>
                 <button
                   type="button"
+                  disabled={isBusy}
                   onClick={() => handlePeopleCounterStep('increment')}
                   className="interactive-btn h-8 w-8 rounded-card border border-primary/20 text-sm font-bold text-primary"
                 >
@@ -254,6 +313,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
                 min={0}
                 step="0.01"
                 value={budget}
+                disabled={isBusy}
                 onChange={(event) => setBudget(event.target.value)}
                 className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
                 placeholder="Enter total budget"
@@ -267,12 +327,14 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
               <input
                 type="text"
                 value={expectationDraft}
+                disabled={isBusy}
                 onChange={(event) => setExpectationDraft(event.target.value)}
                 className="interactive-input min-w-[220px] flex-1 rounded-card border border-primary/15 bg-white px-4 py-2.5 text-sm text-primary outline-none"
                 placeholder="Add custom expectation"
               />
               <button
                 type="button"
+                disabled={isBusy}
                 onClick={handleAddCustomExpectation}
                 className="interactive-btn rounded-card bg-primary px-4 py-2.5 text-sm font-semibold text-white"
               >
@@ -290,6 +352,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
                       <input
                         type="checkbox"
                         checked={selectedExpectations.includes(expectation)}
+                        disabled={isBusy}
                         onChange={() => handleExpectationToggle(expectation)}
                         className="h-4 w-4 accent-accent"
                       />
@@ -298,6 +361,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
                     {isCustomExpectation ? (
                       <button
                         type="button"
+                        disabled={isBusy}
                         onClick={() => handleRemoveCustomExpectation(expectation)}
                         className="interactive-btn rounded-card border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-700"
                       >
@@ -320,6 +384,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
                     name="interestedIn"
                     value={option}
                     checked={interestedIn === option}
+                    disabled={isBusy}
                     onChange={() => setInterestedIn(option)}
                     className="h-4 w-4 accent-accent"
                   />
@@ -333,6 +398,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
             <input
               type="checkbox"
               checked={onlyVerifiedUsers}
+              disabled={isBusy}
               onChange={(event) => setOnlyVerifiedUsers(event.target.checked)}
               className="h-4 w-4 accent-accent"
             />
@@ -344,16 +410,18 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({ hostName, onTripCreated
           <div className="flex flex-wrap gap-3">
             <button
               type="submit"
+              disabled={isBusy}
               className="interactive-btn rounded-card bg-accent px-5 py-2.5 text-sm font-semibold text-white"
             >
-              Create Trip
+              {isBusy ? (isEditMode ? 'Saving...' : 'Creating...') : isEditMode ? 'Save Changes' : 'Create Trip'}
             </button>
             <button
               type="button"
-              onClick={resetForm}
+              disabled={isBusy}
+              onClick={isEditMode ? (onCancel ?? resetForm) : resetForm}
               className="interactive-btn rounded-card border border-primary/20 bg-background/80 px-5 py-2.5 text-sm font-semibold text-primary"
             >
-              Reset
+              {isEditMode ? 'Cancel' : 'Reset'}
             </button>
           </div>
         </form>

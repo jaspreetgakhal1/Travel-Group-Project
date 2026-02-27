@@ -3,6 +3,8 @@ import cors from 'cors';
 import { env } from './config/env.js';
 import { connectDatabase } from './config/database.js';
 import authRoutes from './routes/authRoutes.js';
+import postRoutes from './routes/postRoutes.js';
+import matchRoutes from './routes/matchRoutes.js';
 
 const app = express();
 
@@ -29,6 +31,8 @@ app.get('/api/health', (_request, response) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/posts', postRoutes);
+app.use('/api/match', matchRoutes);
 
 app.use((error, _request, response, _next) => {
   if (error.message === 'Origin not allowed by CORS') {

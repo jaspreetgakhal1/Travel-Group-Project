@@ -1,15 +1,40 @@
 import TripPost from './TripPost';
 import type { FeedPost } from '../types/feed';
+import type { TripDNAMatch } from '../services/matchApi';
 
 type MainFeedProps = {
   posts: FeedPost[];
   sentRequestPostIds: string[];
+  currentUserAuthorKey?: string;
+  isPostActionInProgress: boolean;
+  dnaMatchByPostId: Record<string, TripDNAMatch>;
+  dnaMatchLoadingPostIds: string[];
   onJoinRequest: (post: FeedPost) => void;
   onSharePost: (post: FeedPost) => void;
   onDismissPost: (postId: string) => void;
+  onEditPost: (post: FeedPost) => void;
+  onDeletePost: (post: FeedPost) => void;
+  onCompletePost: (post: FeedPost) => void;
 };
 
-function MainFeed({ posts, sentRequestPostIds, onJoinRequest, onSharePost, onDismissPost }: MainFeedProps) {
+const normalizeName = (value: string): string => value.trim().toLowerCase();
+
+function MainFeed({
+  posts,
+  sentRequestPostIds,
+  currentUserAuthorKey,
+  isPostActionInProgress,
+  dnaMatchByPostId,
+  dnaMatchLoadingPostIds,
+  onJoinRequest,
+  onSharePost,
+  onDismissPost,
+  onEditPost,
+  onDeletePost,
+  onCompletePost,
+}: MainFeedProps) {
+  const normalizedCurrentUserAuthorKey = currentUserAuthorKey ? normalizeName(currentUserAuthorKey) : null;
+
   if (posts.length === 0) {
     return (
       <section className="rounded-card border border-primary/10 bg-white/90 p-8 text-center shadow-sm">
@@ -29,16 +54,28 @@ function MainFeed({ posts, sentRequestPostIds, onJoinRequest, onSharePost, onDis
       </header>
 
       <div className="space-y-4">
-        {posts.map((post) => (
-          <TripPost
-            key={post.id}
-            post={post}
-            isRequestSent={sentRequestPostIds.includes(post.id)}
-            onJoinRequest={onJoinRequest}
-            onShare={onSharePost}
-            onDismiss={onDismissPost}
-          />
-        ))}
+        {posts.map((post) => {
+          const canManagePost =
+            normalizedCurrentUserAuthorKey !== null && normalizeName(post.authorKey) === normalizedCurrentUserAuthorKey;
+
+          return (
+            <TripPost
+              key={post.id}
+              post={post}
+              canManagePost={canManagePost}
+              isRequestSent={sentRequestPostIds.includes(post.id)}
+              isActionInProgress={isPostActionInProgress}
+              dnaMatch={dnaMatchByPostId[post.id]}
+              isDNAMatchLoading={dnaMatchLoadingPostIds.includes(post.id)}
+              onJoinRequest={onJoinRequest}
+              onShare={onSharePost}
+              onDismiss={onDismissPost}
+              onEditPost={onEditPost}
+              onDeletePost={onDeletePost}
+              onCompletePost={onCompletePost}
+            />
+          );
+        })}
       </div>
     </section>
   );

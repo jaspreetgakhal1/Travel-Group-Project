@@ -1,3 +1,5 @@
+import { defaultUserDNA, normalizeTravelDNA, type UserDNA } from '../models/dnaModel';
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 const DUMMY_USER_ID = 'test@gmail.com';
 const DUMMY_PASSWORD = '123456';
@@ -6,6 +8,16 @@ const DUMMY_AUTH_TOKEN = 'splitngo_dummy_auth_token';
 type AuthRequest = {
   userId: string;
   password: string;
+};
+
+export type UserProfile = {
+  firstName: string;
+  lastName: string;
+  countryCode: string;
+  mobileNumber: string;
+  email: string;
+  profileImageDataUrl: string | null;
+  travelDNA: UserDNA;
 };
 
 export type AuthenticatedUser = {
@@ -36,6 +48,26 @@ type VerifyDocumentResponse = {
   user: AuthenticatedUser;
 };
 
+export type ProfileResponse = {
+  message?: string;
+  profile: UserProfile;
+  user: AuthenticatedUser;
+};
+
+export type UpdateProfileRequest = {
+  firstName: string;
+  lastName: string;
+  countryCode: string;
+  mobileNumber: string;
+  email: string;
+  profileImageDataUrl: string | null;
+};
+
+export type TravelDNAResponse = {
+  message?: string;
+  travelDNA: UserDNA;
+};
+
 const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
 
 const isDummyCredentials = (userId: string, password: string): boolean =>
@@ -46,6 +78,16 @@ const createDummyUser = (isVerified = false): AuthenticatedUser => ({
   userId: DUMMY_USER_ID,
   provider: 'Email',
   isVerified,
+});
+
+const createDummyProfile = (): UserProfile => ({
+  firstName: 'Demo',
+  lastName: 'Traveler',
+  countryCode: '+1',
+  mobileNumber: '',
+  email: DUMMY_USER_ID,
+  profileImageDataUrl: null,
+  travelDNA: defaultUserDNA,
 });
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
@@ -61,7 +103,16 @@ const parseErrorMessage = async (response: Response): Promise<string> => {
   return 'Request failed.';
 };
 
-const request = async <T>(path: string, body: object, authToken?: string): Promise<T> => {
+type RequestMethod = 'GET' | 'POST' | 'PUT';
+
+type RequestOptions = {
+  method?: RequestMethod;
+  body?: object;
+  authToken?: string;
+};
+
+const request = async <T>(path: string, options: RequestOptions = {}): Promise<T> => {
+  const { method = 'GET', body, authToken } = options;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -73,9 +124,9 @@ const request = async <T>(path: string, body: object, authToken?: string): Promi
   let response: Response;
   try {
     response = await fetch(buildUrl(path), {
-      method: 'POST',
+      method,
       headers,
-      body: JSON.stringify(body),
+      body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
     throw new Error('Unable to connect to the auth API. Check that the server is running.');
@@ -89,8 +140,21 @@ const request = async <T>(path: string, body: object, authToken?: string): Promi
   return (await response.json()) as T;
 };
 
+const normalizeProfile = (profile: UserProfile): UserProfile => ({
+  ...profile,
+  travelDNA: normalizeTravelDNA(profile.travelDNA),
+});
+
+const normalizeProfileResponse = (response: ProfileResponse): ProfileResponse => ({
+  ...response,
+  profile: normalizeProfile(response.profile),
+});
+
 export const registerWithCredentials = async (requestBody: AuthRequest): Promise<RegisterResponse> =>
-  request<RegisterResponse>('/api/auth/register', requestBody);
+  request<RegisterResponse>('/api/auth/register', {
+    method: 'POST',
+    body: requestBody,
+  });
 
 export const loginWithCredentials = async (requestBody: AuthRequest): Promise<LoginResponse> => {
   if (isDummyCredentials(requestBody.userId, requestBody.password)) {
@@ -100,7 +164,10 @@ export const loginWithCredentials = async (requestBody: AuthRequest): Promise<Lo
     };
   }
 
-  return request<LoginResponse>('/api/auth/login', requestBody);
+  return request<LoginResponse>('/api/auth/login', {
+    method: 'POST',
+    body: requestBody,
+  });
 };
 
 export const uploadVerificationDocument = async (
@@ -114,5 +181,89 @@ export const uploadVerificationDocument = async (
     };
   }
 
-  return request<VerifyDocumentResponse>('/api/auth/verify-document', requestBody, authToken);
+  return request<VerifyDocumentResponse>('/api/auth/verify-document', {
+    method: 'POST',
+    body: requestBody,
+    authToken,
+  });
+};
+
+export const fetchUserProfile = async (authToken: string): Promise<ProfileResponse> => {
+  if (authToken === DUMMY_AUTH_TOKEN) {
+    return {
+      profile: normalizeProfile(createDummyProfile()),
+      user: createDummyUser(false),
+    };
+  }
+
+  const profileResponse = await request<ProfileResponse>('/api/auth/profile', {
+    method: 'GET',
+    authToken,
+  });
+
+  return normalizeProfileResponse(profileResponse);
+};
+
+export const updateUserProfile = async (
+  requestBody: UpdateProfileRequest,
+  authToken: string,
+): Promise<ProfileResponse> => {
+  if (authToken === DUMMY_AUTH_TOKEN) {
+    return {
+      message: 'Profile saved successfully.',
+      profile: {
+        ...requestBody,
+        travelDNA: defaultUserDNA,
+      },
+      user: createDummyUser(false),
+    };
+  }
+
+  const profileResponse = await request<ProfileResponse>('/api/auth/profile', {
+    method: 'PUT',
+    body: requestBody,
+    authToken,
+  });
+
+  return normalizeProfileResponse(profileResponse);
+};
+
+export const fetchTravelDNA = async (authToken: string): Promise<TravelDNAResponse> => {
+  if (authToken === DUMMY_AUTH_TOKEN) {
+    return {
+      travelDNA: defaultUserDNA,
+    };
+  }
+
+  const response = await request<TravelDNAResponse>('/api/auth/travel-dna', {
+    method: 'GET',
+    authToken,
+  });
+
+  return {
+    ...response,
+    travelDNA: normalizeTravelDNA(response.travelDNA),
+  };
+};
+
+export const updateTravelDNA = async (travelDNA: UserDNA, authToken: string): Promise<TravelDNAResponse> => {
+  if (authToken === DUMMY_AUTH_TOKEN) {
+    return {
+      message: 'Travel DNA saved successfully.',
+      travelDNA: normalizeTravelDNA(travelDNA),
+    };
+  }
+
+  const response = await request<TravelDNAResponse>('/api/auth/travel-dna', {
+    method: 'PUT',
+    body: {
+      travelDNA,
+    },
+    authToken,
+  });
+
+  return {
+    ...response,
+    travelDNA: normalizeTravelDNA(response.travelDNA),
+  };
 };
