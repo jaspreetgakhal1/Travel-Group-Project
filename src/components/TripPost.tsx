@@ -1,12 +1,21 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { FeedPost } from '../types/feed';
+import type { TripDNAMatch } from '../services/matchApi';
+import DNAOverlayChart from './travel-dna/DNAOverlayChart';
 
 type TripPostProps = {
   post: FeedPost;
+  canManagePost: boolean;
   isRequestSent: boolean;
+  isActionInProgress: boolean;
+  dnaMatch?: TripDNAMatch;
+  isDNAMatchLoading: boolean;
   onJoinRequest: (post: FeedPost) => void;
   onShare: (post: FeedPost) => void;
   onDismiss: (postId: string) => void;
+  onEditPost: (post: FeedPost) => void;
+  onDeletePost: (post: FeedPost) => void;
+  onCompletePost: (post: FeedPost) => void;
 };
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -15,8 +24,27 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
 });
 
-function TripPost({ post, isRequestSent, onJoinRequest, onShare, onDismiss }: TripPostProps) {
+function TripPost({
+  post,
+  canManagePost,
+  isRequestSent,
+  isActionInProgress,
+  dnaMatch,
+  isDNAMatchLoading,
+  onJoinRequest,
+  onShare,
+  onDismiss,
+  onEditPost,
+  onDeletePost,
+  onCompletePost,
+}: TripPostProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isOptionsOpen, setIsOptionsOpen] = useState(false);
+  const [animatedMatchScore, setAnimatedMatchScore] = useState(0);
+
+  const matchPercentage = dnaMatch?.matchPercentage ?? null;
+  const isPerfectVibe = typeof matchPercentage === 'number' && matchPercentage > 85;
+  const isVibeWarning = typeof matchPercentage === 'number' && matchPercentage < 50;
 
   const formattedDates = useMemo(
     () => ({
@@ -29,6 +57,36 @@ function TripPost({ post, isRequestSent, onJoinRequest, onShare, onDismiss }: Tr
   const handleCardToggle = () => {
     setIsExpanded((previous) => !previous);
   };
+
+  useEffect(() => {
+    if (!isExpanded || typeof matchPercentage !== 'number') {
+      return;
+    }
+
+    let frameId = 0;
+    let start = 0;
+    const durationMs = 640;
+
+    const animate = (timestamp: number) => {
+      if (!start) {
+        start = timestamp;
+      }
+
+      const elapsed = timestamp - start;
+      const progress = Math.min(1, elapsed / durationMs);
+      const eased = 1 - (1 - progress) ** 3;
+      setAnimatedMatchScore(Math.round(matchPercentage * eased));
+
+      if (progress < 1) {
+        frameId = requestAnimationFrame(animate);
+      }
+    };
+
+    setAnimatedMatchScore(0);
+    frameId = requestAnimationFrame(animate);
+
+    return () => cancelAnimationFrame(frameId);
+  }, [isExpanded, matchPercentage, post.id]);
 
   return (
     <article
@@ -45,8 +103,17 @@ function TripPost({ post, isRequestSent, onJoinRequest, onShare, onDismiss }: Tr
       aria-expanded={isExpanded}
     >
       <header className="flex items-center gap-3">
-        <div className="flex h-11 w-11 items-center justify-center rounded-full bg-primary text-sm font-bold uppercase text-background">
-          {post.hostName.charAt(0)}
+        <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary text-sm font-bold uppercase text-background">
+          {post.hostProfileImageDataUrl ? (
+            <img
+              src={post.hostProfileImageDataUrl}
+              alt={`${post.hostName} profile`}
+              className="h-full w-full object-cover"
+              loading="lazy"
+            />
+          ) : (
+            (post.hostName.charAt(0) || '?').toUpperCase()
+          )}
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -63,9 +130,99 @@ function TripPost({ post, isRequestSent, onJoinRequest, onShare, onDismiss }: Tr
                 Pending
               </span>
             )}
+            {post.onlyVerifiedUsers ? (
+              <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                Verified users only
+              </span>
+            ) : null}
+            {isDNAMatchLoading ? (
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/80">
+                DNA syncing...
+              </span>
+            ) : typeof matchPercentage === 'number' ? (
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/90">
+                DNA {matchPercentage}%
+              </span>
+            ) : (
+              <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] font-semibold text-primary/60">
+                DNA unavailable
+              </span>
+            )}
+            {isPerfectVibe ? (
+              <span className="rounded-full bg-[#81B29A]/20 px-2 py-0.5 text-[11px] font-semibold text-[#2F6A5A]">
+                Perfect Vibe
+              </span>
+            ) : null}
+            {isVibeWarning ? (
+              <span className="rounded-full bg-[#E07A5F]/20 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
+                Vibe Warning
+              </span>
+            ) : null}
           </div>
           <p className="truncate text-xs text-primary/70">{post.title}</p>
         </div>
+        {canManagePost ? (
+          <div className="relative ml-auto">
+            <button
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={isOptionsOpen}
+              onClick={(event) => {
+                event.stopPropagation();
+                setIsOptionsOpen((previous) => !previous);
+              }}
+              className="interactive-btn rounded-card border border-primary/15 bg-white px-2.5 py-1.5 text-sm font-bold text-primary"
+            >
+              ...
+            </button>
+            {isOptionsOpen ? (
+              <div
+                role="menu"
+                className="absolute right-0 z-20 mt-2 w-40 rounded-card border border-primary/15 bg-white p-1.5 shadow-lg"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={isActionInProgress}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setIsOptionsOpen(false);
+                    onEditPost(post);
+                  }}
+                  className="interactive-btn w-full rounded-card px-3 py-2 text-left text-xs font-semibold text-primary hover:bg-background/80 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Edit Post
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={isActionInProgress}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setIsOptionsOpen(false);
+                    onDeletePost(post);
+                  }}
+                  className="interactive-btn w-full rounded-card px-3 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Delete Post
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={isActionInProgress || post.status === 'Completed'}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setIsOptionsOpen(false);
+                    onCompletePost(post);
+                  }}
+                  className="interactive-btn w-full rounded-card px-3 py-2 text-left text-xs font-semibold text-primary hover:bg-background/80 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {post.status === 'Completed' ? 'Already Completed' : 'Complete Post'}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       <div className="mt-4 overflow-hidden rounded-card border border-primary/10">
@@ -128,25 +285,64 @@ function TripPost({ post, isRequestSent, onJoinRequest, onShare, onDismiss }: Tr
               </div>
             </div>
           </section>
+
+          <section className="mt-3 rounded-card border border-primary/10 bg-white/90 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">DNA Compatibility</p>
+              <p className="text-base font-black text-primary">
+                {isDNAMatchLoading
+                  ? '...'
+                  : typeof matchPercentage === 'number'
+                    ? `${isExpanded ? animatedMatchScore : matchPercentage}%`
+                    : 'N/A'}
+              </p>
+            </div>
+
+            {isPerfectVibe ? (
+              <p className="mt-2 rounded-card bg-[#81B29A]/15 px-2 py-1 text-xs font-semibold text-[#2F6A5A]">
+                Perfect Vibe: high compatibility for shared planning and trip rhythm.
+              </p>
+            ) : null}
+
+            {isVibeWarning ? (
+              <p className="mt-2 rounded-card bg-[#E07A5F]/15 px-2 py-1 text-xs font-semibold text-[#8C4633]">
+                Vibe Warning: {dnaMatch?.conflictHint ?? 'Major travel-style differences detected.'}
+              </p>
+            ) : null}
+
+            {dnaMatch ? (
+              <DNAOverlayChart
+                userDNA={dnaMatch.viewerDNA}
+                organizerDNA={dnaMatch.organizerDNA}
+                className="mt-3"
+              />
+            ) : (
+              <p className="mt-3 text-xs text-primary/65">
+                Sign in and complete Travel DNA to unlock organizer compatibility visuals.
+              </p>
+            )}
+          </section>
         </div>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-primary/10 pt-4">
-        <button
-          type="button"
-          disabled={isRequestSent}
-          onClick={(event) => {
-            event.stopPropagation();
-            onJoinRequest(post);
-          }}
-          className={
-            isRequestSent
-              ? 'rounded-card border border-success/40 bg-success/25 px-3 py-2 text-xs font-semibold text-primary'
-              : 'interactive-btn rounded-card bg-primary px-3 py-2 text-xs font-semibold text-background'
-          }
-        >
-          {isRequestSent ? 'Request Sent' : 'Join Request'}
-        </button>
+        {!canManagePost ? (
+          <button
+            type="button"
+            disabled={isRequestSent}
+            onClick={(event) => {
+              event.stopPropagation();
+              onJoinRequest(post);
+            }}
+            className={
+              isRequestSent
+                ? 'rounded-card border border-success/40 bg-success/25 px-3 py-2 text-xs font-semibold text-primary'
+                : 'interactive-btn rounded-card bg-primary px-3 py-2 text-xs font-semibold text-background'
+            }
+          >
+            {isRequestSent ? 'Request Sent' : 'Join Request'}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={(event) => {

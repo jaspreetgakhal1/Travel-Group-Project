@@ -53,3 +53,26 @@ body {
 .interactive-btn:active {
   transform: scale(0.98);
 }
+
+.vibe-slider {
+  background: linear-gradient(90deg, #f2cc8f 0%, #81b29a 55%, #1b4332 100%);
+}
+
+.vibe-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #3d405b;
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 10px rgba(61, 64, 91, 0.35);
+}
+
+.vibe-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #3d405b;
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 10px rgba(61, 64, 91, 0.35);
+}

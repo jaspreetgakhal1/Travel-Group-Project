@@ -7,7 +7,7 @@ import {
   type ExpenseCategory,
   type NavIcon,
 } from './models/dashboardModel';
-import { defaultUserDNA, type UserDNA } from './models/dnaModel';
+import { TRAVEL_DNA_DIMENSIONS, defaultUserDNA, normalizeTravelDNA, type UserDNA } from './models/dnaModel';
 import { tripCatalog, type Trip } from './models/tripModel';
 import { getMatchScore } from './utils/getMatchScore';
 import {
@@ -32,7 +32,26 @@ import VerificationGateView from './views/VerificationGateView';
 import CreateTripView, { type CreateTripPayload } from './views/CreateTripView';
 import AboutUsView from './views/AboutUsView';
 import ContactUsView from './views/ContactUsView';
-import { loginWithCredentials, registerWithCredentials, uploadVerificationDocument } from './services/authApi';
+import {
+  fetchUserProfile,
+  loginWithCredentials,
+  registerWithCredentials,
+  updateTravelDNA,
+  updateUserProfile,
+  uploadVerificationDocument,
+  type UpdateProfileRequest,
+  type UserProfile,
+} from './services/authApi';
+import { fetchTripDNAMatch, type TripDNAMatch } from './services/matchApi';
+import {
+  createFeedPost,
+  deleteFeedPost,
+  fetchFeedPosts,
+  fetchPostStats,
+  updateFeedPost,
+  updateFeedPostStatus,
+  type PostStats,
+} from './services/postApi';
 
 const DEFAULT_INTRO_PERIOD_MS = 24 * 60 * 60 * 1000;
 const configuredIntroPeriod = Number(import.meta.env.VITE_INTRO_PERIOD_MS);
@@ -53,6 +72,7 @@ type ScreenName =
   | 'aboutUs'
   | 'contactUs'
   | 'createTrip'
+  | 'editPost'
   | 'dashboard'
   | 'expenses'
   | 'chat'
@@ -129,6 +149,8 @@ type PublicProfile = {
   isVerified: boolean;
 };
 
+type DNAMatchByPostId = Record<string, TripDNAMatch>;
+
 type TripRuntime = {
   status: TripLifecycleStatus;
   introEndsAt: number | null;
@@ -141,6 +163,7 @@ const feedFillTargets = [60, 72, 48, 81, 56, 68];
 const requiredPeopleTargets = [5, 4, 6, 5, 4, 7];
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const US_MOBILE_PATTERN = /^\(\d{3}\)-\d{3}-\d{4}$/;
+const MONGO_OBJECT_ID_PATTERN = /^[a-f\d]{24}$/i;
 const MAX_VERIFICATION_DOCUMENT_BYTES = 5 * 1024 * 1024;
 const countryCodeOptions: CountryCodeOption[] = [
   { value: '+1', label: 'US (+1)' },
@@ -149,6 +172,11 @@ const countryCodeOptions: CountryCodeOption[] = [
   { value: '+61', label: 'AU (+61)' },
   { value: '+971', label: 'UAE (+971)' },
 ];
+const EMPTY_POST_STATS: PostStats = {
+  activeCount: 0,
+  completedCount: 0,
+  totalCount: 0,
+};
 
 const formatMobileNumber = (rawValue: string): string => {
   const digits = rawValue.replace(/\D/g, '').slice(0, 10);
@@ -189,15 +217,15 @@ const fileToDataUrl = (file: File): Promise<string> =>
   });
 
 const getTravelerType = (trip: Trip): string => {
-  if (trip.tripDNA.pace === 'Active' && trip.tripDNA.socialEnergy >= 7) {
+  if (trip.tripDNA.riskAppetite >= 7 && trip.tripDNA.socialBattery >= 7) {
     return 'High-energy social explorers';
   }
 
-  if (trip.tripDNA.pace === 'Active') {
+  if (trip.tripDNA.planningStyle >= 7) {
     return 'Adventure-focused planners';
   }
 
-  if (trip.tripDNA.socialEnergy >= 7) {
+  if (trip.tripDNA.socialBattery >= 7) {
     return 'Outgoing city connectors';
   }
 
@@ -217,6 +245,67 @@ const getRouteLabel = (route: string): string => {
   return route;
 };
 
+const getSessionAuthorKey = (session: UserSession | null): string | null => {
+  if (!session) {
+    return null;
+  }
+
+  const normalizedEmail = session.email.trim().toLowerCase();
+  if (normalizedEmail) {
+    return normalizedEmail;
+  }
+
+  const normalizedName = session.name.trim().toLowerCase();
+  return normalizedName || null;
+};
+
+const isMongoObjectId = (value: string): boolean => MONGO_OBJECT_ID_PATTERN.test(value);
+
+const getLocalConflictHint = (viewerDNA: UserDNA, organizerDNA: UserDNA): string => {
+  const strongestGap = TRAVEL_DNA_DIMENSIONS.map(({ key }) => ({
+    key,
+    gap: Math.abs(viewerDNA[key] - organizerDNA[key]),
+  })).sort((left, right) => right.gap - left.gap)[0];
+
+  if (!strongestGap || strongestGap.gap < 4) {
+    return 'Minor differences only. Core travel vibe is mostly aligned.';
+  }
+
+  if (strongestGap.key === 'morningSync') {
+    const viewerIsEarlyBird = viewerDNA.morningSync >= organizerDNA.morningSync;
+    return viewerIsEarlyBird
+      ? 'Morning person vs. night owl scheduling mismatch.'
+      : 'Night owl vs. early riser scheduling mismatch.';
+  }
+
+  if (strongestGap.key === 'budgetFlexibility') {
+    return 'Budget style conflict: saver mindset vs. flexible spender.';
+  }
+
+  if (strongestGap.key === 'planningStyle') {
+    return 'Planning conflict: structured planner vs. spontaneous explorer.';
+  }
+
+  if (strongestGap.key === 'riskAppetite') {
+    return 'Risk mismatch: adventure-seeking vs. safety-first decisions.';
+  }
+
+  if (strongestGap.key === 'cleanliness') {
+    return 'Cleanliness expectations are far apart for shared spaces.';
+  }
+
+  return 'Social battery mismatch: one prefers quiet time while the other prefers constant group activity.';
+};
+
+const toCreateTripPayloadFromFeedPost = (post: FeedPost): CreateTripPayload => ({
+  posterImageUrls: post.imageUrl ? [post.imageUrl] : [],
+  peopleRequired: post.requiredPeople,
+  budget: post.cost,
+  expectations: post.expectations,
+  interestedIn: 'Unspecified',
+  onlyVerifiedUsers: post.onlyVerifiedUsers,
+});
+
 const createInitialFeedPosts = (): FeedPost[] => {
   const startAnchor = new Date();
   startAnchor.setHours(0, 0, 0, 0);
@@ -232,6 +321,9 @@ const createInitialFeedPosts = (): FeedPost[] => {
 
     return {
       id: trip.id,
+      authorKey: trip.hostName.trim().toLowerCase(),
+      status: 'Active',
+      onlyVerifiedUsers: false,
       title: trip.title,
       hostName: trip.hostName,
       isVerified: trip.isVerified,
@@ -275,6 +367,38 @@ const createProfileForm = (session: UserSession | null): ProfileForm => ({
   email: session?.email ?? '',
   profileImageDataUrl: session?.profileImageDataUrl ?? null,
 });
+
+const profileToForm = (profile: UserProfile): ProfileForm => ({
+  firstName: profile.firstName,
+  lastName: profile.lastName,
+  countryCode: profile.countryCode,
+  mobileNumber: profile.mobileNumber,
+  email: profile.email,
+  profileImageDataUrl: profile.profileImageDataUrl,
+});
+
+const mergeSessionWithProfile = (
+  session: UserSession,
+  profile: UserProfile,
+  isVerified: boolean,
+): UserSession => {
+  const nextFirstName = profile.firstName.trim();
+  const nextLastName = profile.lastName.trim();
+  const fallbackName = session.name || session.email || session.firstName || 'Traveler';
+
+  return {
+    ...session,
+    name: getDisplayName(nextFirstName, nextLastName, fallbackName),
+    firstName: nextFirstName,
+    lastName: nextLastName,
+    countryCode: profile.countryCode || session.countryCode,
+    mobileNumber: profile.mobileNumber,
+    email: profile.email,
+    profileImageDataUrl: profile.profileImageDataUrl,
+    dna: profile.travelDNA ? normalizeTravelDNA(profile.travelDNA) : session.dna,
+    isVerified,
+  };
+};
 
 const getStoredUserSession = (): UserSession | null => {
   if (typeof window === 'undefined') {
@@ -325,7 +449,7 @@ const getStoredUserSession = (): UserSession | null => {
       email,
       profileImageDataUrl,
       provider,
-      dna: parsed.dna ?? null,
+      dna: parsed.dna ? normalizeTravelDNA(parsed.dna) : null,
       isVerified: Boolean(parsed.isVerified),
       toursCompleted: typeof parsed.toursCompleted === 'number' ? parsed.toursCompleted : 0,
       ratingAverage: typeof parsed.ratingAverage === 'number' ? parsed.ratingAverage : 0,
@@ -439,15 +563,21 @@ function App() {
   const [costs, setCosts] = useState<Record<ExpenseCategory, number>>(initialCosts);
   const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null);
   const [activeGroupTripId, setActiveGroupTripId] = useState<string | null>(null);
-  const [feedPosts, setFeedPosts] = useState<FeedPost[]>(() => createInitialFeedPosts());
+  const [feedPosts, setFeedPosts] = useState<FeedPost[]>([]);
+  const [editingFeedPost, setEditingFeedPost] = useState<FeedPost | null>(null);
+  const [dnaMatchByPostId, setDnaMatchByPostId] = useState<DNAMatchByPostId>({});
+  const [dnaMatchLoadingPostIds, setDnaMatchLoadingPostIds] = useState<string[]>([]);
   const [sentRequestPostIds, setSentRequestPostIds] = useState<string[]>([]);
   const [userCreatedTrips, setUserCreatedTrips] = useState<Trip[]>([]);
+  const [postStats, setPostStats] = useState<PostStats>(EMPTY_POST_STATS);
+  const [isPostActionInProgress, setIsPostActionInProgress] = useState(false);
 
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authForm, setAuthForm] = useState<AuthForm>({ userId: '', password: '', confirmPassword: '' });
   const [authErrors, setAuthErrors] = useState<AuthErrors>({});
   const [authMessage, setAuthMessage] = useState<string>('');
   const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [hydratedProfileToken, setHydratedProfileToken] = useState<string | null>(null);
   const [systemNotice, setSystemNotice] = useState<string>('');
   const [postAuthRedirectScreen, setPostAuthRedirectScreen] = useState<ScreenName | null>(() => {
     if (typeof window === 'undefined') {
@@ -463,6 +593,7 @@ function App() {
   const [profileForm, setProfileForm] = useState<ProfileForm>(() => createProfileForm(getStoredUserSession()));
   const [profileErrors, setProfileErrors] = useState<ProfileErrors>({});
   const [isProfileEditing, setIsProfileEditing] = useState(false);
+  const [isProfileSaving, setIsProfileSaving] = useState(false);
   const [verificationDocumentFile, setVerificationDocumentFile] = useState<File | null>(null);
   const [verificationDocumentError, setVerificationDocumentError] = useState('');
   const [isVerificationUploading, setIsVerificationUploading] = useState(false);
@@ -476,6 +607,58 @@ function App() {
 
   const [isEmergencyAlertActive, setIsEmergencyAlertActive] = useState(false);
   const [emergencyMessage, setEmergencyMessage] = useState('');
+  const currentUserAuthorKey = useMemo(() => getSessionAuthorKey(userSession), [userSession]);
+
+  const loadActiveFeedPosts = async (
+    showFallbackNotice = true,
+    overrides?: {
+      viewerVerified?: boolean;
+      viewerAuthorKey?: string | null;
+    },
+  ) => {
+    const viewerVerified = overrides?.viewerVerified ?? Boolean(userSession?.isVerified);
+    const viewerAuthorKey =
+      typeof overrides?.viewerAuthorKey === 'string' || overrides?.viewerAuthorKey === null
+        ? overrides.viewerAuthorKey
+        : getSessionAuthorKey(userSession);
+
+    try {
+      const posts = await fetchFeedPosts({
+        viewerVerified,
+        viewerAuthorKey,
+      });
+      setFeedPosts(posts);
+    } catch (error) {
+      setFeedPosts(createInitialFeedPosts());
+      if (showFallbackNotice) {
+        const message = error instanceof Error ? error.message : 'Unable to load posts from database.';
+        setSystemNotice(`${message} Showing demo posts.`);
+      }
+    }
+  };
+
+  const loadPostStatsFromDatabase = async (authorKey: string | null) => {
+    if (!authorKey) {
+      setPostStats(EMPTY_POST_STATS);
+      return;
+    }
+
+    try {
+      const stats = await fetchPostStats(authorKey);
+      setPostStats(stats);
+    } catch {
+      setPostStats(EMPTY_POST_STATS);
+    }
+  };
+
+  const loadProfileFromDatabase = async (authToken: string, baseSession: UserSession): Promise<UserSession> => {
+    const profileResponse = await fetchUserProfile(authToken);
+    return mergeSessionWithProfile(
+      baseSession,
+      profileResponse.profile,
+      Boolean(profileResponse.user.isVerified),
+    );
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -555,10 +738,51 @@ function App() {
   }, [userSession]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (!userSession) {
+      setHydratedProfileToken(null);
+      return;
+    }
+
+    const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    if (!authToken || hydratedProfileToken === authToken) {
+      return;
+    }
+
+    let isActive = true;
+
+    const hydrateProfile = async () => {
+      try {
+        const nextSession = await loadProfileFromDatabase(authToken, userSession);
+        if (!isActive) {
+          return;
+        }
+        setUserSession(nextSession);
+      } catch {
+        // Keep local session if profile sync fails.
+      } finally {
+        if (isActive) {
+          setHydratedProfileToken(authToken);
+        }
+      }
+    };
+
+    void hydrateProfile();
+
+    return () => {
+      isActive = false;
+    };
+  }, [hydratedProfileToken, userSession]);
+
+  useEffect(() => {
     if (!userSession) {
       setProfileForm(createProfileForm(null));
       setProfileErrors({});
       setIsProfileEditing(false);
+      setIsProfileSaving(false);
       setVerificationDocumentFile(null);
       setVerificationDocumentError('');
       return;
@@ -569,6 +793,87 @@ function App() {
       setProfileErrors({});
     }
   }, [isProfileEditing, userSession]);
+
+  useEffect(() => {
+    void loadActiveFeedPosts();
+  }, [userSession?.isVerified, userSession?.email, userSession?.name]);
+
+  useEffect(() => {
+    void loadPostStatsFromDatabase(currentUserAuthorKey);
+  }, [currentUserAuthorKey]);
+
+  useEffect(() => {
+    if (!userSession || feedPosts.length === 0) {
+      setDnaMatchByPostId({});
+      setDnaMatchLoadingPostIds([]);
+      return;
+    }
+
+    const viewerDNA = normalizeTravelDNA(userSession.dna ?? defaultUserDNA);
+    const localTripMatches = feedPosts.reduce<DNAMatchByPostId>((accumulator, post) => {
+      const catalogTrip = tripCatalog.find((trip) => trip.id === post.id);
+      if (!catalogTrip) {
+        return accumulator;
+      }
+
+      const organizerDNA = normalizeTravelDNA(catalogTrip.tripDNA);
+      accumulator[post.id] = {
+        tripId: post.id,
+        matchPercentage: getMatchScore(viewerDNA, organizerDNA),
+        organizerName: catalogTrip.hostName,
+        viewerDNA,
+        organizerDNA,
+        conflictHint: getLocalConflictHint(viewerDNA, organizerDNA),
+      };
+      return accumulator;
+    }, {});
+
+    const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    const candidatePostIds = feedPosts.map((post) => post.id).filter((postId) => isMongoObjectId(postId));
+    if (!authToken || candidatePostIds.length === 0) {
+      setDnaMatchByPostId(localTripMatches);
+      setDnaMatchLoadingPostIds([]);
+      return;
+    }
+
+    let isActive = true;
+    setDnaMatchLoadingPostIds(candidatePostIds);
+
+    const loadDNAMatches = async () => {
+      const settledMatches = await Promise.all(
+        candidatePostIds.map(async (postId) => {
+          try {
+            const match = await fetchTripDNAMatch(postId, authToken);
+            return { postId, match };
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      if (!isActive) {
+        return;
+      }
+
+      const nextMap = settledMatches.reduce<DNAMatchByPostId>((accumulator, currentValue) => {
+        if (!currentValue) {
+          return accumulator;
+        }
+
+        accumulator[currentValue.postId] = currentValue.match;
+        return accumulator;
+      }, { ...localTripMatches });
+
+      setDnaMatchByPostId(nextMap);
+      setDnaMatchLoadingPostIds([]);
+    };
+
+    void loadDNAMatches();
+
+    return () => {
+      isActive = false;
+    };
+  }, [feedPosts, userSession]);
 
   const allTrips = useMemo(() => [...userCreatedTrips, ...tripCatalog], [userCreatedTrips]);
 
@@ -628,6 +933,7 @@ function App() {
       'aboutUs',
       'contactUs',
       'createTrip',
+      'editPost',
       'dashboard',
       'expenses',
       'chat',
@@ -645,12 +951,17 @@ function App() {
       return;
     }
 
+    if (targetScreen !== 'editPost' && editingFeedPost) {
+      setEditingFeedPost(null);
+    }
+
     if (targetScreen !== 'auth' && targetScreen !== 'createTrip' && postAuthRedirectScreen === 'createTrip') {
       setPostAuthRedirectScreen(null);
     }
 
     const requiresSession: ScreenName[] = [
       'createTrip',
+      'editPost',
       'dashboard',
       'expenses',
       'chat',
@@ -726,7 +1037,7 @@ function App() {
     setSystemNotice('Sign in to host your trip.');
   };
 
-  const handleCreateTrip = (payload: CreateTripPayload) => {
+  const handleCreateTrip = async (payload: CreateTripPayload) => {
     if (!userSession) {
       setCurrentScreen('auth');
       setSystemNotice('Please sign in to continue.');
@@ -734,7 +1045,13 @@ function App() {
     }
 
     const newTripId = `trip-user-${Date.now()}`;
-    const budgetRange = Math.max(1, Math.min(10, Math.round(payload.budget / 250)));
+    const inferredBudgetFlexibility = Math.max(1, Math.min(10, Math.round(payload.budget / 250)));
+    const hostDNA = userSession.dna
+      ? normalizeTravelDNA(userSession.dna)
+      : normalizeTravelDNA({
+          ...defaultUserDNA,
+          budgetFlexibility: inferredBudgetFlexibility,
+        });
     const preferredTravelers =
       payload.interestedIn === 'Unspecified' ? 'Unspecified' : `${payload.interestedIn} travelers`;
 
@@ -744,11 +1061,7 @@ function App() {
       hostName: userSession.name,
       priceShare: payload.budget,
       matchPercentage: 82,
-      tripDNA: {
-        socialEnergy: 6,
-        budgetRange,
-        pace: 'Active',
-      },
+      tripDNA: hostDNA,
       imageUrl: payload.posterImageUrls[0],
       isVerified: Boolean(userSession.isVerified),
       route: 'Custom route',
@@ -761,35 +1074,75 @@ function App() {
       highlights: payload.expectations.slice(0, 3),
     };
 
-    setUserCreatedTrips((previous) => [createdTrip, ...previous]);
-    setTripRuntimeById((previous) => ({
-      ...previous,
-      [newTripId]: {
-        status: 'Open',
-        introEndsAt: null,
-        escrowSummary: null,
-        hasReleasedCheckInFunds: false,
-        hasReviewed: false,
-      },
-    }));
-    setPublicProfiles((previous) => {
-      if (previous[userSession.name]) {
-        return previous;
-      }
+    const startDate = new Date();
+    startDate.setHours(0, 0, 0, 0);
+    startDate.setDate(startDate.getDate() + 7);
+    const endDate = new Date(startDate);
+    endDate.setDate(endDate.getDate() + 6);
+    const authorKey = getSessionAuthorKey(userSession);
 
-      return {
+    if (!authorKey) {
+      setSystemNotice('Unable to identify post author. Update your profile and try again.');
+      return;
+    }
+
+    try {
+      const createdFeedPost = await createFeedPost({
+        authorKey,
+        status: 'Active',
+        onlyVerifiedUsers: payload.onlyVerifiedUsers,
+        title: createdTrip.title,
+        hostName: createdTrip.hostName,
+        isVerified: Boolean(createdTrip.isVerified),
+        imageUrl: createdTrip.imageUrl,
+        location: 'Custom route',
+        cost: payload.budget,
+        durationDays: 7,
+        requiredPeople: payload.peopleRequired,
+        spotsFilledPercent: 0,
+        expectations: payload.expectations,
+        travelerType: payload.onlyVerifiedUsers
+          ? 'Verification-first collaborative travelers'
+          : 'Collaborative group travelers',
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+      });
+
+      setFeedPosts((previous) => [createdFeedPost, ...previous]);
+      setUserCreatedTrips((previous) => [createdTrip, ...previous]);
+      setTripRuntimeById((previous) => ({
         ...previous,
-        [userSession.name]: {
-          name: userSession.name,
-          toursCompleted: userSession.toursCompleted,
-          ratingAverage: userSession.ratingAverage,
-          ratingCount: userSession.ratingCount,
-          isVerified: Boolean(userSession.isVerified),
+        [newTripId]: {
+          status: 'Open',
+          introEndsAt: null,
+          escrowSummary: null,
+          hasReleasedCheckInFunds: false,
+          hasReviewed: false,
         },
-      };
-    });
-    setCurrentScreen('discovery');
-    setSystemNotice('Trip post created and added to Discover.');
+      }));
+      setPublicProfiles((previous) => {
+        if (previous[userSession.name]) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          [userSession.name]: {
+            name: userSession.name,
+            toursCompleted: userSession.toursCompleted,
+            ratingAverage: userSession.ratingAverage,
+            ratingCount: userSession.ratingCount,
+            isVerified: Boolean(userSession.isVerified),
+          },
+        };
+      });
+      setCurrentScreen('discovery');
+      setSystemNotice('Trip post created and saved to database.');
+      await loadPostStatsFromDatabase(authorKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to create trip post right now.';
+      setSystemNotice(message);
+    }
   };
 
   const handleJoinChat = (tripId: string) => {
@@ -882,6 +1235,144 @@ function App() {
     }
 
     setSystemNotice('Sharing is not available in this browser.');
+  };
+
+  const handleEditFeedPost = (post: FeedPost) => {
+    if (!currentUserAuthorKey) {
+      setSystemNotice('Sign in to edit your post.');
+      return;
+    }
+
+    setEditingFeedPost(post);
+    setCurrentScreen('editPost');
+    setSystemNotice('');
+  };
+
+  const handleDeleteFeedPost = async (post: FeedPost) => {
+    if (!currentUserAuthorKey) {
+      setSystemNotice('Sign in to delete your post.');
+      return;
+    }
+
+    const shouldDelete = window.confirm('Delete this post permanently?');
+    if (!shouldDelete) {
+      return;
+    }
+
+    setIsPostActionInProgress(true);
+    try {
+      await deleteFeedPost(post.id, currentUserAuthorKey);
+      setFeedPosts((previous) => previous.filter((currentPost) => currentPost.id !== post.id));
+      setSentRequestPostIds((previous) => previous.filter((postId) => postId !== post.id));
+      if (editingFeedPost?.id === post.id) {
+        setEditingFeedPost(null);
+      }
+      await loadPostStatsFromDatabase(currentUserAuthorKey);
+      setCurrentScreen('home');
+      setActiveView('feed');
+      setSystemNotice('Post deleted successfully.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to delete post right now.';
+      setSystemNotice(message);
+    } finally {
+      setIsPostActionInProgress(false);
+    }
+  };
+
+  const handleCompleteFeedPost = async (post: FeedPost) => {
+    if (!currentUserAuthorKey) {
+      setSystemNotice('Sign in to complete your post.');
+      return;
+    }
+
+    if (post.status === 'Completed') {
+      setSystemNotice('Post is already completed.');
+      return;
+    }
+
+    const shouldComplete = window.confirm('Mark this post as completed? It will be removed from Main Feed.');
+    if (!shouldComplete) {
+      return;
+    }
+
+    setIsPostActionInProgress(true);
+    try {
+      await updateFeedPostStatus(post.id, 'Completed', currentUserAuthorKey);
+      setFeedPosts((previous) => previous.filter((currentPost) => currentPost.id !== post.id));
+      setSentRequestPostIds((previous) => previous.filter((postId) => postId !== post.id));
+      if (editingFeedPost?.id === post.id) {
+        setEditingFeedPost(null);
+      }
+      await loadPostStatsFromDatabase(currentUserAuthorKey);
+      setCurrentScreen('home');
+      setActiveView('feed');
+      setSystemNotice('Post marked as completed and removed from Main Feed.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to complete post right now.';
+      setSystemNotice(message);
+    } finally {
+      setIsPostActionInProgress(false);
+    }
+  };
+
+  const handleSaveEditedPost = async (payload: CreateTripPayload) => {
+    if (!currentUserAuthorKey) {
+      setSystemNotice('Sign in to edit your post.');
+      return;
+    }
+
+    const currentPost = editingFeedPost
+      ? feedPosts.find((post) => post.id === editingFeedPost.id) ?? editingFeedPost
+      : null;
+    if (!currentPost) {
+      setSystemNotice('Post not found.');
+      return;
+    }
+
+    setIsPostActionInProgress(true);
+    try {
+      const updatedPost = await updateFeedPost(currentPost.id, {
+        authorKey: currentUserAuthorKey,
+        status: currentPost.status,
+        onlyVerifiedUsers: payload.onlyVerifiedUsers,
+        title: currentPost.title,
+        hostName: currentPost.hostName,
+        isVerified: currentPost.isVerified,
+        imageUrl: payload.posterImageUrls[0] ?? currentPost.imageUrl,
+        location: currentPost.location,
+        cost: payload.budget,
+        durationDays: currentPost.durationDays,
+        requiredPeople: payload.peopleRequired,
+        spotsFilledPercent: currentPost.spotsFilledPercent,
+        expectations: payload.expectations,
+        travelerType: payload.onlyVerifiedUsers
+          ? 'Verification-first collaborative travelers'
+          : 'Collaborative group travelers',
+        startDate: currentPost.startDate,
+        endDate: currentPost.endDate,
+      });
+
+      setFeedPosts((previous) =>
+        previous.map((post) => (post.id === updatedPost.id ? updatedPost : post)),
+      );
+      setEditingFeedPost(null);
+      setCurrentScreen('home');
+      setActiveView('feed');
+      setSystemNotice('Post updated successfully.');
+      await loadPostStatsFromDatabase(currentUserAuthorKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to update post right now.';
+      setSystemNotice(message);
+    } finally {
+      setIsPostActionInProgress(false);
+    }
+  };
+
+  const handleCancelEditPost = () => {
+    setEditingFeedPost(null);
+    setCurrentScreen('home');
+    setActiveView('feed');
+    setSystemNotice('');
   };
 
   const handleAuthFieldChange = (field: keyof AuthForm, value: string) => {
@@ -984,13 +1475,21 @@ function App() {
         });
 
         window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, loginResponse.token);
-        const nextSession = createSession(loginResponse.user.userId, 'Email');
+        const baseSession: UserSession = {
+          ...createSession(loginResponse.user.userId, 'Email'),
+          isVerified: Boolean(loginResponse.user.isVerified),
+        };
+        let nextSession = baseSession;
+        try {
+          nextSession = await loadProfileFromDatabase(loginResponse.token, baseSession);
+        } catch {
+          // Keep minimal session if profile fetch fails.
+        }
+
         const redirectTarget = postAuthRedirectScreen;
         setPostAuthRedirectScreen(null);
-        setUserSession({
-          ...nextSession,
-          isVerified: Boolean(loginResponse.user.isVerified),
-        });
+        setHydratedProfileToken(loginResponse.token);
+        setUserSession(nextSession);
         setAuthForm({ userId: '', password: '', confirmPassword: '' });
         setActiveView('feed');
         setCurrentScreen(redirectTarget === 'createTrip' ? 'createTrip' : 'home');
@@ -1021,6 +1520,7 @@ function App() {
   const handleSignOut = () => {
     window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
     window.localStorage.removeItem(USER_SESSION_STORAGE_KEY);
+    setHydratedProfileToken(null);
     setUserSession(null);
     setAuthMode('signin');
     setAuthErrors({});
@@ -1028,23 +1528,46 @@ function App() {
     setPostAuthRedirectScreen(null);
     setAuthForm({ userId: '', password: '', confirmPassword: '' });
     setActiveView('feed');
-    setFeedPosts(createInitialFeedPosts());
+    setFeedPosts([]);
+    setEditingFeedPost(null);
+    setDnaMatchByPostId({});
+    setDnaMatchLoadingPostIds([]);
     setSentRequestPostIds([]);
+    setPostStats(EMPTY_POST_STATS);
+    setIsPostActionInProgress(false);
     setCurrentScreen('home');
     setIsAccountPanelOpen(false);
     setActiveGroupTripId(null);
     setVerificationDocumentFile(null);
     setVerificationDocumentError('');
     setIsVerificationUploading(false);
+    setIsProfileSaving(false);
     setIsEmergencyAlertActive(false);
     setEmergencyMessage('');
     setSystemNotice('Signed out.');
   };
 
-  const handleOnboardingComplete = (dna: UserDNA) => {
-    setUserSession((previous) => (previous ? { ...previous, dna } : previous));
-    setCurrentScreen('verification');
-    setSystemNotice('Travel DNA saved. Continue to verification.');
+  const handleOnboardingComplete = async (dna: UserDNA) => {
+    const normalizedDNA = normalizeTravelDNA(dna);
+    setUserSession((previous) => (previous ? { ...previous, dna: normalizedDNA } : previous));
+
+    const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    if (!authToken) {
+      setCurrentScreen('verification');
+      setSystemNotice('Travel DNA saved locally. Continue to verification.');
+      return;
+    }
+
+    try {
+      const response = await updateTravelDNA(normalizedDNA, authToken);
+      setUserSession((previous) => (previous ? { ...previous, dna: response.travelDNA } : previous));
+      setCurrentScreen('verification');
+      setSystemNotice(response.message ?? 'Travel DNA saved. Continue to verification.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Travel DNA save failed.';
+      setCurrentScreen('verification');
+      setSystemNotice(`${message} Using local DNA for now.`);
+    }
   };
 
   const handleVerificationComplete = () => {
@@ -1149,6 +1672,13 @@ function App() {
       );
       setVerificationDocumentFile(null);
       setSystemNotice(uploadResponse.message);
+      const nextIsVerified = Boolean(uploadResponse.user.isVerified);
+      const nextAuthorKey = getSessionAuthorKey(userSession);
+      await loadActiveFeedPosts(false, {
+        viewerVerified: nextIsVerified,
+        viewerAuthorKey: nextAuthorKey,
+      });
+      await loadPostStatsFromDatabase(nextAuthorKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Document upload failed.';
       setVerificationDocumentError(message);
@@ -1204,12 +1734,16 @@ function App() {
   };
 
   const handleProfileCancel = () => {
+    if (isProfileSaving) {
+      return;
+    }
+
     setProfileForm(createProfileForm(userSession));
     setProfileErrors({});
     setIsProfileEditing(false);
   };
 
-  const handleProfileSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleProfileSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!userSession) {
       return;
@@ -1220,38 +1754,49 @@ function App() {
       return;
     }
 
+    const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    if (!authToken) {
+      setSystemNotice('You are not authenticated. Please sign in again.');
+      return;
+    }
+
     const firstName = profileForm.firstName.trim();
     const lastName = profileForm.lastName.trim();
     const countryCode = profileForm.countryCode.trim();
     const mobileNumber = profileForm.mobileNumber.trim();
     const email = profileForm.email.trim().toLowerCase();
-    const name = getDisplayName(firstName, lastName, userSession.name);
-
-    setUserSession((previous) =>
-      previous
-        ? {
-            ...previous,
-            name,
-            firstName,
-            lastName,
-            countryCode,
-            mobileNumber,
-            email,
-            profileImageDataUrl: profileForm.profileImageDataUrl,
-          }
-        : previous,
-    );
-    setProfileForm((previous) => ({
-      ...previous,
+    const profilePayload: UpdateProfileRequest = {
       firstName,
       lastName,
       countryCode,
       mobileNumber,
       email,
-    }));
-    setProfileErrors({});
-    setIsProfileEditing(false);
-    setSystemNotice('Profile saved successfully.');
+      profileImageDataUrl: profileForm.profileImageDataUrl,
+    };
+
+    setIsProfileSaving(true);
+    try {
+      const profileResponse = await updateUserProfile(profilePayload, authToken);
+      setUserSession((previous) =>
+        previous
+          ? mergeSessionWithProfile(
+              previous,
+              profileResponse.profile,
+              Boolean(profileResponse.user.isVerified),
+            )
+          : previous,
+      );
+      setHydratedProfileToken(authToken);
+      setProfileForm(profileToForm(profileResponse.profile));
+      setProfileErrors({});
+      setIsProfileEditing(false);
+      setSystemNotice(profileResponse.message ?? 'Profile saved successfully.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save profile right now.';
+      setSystemNotice(message);
+    } finally {
+      setIsProfileSaving(false);
+    }
   };
 
   const handleCommitAndPay = () => {
@@ -1414,7 +1959,7 @@ function App() {
   const isSocialExperienceScreen =
     currentScreen === 'home' || currentScreen === 'discovery' || currentScreen === 'dashboard';
 
-  const completedTripsMetric = Math.max(userSession?.toursCompleted ?? 0, completedTripsCount, 6);
+  const completedTripsMetric = Math.max(userSession?.toursCompleted ?? 0, completedTripsCount, postStats.completedCount, 6);
   const totalConnectionsMetric = Math.max(hostProfiles.length * 9 + (userSession?.ratingCount ?? 0), 24);
   const walletCapacity = 5000;
   const availableFundsMetric = Math.max(900, walletCapacity - escrowStats.totalPaid + escrowStats.totalReleased);
@@ -1623,13 +2168,15 @@ function App() {
                 <>
                   <button
                     type="submit"
+                    disabled={isProfileSaving}
                     className="interactive-btn rounded-card bg-accent px-5 py-2.5 text-sm font-semibold text-white"
                   >
-                    Save
+                    {isProfileSaving ? 'Saving...' : 'Save'}
                   </button>
                   <button
                     type="button"
                     onClick={handleProfileCancel}
+                    disabled={isProfileSaving}
                     className="interactive-btn rounded-card border border-primary/20 bg-background/80 px-5 py-2.5 text-sm font-semibold text-primary"
                   >
                     Cancel
@@ -1726,18 +2273,25 @@ function App() {
             <MainFeed
               posts={feedPosts}
               sentRequestPostIds={sentRequestPostIds}
+              currentUserAuthorKey={currentUserAuthorKey ?? undefined}
+              isPostActionInProgress={isPostActionInProgress}
+              dnaMatchByPostId={dnaMatchByPostId}
+              dnaMatchLoadingPostIds={dnaMatchLoadingPostIds}
               onJoinRequest={handleFeedJoinRequest}
               onSharePost={handleFeedShare}
               onDismissPost={handleFeedDismiss}
+              onEditPost={handleEditFeedPost}
+              onDeletePost={handleDeleteFeedPost}
+              onCompletePost={handleCompleteFeedPost}
             />
           ) : (
-            <DashboardView
-              totalCompletedTrips={completedTripsMetric}
-              totalConnections={totalConnectionsMetric}
-              activePosts={feedPosts.length}
-              availableFunds={availableFundsMetric}
-              walletCapacity={walletCapacity}
-            />
+              <DashboardView
+                totalCompletedTrips={completedTripsMetric}
+                totalConnections={totalConnectionsMetric}
+                activePosts={postStats.activeCount}
+                availableFunds={availableFundsMetric}
+                walletCapacity={walletCapacity}
+              />
           )}
         </section>
       </div>
@@ -1935,6 +2489,19 @@ function App() {
         return <ContactUsView />;
       case 'createTrip':
         return renderCreateTripScreen();
+      case 'editPost':
+        return editingFeedPost && userSession ? (
+          <CreateTripView
+            mode="edit"
+            hostName={userSession.name}
+            initialPayload={toCreateTripPayloadFromFeedPost(editingFeedPost)}
+            isSubmitting={isPostActionInProgress}
+            onTripCreated={handleSaveEditedPost}
+            onCancel={handleCancelEditPost}
+          />
+        ) : (
+          renderSocialExperience()
+        );
       case 'onboarding':
         return userSession ? (
           <OnboardingQuizView

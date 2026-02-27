@@ -1,24 +1,26 @@
-import type { TripDNA, UserDNA } from '../models/dnaModel';
+import {
+  TRAVEL_DNA_DIMENSIONS,
+  clampTravelDNAValue,
+  type TravelDNA,
+  type TripDNA,
+  type UserDNA,
+} from '../models/dnaModel';
 
-const clampToSliderRange = (value: number): number => {
-  if (!Number.isFinite(value)) {
-    return 1;
-  }
-  return Math.min(10, Math.max(1, value));
-};
+const MAX_EUCLIDEAN_DISTANCE = Math.sqrt(TRAVEL_DNA_DIMENSIONS.length * 81);
 
-const sliderSimilarity = (left: number, right: number): number => {
-  const normalizedLeft = clampToSliderRange(left);
-  const normalizedRight = clampToSliderRange(right);
-  const distance = Math.abs(normalizedLeft - normalizedRight);
-  return (1 - distance / 9) * 100;
+export const getDNADistance = (userDNA: TravelDNA, organizerDNA: TravelDNA): number => {
+  const squaredDistanceSum = TRAVEL_DNA_DIMENSIONS.reduce((total, { key }) => {
+    const userValue = clampTravelDNAValue(userDNA[key]);
+    const organizerValue = clampTravelDNAValue(organizerDNA[key]);
+    const difference = userValue - organizerValue;
+    return total + difference * difference;
+  }, 0);
+
+  return Math.sqrt(squaredDistanceSum);
 };
 
 export const getMatchScore = (userDNA: UserDNA, tripDNA: TripDNA): number => {
-  const socialScore = sliderSimilarity(userDNA.socialEnergy, tripDNA.socialEnergy);
-  const budgetScore = sliderSimilarity(userDNA.budgetRange, tripDNA.budgetRange);
-  const paceScore = userDNA.pace === tripDNA.pace ? 100 : 45;
-
-  const weightedScore = socialScore * 0.4 + budgetScore * 0.4 + paceScore * 0.2;
-  return Math.round(weightedScore);
+  const distance = getDNADistance(userDNA, tripDNA);
+  const percentage = (1 - distance / MAX_EUCLIDEAN_DISTANCE) * 100;
+  return Math.max(0, Math.min(100, Math.round(percentage)));
 };

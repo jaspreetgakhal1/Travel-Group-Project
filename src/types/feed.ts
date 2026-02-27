@@ -1,8 +1,14 @@
+export type FeedPostStatus = 'Active' | 'Completed';
+
 export type FeedPost = {
   id: string;
+  authorKey: string;
+  status: FeedPostStatus;
+  onlyVerifiedUsers: boolean;
   title: string;
   hostName: string;
   isVerified: boolean;
+  hostProfileImageDataUrl?: string | null;
   imageUrl: string;
   location: string;
   cost: number;

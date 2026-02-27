@@ -1,5 +1,14 @@
 import React, { useState } from 'react';
-import type { TravelPace, UserDNA } from '../models/dnaModel';
+import TravelDNARadarChart from '../components/travel-dna/TravelDNARadarChart';
+import VibeSlider from '../components/travel-dna/VibeSlider';
+import {
+  TRAVEL_DNA_DIMENSIONS,
+  TRAVEL_ROLE_OPTIONS,
+  defaultUserDNA,
+  normalizeTravelDNA,
+  type TravelRole,
+  type UserDNA,
+} from '../models/dnaModel';
 
 type OnboardingQuizViewProps = {
   userName: string;
@@ -7,28 +16,36 @@ type OnboardingQuizViewProps = {
   onComplete: (dna: UserDNA) => void;
 };
 
-const stepTitles = ['Social Energy', 'Budget Range', 'Travel Pace'];
-
 const OnboardingQuizView: React.FC<OnboardingQuizViewProps> = ({ userName, initialDNA, onComplete }) => {
-  const [stepIndex, setStepIndex] = useState(0);
-  const [draftDNA, setDraftDNA] = useState<UserDNA>(initialDNA);
+  const [draftDNA, setDraftDNA] = useState<UserDNA>(normalizeTravelDNA(initialDNA));
 
-  const isFinalStep = stepIndex === stepTitles.length - 1;
-
-  const handlePaceChange = (pace: TravelPace) => {
+  const handleDimensionChange = (fieldName: (typeof TRAVEL_DNA_DIMENSIONS)[number]['key'], value: number) => {
     setDraftDNA((previous) => ({
       ...previous,
-      pace,
+      [fieldName]: Math.min(10, Math.max(1, Math.round(value))),
     }));
   };
 
-  const handleNext = () => {
-    if (isFinalStep) {
-      onComplete(draftDNA);
-      return;
-    }
+  const handleRoleToggle = (role: TravelRole) => {
+    setDraftDNA((previous) => {
+      const hasRole = previous.travelRoles.includes(role);
 
-    setStepIndex((previous) => previous + 1);
+      return {
+        ...previous,
+        travelRoles: hasRole
+          ? previous.travelRoles.filter((currentRole) => currentRole !== role)
+          : [...previous.travelRoles, role],
+      };
+    });
+  };
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onComplete(draftDNA);
+  };
+
+  const handleReset = () => {
+    setDraftDNA(defaultUserDNA);
   };
 
   return (
@@ -37,112 +54,77 @@ const OnboardingQuizView: React.FC<OnboardingQuizViewProps> = ({ userName, initi
         <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Travel DNA Quiz</p>
         <h2 className="mt-1 text-3xl font-black text-primary">Welcome, {userName}</h2>
         <p className="mt-2 text-sm text-primary/80">
-          Tell us your vibe so the matchmaking engine can prioritize compatible groups.
+          Set your sliders from Sand to Deep Forest to map your travel vibe in real-time.
         </p>
 
-        <div className="mt-6 flex items-center justify-between gap-3">
-          {stepTitles.map((title, index) => (
-            <div key={title} className="flex-1">
-              <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">{title}</p>
-              <div
-                className={
-                  index <= stepIndex
-                    ? 'mt-1 h-2 rounded-full bg-accent'
-                    : 'mt-1 h-2 rounded-full bg-primary/10'
-                }
+        <form className="mt-6 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]" onSubmit={handleSubmit}>
+          <div className="space-y-3">
+            {TRAVEL_DNA_DIMENSIONS.map(({ key, label, lowLabel, highLabel }) => (
+              <VibeSlider
+                key={key}
+                id={key}
+                label={label}
+                lowLabel={lowLabel}
+                highLabel={highLabel}
+                value={draftDNA[key]}
+                onChange={(nextValue) => handleDimensionChange(key, nextValue)}
               />
-            </div>
-          ))}
-        </div>
+            ))}
 
-        <div className="mt-8 rounded-card bg-background/80 p-6 ring-1 ring-primary/10">
-          {stepIndex === 0 ? (
-            <label className="block">
-              <span className="text-sm font-semibold text-primary">How social are you on trips? ({draftDNA.socialEnergy}/10)</span>
-              <input
-                type="range"
-                min={1}
-                max={10}
-                value={draftDNA.socialEnergy}
-                onChange={(event) =>
-                  setDraftDNA((previous) => ({
-                    ...previous,
-                    socialEnergy: Number(event.target.value),
-                  }))
-                }
-                className="mt-3 w-full accent-accent"
-              />
-            </label>
-          ) : null}
-
-          {stepIndex === 1 ? (
-            <label className="block">
-              <span className="text-sm font-semibold text-primary">Your budget comfort level? ({draftDNA.budgetRange}/10)</span>
-              <input
-                type="range"
-                min={1}
-                max={10}
-                value={draftDNA.budgetRange}
-                onChange={(event) =>
-                  setDraftDNA((previous) => ({
-                    ...previous,
-                    budgetRange: Number(event.target.value),
-                  }))
-                }
-                className="mt-3 w-full accent-accent"
-              />
-            </label>
-          ) : null}
-
-          {stepIndex === 2 ? (
-            <div>
-              <p className="text-sm font-semibold text-primary">Choose your pace</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => handlePaceChange('Active')}
-                  className={
-                    draftDNA.pace === 'Active'
-                      ? 'interactive-btn rounded-card border border-accent bg-accent px-4 py-3 text-sm font-semibold text-white'
-                      : 'interactive-btn rounded-card border border-primary/20 bg-white px-4 py-3 text-sm font-semibold text-primary'
-                  }
-                >
-                  Active
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handlePaceChange('Chill')}
-                  className={
-                    draftDNA.pace === 'Chill'
-                      ? 'interactive-btn rounded-card border border-accent bg-accent px-4 py-3 text-sm font-semibold text-white'
-                      : 'interactive-btn rounded-card border border-primary/20 bg-white px-4 py-3 text-sm font-semibold text-primary'
-                  }
-                >
-                  Chill
-                </button>
+            <section className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+              <p className="text-sm font-semibold text-primary">Travel Roles</p>
+              <p className="mt-1 text-xs text-primary/70">Pick one or more roles you naturally take in group trips.</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {TRAVEL_ROLE_OPTIONS.map((role) => {
+                  const isSelected = draftDNA.travelRoles.includes(role);
+                  return (
+                    <button
+                      key={role}
+                      type="button"
+                      onClick={() => handleRoleToggle(role)}
+                      className={
+                        isSelected
+                          ? 'interactive-btn rounded-full border border-accent bg-accent px-3 py-1.5 text-xs font-semibold text-white'
+                          : 'interactive-btn rounded-full border border-primary/20 bg-white px-3 py-1.5 text-xs font-semibold text-primary'
+                      }
+                    >
+                      {role}
+                    </button>
+                  );
+                })}
               </div>
+            </section>
+          </div>
+
+          <div className="space-y-3">
+            <TravelDNARadarChart
+              primaryDNA={draftDNA}
+              primaryLabel="Your Live DNA"
+              primaryColor="#3D405B"
+              className="sticky top-24"
+            />
+            <div className="rounded-card bg-background/80 p-3 text-xs text-primary/75 ring-1 ring-primary/10">
+              Radar updates live as you move sliders.
             </div>
-          ) : null}
-        </div>
+          </div>
 
-        <div className="mt-6 flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => setStepIndex((previous) => Math.max(0, previous - 1))}
-            disabled={stepIndex === 0}
-            className="interactive-btn rounded-card border border-primary/20 px-4 py-2.5 text-sm font-semibold text-primary disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Back
-          </button>
+          <div className="lg:col-span-2 flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={handleReset}
+              className="interactive-btn rounded-card border border-primary/20 bg-background/60 px-4 py-2.5 text-sm font-semibold text-primary"
+            >
+              Reset DNA
+            </button>
 
-          <button
-            type="button"
-            onClick={handleNext}
-            className="interactive-btn rounded-card bg-accent px-5 py-2.5 text-sm font-semibold text-white"
-          >
-            {isFinalStep ? 'Save DNA & Continue' : 'Next'}
-          </button>
-        </div>
+            <button
+              type="submit"
+              className="interactive-btn rounded-card bg-accent px-5 py-2.5 text-sm font-semibold text-white"
+            >
+              Save DNA & Continue
+            </button>
+          </div>
+        </form>
       </article>
     </section>
   );
