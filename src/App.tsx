@@ -18,6 +18,7 @@ import {
 } from './utils/paymentProcessor';
 import ChatInterfaceView from './views/ChatInterfaceView';
 import MainFeed from './components/MainFeed';
+import RequestModal from './components/RequestModal';
 import Sidebar from './components/Sidebar';
 import DiscoveryFeedView from './views/DiscoveryFeedView';
 import type { FeedPost } from './types/feed';
@@ -52,6 +53,28 @@ import {
   updateFeedPostStatus,
   type PostStats,
 } from './services/postApi';
+import {
+  fetchSelfTrips,
+  fetchTripRequests,
+  reviewJoinRequest,
+  submitJoinRequest,
+  type HostTripRequest,
+  type HostTripSummary,
+  type JoinRequestStatus,
+} from './services/tripRequestApi';
+import {
+  BadgeCheck,
+  FileText,
+  History,
+  LayoutDashboard,
+  LogOut,
+  Plus,
+  ShieldCheck,
+  Sparkles,
+  UserCircle2,
+  Wallet,
+  X,
+} from 'lucide-react';
 
 const DEFAULT_INTRO_PERIOD_MS = 24 * 60 * 60 * 1000;
 const configuredIntroPeriod = Number(import.meta.env.VITE_INTRO_PERIOD_MS);
@@ -85,7 +108,7 @@ type ScreenName =
   | 'groupChat'
   | 'reviews';
 type AuthMode = 'signin' | 'signup';
-type ActiveView = 'feed' | 'dashboard';
+type ActiveView = 'feed' | 'myPosts' | 'dashboard';
 type SocialProvider = 'Google' | 'Microsoft' | 'Facebook';
 
 type AuthForm = {
@@ -101,6 +124,7 @@ type AuthErrors = {
 };
 
 type UserSession = {
+  id: string | null;
   name: string;
   firstName: string;
   lastName: string;
@@ -150,6 +174,8 @@ type PublicProfile = {
 };
 
 type DNAMatchByPostId = Record<string, TripDNAMatch>;
+type HostTripRequestsByTripId = Record<string, HostTripRequest[]>;
+type HostRequestReviewStatus = Extract<JoinRequestStatus, 'accepted' | 'rejected'>;
 
 type TripRuntime = {
   status: TripLifecycleStatus;
@@ -245,17 +271,19 @@ const getRouteLabel = (route: string): string => {
   return route;
 };
 
+const normalizeAuthorKey = (value: string): string => value.trim().toLowerCase();
+
 const getSessionAuthorKey = (session: UserSession | null): string | null => {
   if (!session) {
     return null;
   }
 
-  const normalizedEmail = session.email.trim().toLowerCase();
+  const normalizedEmail = normalizeAuthorKey(session.email);
   if (normalizedEmail) {
     return normalizedEmail;
   }
 
-  const normalizedName = session.name.trim().toLowerCase();
+  const normalizedName = normalizeAuthorKey(session.name);
   return normalizedName || null;
 };
 
@@ -306,6 +334,23 @@ const toCreateTripPayloadFromFeedPost = (post: FeedPost): CreateTripPayload => (
   onlyVerifiedUsers: post.onlyVerifiedUsers,
 });
 
+const toRuntimeTripFromFeedPost = (post: FeedPost): Trip => ({
+  id: post.id,
+  title: post.title,
+  hostName: post.hostName,
+  priceShare: post.cost,
+  matchPercentage: 100,
+  tripDNA: normalizeTravelDNA(defaultUserDNA),
+  imageUrl: post.imageUrl,
+  isVerified: post.isVerified,
+  route: post.location,
+  duration: `${post.durationDays} Days`,
+  totalExpectedFromPartner: post.cost * post.requiredPeople,
+  partnerExpectations: post.expectations,
+  notes: 'Runtime trip generated from feed post for group chat access.',
+  highlights: post.expectations.slice(0, 3),
+});
+
 const createInitialFeedPosts = (): FeedPost[] => {
   const startAnchor = new Date();
   startAnchor.setHours(0, 0, 0, 0);
@@ -332,7 +377,12 @@ const createInitialFeedPosts = (): FeedPost[] => {
       cost: trip.priceShare,
       durationDays,
       requiredPeople: requiredPeopleTargets[index % requiredPeopleTargets.length],
+      maxParticipants: requiredPeopleTargets[index % requiredPeopleTargets.length],
+      spotsFilled: Math.round(
+        (feedFillTargets[index % feedFillTargets.length] / 100) * requiredPeopleTargets[index % requiredPeopleTargets.length],
+      ),
       spotsFilledPercent: feedFillTargets[index % feedFillTargets.length],
+      participantIds: [],
       expectations: trip.partnerExpectations,
       travelerType: getTravelerType(trip),
       startDate: startDate.toISOString(),
@@ -436,11 +486,13 @@ const getStoredUserSession = (): UserSession | null => {
       typeof parsed.countryCode === 'string' && countryCodeOptions.some((option) => option.value === parsed.countryCode)
         ? parsed.countryCode
         : countryCodeOptions[0].value;
+    const id = typeof parsed.id === 'string' && parsed.id.trim() ? parsed.id : null;
     const mobileNumber = typeof parsed.mobileNumber === 'string' ? parsed.mobileNumber : '';
     const email = typeof parsed.email === 'string' ? parsed.email : '';
     const profileImageDataUrl = typeof parsed.profileImageDataUrl === 'string' ? parsed.profileImageDataUrl : null;
 
     return {
+      id,
       name: getDisplayName(firstName, lastName, fallbackName),
       firstName,
       lastName,
@@ -467,6 +519,7 @@ const createSession = (name: string, provider: 'Email' | SocialProvider): UserSe
   const lastName = rawLastName;
 
   return {
+    id: null,
     name: getDisplayName(firstName, lastName, cleanedName || 'Traveler'),
     firstName,
     lastName,
@@ -568,6 +621,12 @@ function App() {
   const [dnaMatchByPostId, setDnaMatchByPostId] = useState<DNAMatchByPostId>({});
   const [dnaMatchLoadingPostIds, setDnaMatchLoadingPostIds] = useState<string[]>([]);
   const [sentRequestPostIds, setSentRequestPostIds] = useState<string[]>([]);
+  const [selfTripSummaries, setSelfTripSummaries] = useState<HostTripSummary[]>([]);
+  const [pendingRequestCountByTripId, setPendingRequestCountByTripId] = useState<Record<string, number>>({});
+  const [hostRequestsByTripId, setHostRequestsByTripId] = useState<HostTripRequestsByTripId>({});
+  const [activeRequestModalPost, setActiveRequestModalPost] = useState<FeedPost | null>(null);
+  const [isRequestModalLoading, setIsRequestModalLoading] = useState(false);
+  const [isRequestActionInProgress, setIsRequestActionInProgress] = useState(false);
   const [userCreatedTrips, setUserCreatedTrips] = useState<Trip[]>([]);
   const [postStats, setPostStats] = useState<PostStats>(EMPTY_POST_STATS);
   const [isPostActionInProgress, setIsPostActionInProgress] = useState(false);
@@ -608,6 +667,55 @@ function App() {
   const [isEmergencyAlertActive, setIsEmergencyAlertActive] = useState(false);
   const [emergencyMessage, setEmergencyMessage] = useState('');
   const currentUserAuthorKey = useMemo(() => getSessionAuthorKey(userSession), [userSession]);
+  const userProfileImageSrc = useMemo(() => {
+    if (typeof userSession?.profileImageDataUrl !== 'string') {
+      return null;
+    }
+
+    const normalizedValue = userSession.profileImageDataUrl.trim();
+    return normalizedValue || null;
+  }, [userSession?.profileImageDataUrl]);
+  const authToken = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    const storedToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    if (typeof storedToken !== 'string') {
+      return null;
+    }
+
+    const normalizedToken = storedToken.trim();
+    return normalizedToken || null;
+  }, [userSession?.id, userSession?.email]);
+  const normalizedCurrentUserAuthorKey = useMemo(
+    () => (currentUserAuthorKey ? normalizeAuthorKey(currentUserAuthorKey) : null),
+    [currentUserAuthorKey],
+  );
+  const selfTripIdSet = useMemo(() => new Set(selfTripSummaries.map((trip) => trip.id)), [selfTripSummaries]);
+  const mainFeedPosts = useMemo(() => {
+    return feedPosts.filter((post) => {
+      const isOwnPostByAuthor =
+        normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
+      const isOwnPostById = selfTripIdSet.has(post.id);
+      const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
+      return !(isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId);
+    });
+  }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
+  const myFeedPosts = useMemo(() => {
+    const filteredPosts = feedPosts.filter((post) => {
+      const isOwnPostByAuthor =
+        normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
+      const isOwnPostById = selfTripIdSet.has(post.id);
+      const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
+      return isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
+    });
+
+    return filteredPosts.map((post) => ({
+      ...post,
+      pendingRequestCount: pendingRequestCountByTripId[post.id] ?? post.pendingRequestCount ?? 0,
+    }));
+  }, [feedPosts, normalizedCurrentUserAuthorKey, pendingRequestCountByTripId, selfTripIdSet, userSession?.id]);
 
   const loadActiveFeedPosts = async (
     showFallbackNotice = true,
@@ -648,6 +756,29 @@ function App() {
       setPostStats(stats);
     } catch {
       setPostStats(EMPTY_POST_STATS);
+    }
+  };
+
+  const loadSelfTripsForHost = async () => {
+    const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    if (!authToken) {
+      setSelfTripSummaries([]);
+      setPendingRequestCountByTripId({});
+      setHostRequestsByTripId({});
+      return;
+    }
+
+    try {
+      const hostTrips = await fetchSelfTrips(authToken);
+      setSelfTripSummaries(hostTrips);
+      setPendingRequestCountByTripId(
+        hostTrips.reduce<Record<string, number>>((accumulator, trip) => {
+          accumulator[trip.id] = trip.pendingRequestCount;
+          return accumulator;
+        }, {}),
+      );
+    } catch {
+      // Keep local feed fallback when /api/trips/self is not available.
     }
   };
 
@@ -801,6 +932,14 @@ function App() {
   useEffect(() => {
     void loadPostStatsFromDatabase(currentUserAuthorKey);
   }, [currentUserAuthorKey]);
+
+  useEffect(() => {
+    if (activeView !== 'myPosts' || !userSession) {
+      return;
+    }
+
+    void loadSelfTripsForHost();
+  }, [activeView, userSession?.id, userSession?.email, userSession?.name]);
 
   useEffect(() => {
     if (!userSession || feedPosts.length === 0) {
@@ -1202,9 +1341,254 @@ function App() {
     setSentRequestPostIds((previous) => previous.filter((id) => id !== postId));
   };
 
-  const handleFeedJoinRequest = (post: FeedPost) => {
-    setSentRequestPostIds((previous) => (previous.includes(post.id) ? previous : [...previous, post.id]));
-    setSystemNotice(`Join request sent to ${post.hostName} for "${post.title}".`);
+  const handleFeedJoinRequest = async (post: FeedPost) => {
+    if (!userSession) {
+      setCurrentScreen('auth');
+      setSystemNotice('Sign in to send a join request.');
+      return;
+    }
+
+    const isOwnPostByAuthor =
+      normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
+    const isOwnPostById = selfTripIdSet.has(post.id);
+    const isOwnPostByHostId = Boolean(userSession.id && post.hostId && post.hostId === userSession.id);
+    if (isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId) {
+      setSystemNotice('Hosts cannot send join requests to their own posts.');
+      return;
+    }
+
+    if (userSession.id && post.participantIds.includes(userSession.id)) {
+      setSystemNotice('You are already a participant in this trip.');
+      return;
+    }
+
+    if (post.spotsFilled >= post.maxParticipants) {
+      setSystemNotice('Trip is full. No additional join requests can be sent.');
+      return;
+    }
+
+    if (sentRequestPostIds.includes(post.id)) {
+      return;
+    }
+
+    const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    const shouldUseJoinApi = Boolean(authToken && isMongoObjectId(post.id));
+
+    if (!shouldUseJoinApi) {
+      setSentRequestPostIds((previous) => (previous.includes(post.id) ? previous : [...previous, post.id]));
+      setSystemNotice(`Join request sent to ${post.hostName} for "${post.title}".`);
+      return;
+    }
+
+    setIsPostActionInProgress(true);
+    try {
+      await submitJoinRequest(post.id, authToken as string);
+      setSentRequestPostIds((previous) => (previous.includes(post.id) ? previous : [...previous, post.id]));
+      setSystemNotice(`Join request sent to ${post.hostName} for "${post.title}".`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to send join request right now.';
+      setSystemNotice(message);
+    } finally {
+      setIsPostActionInProgress(false);
+    }
+  };
+
+  const handleJoinedTripChat = (tripId: string) => {
+    if (!userSession) {
+      setCurrentScreen('auth');
+      setSystemNotice('Sign in to join trip chat.');
+      return;
+    }
+
+    let nextTrip = allTrips.find((item) => item.id === tripId) ?? null;
+    if (!nextTrip) {
+      const feedPost = feedPosts.find((post) => post.id === tripId) ?? null;
+      if (feedPost) {
+        const runtimeTrip = toRuntimeTripFromFeedPost(feedPost);
+        nextTrip = runtimeTrip;
+        setUserCreatedTrips((previous) =>
+          previous.some((trip) => trip.id === runtimeTrip.id) ? previous : [runtimeTrip, ...previous],
+        );
+      }
+    }
+
+    if (!nextTrip) {
+      setSystemNotice('Unable to open trip chat right now.');
+      return;
+    }
+
+    setSelectedTrip(nextTrip);
+    setActiveGroupTripId(tripId);
+    setTripRuntimeById((previous) => {
+      const runtime = previous[tripId];
+      if (!runtime) {
+        return {
+          ...previous,
+          [tripId]: {
+            status: 'Introductory',
+            introEndsAt: Date.now() + INTRO_PERIOD_MS,
+            escrowSummary: null,
+            hasReleasedCheckInFunds: false,
+            hasReviewed: false,
+          },
+        };
+      }
+
+      if (runtime.status !== 'Open') {
+        return previous;
+      }
+
+      return {
+        ...previous,
+        [tripId]: {
+          ...runtime,
+          status: 'Introductory',
+          introEndsAt: Date.now() + INTRO_PERIOD_MS,
+        },
+      };
+    });
+
+    setCurrentScreen('groupChat');
+    setSystemNotice('');
+  };
+
+  const handleCloseRequestModal = () => {
+    setActiveRequestModalPost(null);
+    setIsRequestModalLoading(false);
+    setIsRequestActionInProgress(false);
+  };
+
+  const handleOpenManageRequests = async (post: FeedPost) => {
+    setActiveRequestModalPost(post);
+    setHostRequestsByTripId((previous) => ({
+      ...previous,
+      [post.id]: previous[post.id] ?? [],
+    }));
+
+    const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    if (!authToken || !isMongoObjectId(post.id)) {
+      setPendingRequestCountByTripId((previous) => ({
+        ...previous,
+        [post.id]: previous[post.id] ?? post.pendingRequestCount ?? 0,
+      }));
+      return;
+    }
+
+    setIsRequestModalLoading(true);
+    try {
+      const requests = await fetchTripRequests(post.id, authToken);
+      setHostRequestsByTripId((previous) => ({
+        ...previous,
+        [post.id]: requests,
+      }));
+      setPendingRequestCountByTripId((previous) => ({
+        ...previous,
+        [post.id]: requests.length,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to load trip requests right now.';
+      setSystemNotice(message);
+      setHostRequestsByTripId((previous) => ({
+        ...previous,
+        [post.id]: [],
+      }));
+      setPendingRequestCountByTripId((previous) => ({
+        ...previous,
+        [post.id]: 0,
+      }));
+    } finally {
+      setIsRequestModalLoading(false);
+    }
+  };
+
+  const handleReviewTripRequest = async (requestItem: HostTripRequest, status: HostRequestReviewStatus) => {
+    const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+
+    if (requestItem.source === 'api' && !authToken) {
+      setSystemNotice('Your session expired. Please sign in again.');
+      return;
+    }
+
+    setIsRequestActionInProgress(true);
+    try {
+      let updatedTripSnapshot:
+        | {
+            id: string;
+            maxParticipants: number;
+            spotsFilled: number;
+            spotsFilledPercent: number;
+            participantIds: string[];
+          }
+        | null = null;
+
+      if (requestItem.source === 'api' && authToken) {
+        const response = await reviewJoinRequest(requestItem.id, status, authToken);
+        if (response.trip) {
+          updatedTripSnapshot = {
+            id: response.trip.id,
+            maxParticipants: response.trip.maxParticipants,
+            spotsFilled: response.trip.spotsFilled,
+            spotsFilledPercent: response.trip.spotsFilledPercent,
+            participantIds: response.trip.participantIds,
+          };
+        }
+      }
+
+      setHostRequestsByTripId((previous) => ({
+        ...previous,
+        [requestItem.tripId]: (previous[requestItem.tripId] ?? []).filter((request) => request.id !== requestItem.id),
+      }));
+      setPendingRequestCountByTripId((previous) => ({
+        ...previous,
+        [requestItem.tripId]: Math.max(0, (previous[requestItem.tripId] ?? 0) - 1),
+      }));
+
+      if (status === 'accepted') {
+        setFeedPosts((previous) =>
+          previous.map((post) => {
+            if (post.id !== requestItem.tripId) {
+              return post;
+            }
+
+            if (updatedTripSnapshot) {
+              return {
+                ...post,
+                maxParticipants: updatedTripSnapshot.maxParticipants,
+                spotsFilled: updatedTripSnapshot.spotsFilled,
+                spotsFilledPercent: updatedTripSnapshot.spotsFilledPercent,
+                participantIds: updatedTripSnapshot.participantIds,
+              };
+            }
+
+            const currentParticipantIds = post.participantIds.includes(requestItem.requesterId)
+              ? post.participantIds
+              : [...post.participantIds, requestItem.requesterId];
+            const nextSpotsFilled = currentParticipantIds.length;
+            const nextSpotsFilledPercent =
+              post.maxParticipants > 0 ? Math.min(100, Math.round((nextSpotsFilled / post.maxParticipants) * 100)) : 0;
+
+            return {
+              ...post,
+              participantIds: currentParticipantIds,
+              spotsFilled: nextSpotsFilled,
+              spotsFilledPercent: nextSpotsFilledPercent,
+            };
+          }),
+        );
+      }
+
+      if (status === 'accepted') {
+        setSystemNotice(`${requestItem.requesterLabel} was accepted and can now join trip chat.`);
+      } else {
+        setSystemNotice(`${requestItem.requesterLabel} was rejected.`);
+      }
+      void loadSelfTripsForHost();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to update request right now.';
+      setSystemNotice(message);
+    } finally {
+      setIsRequestActionInProgress(false);
+    }
   };
 
   const handleFeedShare = async (post: FeedPost) => {
@@ -1477,6 +1861,7 @@ function App() {
         window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, loginResponse.token);
         const baseSession: UserSession = {
           ...createSession(loginResponse.user.userId, 'Email'),
+          id: loginResponse.user.id,
           isVerified: Boolean(loginResponse.user.isVerified),
         };
         let nextSession = baseSession;
@@ -1533,6 +1918,12 @@ function App() {
     setDnaMatchByPostId({});
     setDnaMatchLoadingPostIds([]);
     setSentRequestPostIds([]);
+    setSelfTripSummaries([]);
+    setPendingRequestCountByTripId({});
+    setHostRequestsByTripId({});
+    setActiveRequestModalPost(null);
+    setIsRequestModalLoading(false);
+    setIsRequestActionInProgress(false);
     setPostStats(EMPTY_POST_STATS);
     setIsPostActionInProgress(false);
     setCurrentScreen('home');
@@ -1746,6 +2137,10 @@ function App() {
   const handleProfileSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!userSession) {
+      return;
+    }
+
+    if (!isProfileEditing) {
       return;
     }
 
@@ -1984,6 +2379,10 @@ function App() {
       ? 'border-b-2 border-accent text-accent'
       : 'border-b-2 border-transparent text-primary/80 transition hover:text-primary';
   };
+  const getSocialTopNavClass = (view: ActiveView) =>
+    userSession && isSocialExperienceScreen && activeView === view
+      ? 'border-b-2 border-accent text-accent'
+      : 'border-b-2 border-transparent text-primary/80 transition hover:text-primary';
 
   const getSidebarClass = (screen: ScreenName) =>
     currentScreen === screen
@@ -2135,32 +2534,40 @@ function App() {
 
             <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
               <p className="text-sm font-semibold text-primary">Verified Document</p>
-              <p className="mt-1 text-xs text-primary/75">
-                Upload an identity document. Successful upload marks your profile as verified.
-              </p>
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <input
-                  type="file"
-                  accept=".pdf,image/*,.doc,.docx"
-                  onChange={handleVerificationDocumentSelect}
-                  disabled={isVerificationUploading}
-                  className="text-sm text-primary file:mr-3 file:rounded-card file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                />
-                <button
-                  type="button"
-                  onClick={handleUploadVerificationDocument}
-                  disabled={isVerificationUploading || !verificationDocumentFile}
-                  className="interactive-btn rounded-card bg-success px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {isVerificationUploading ? 'Uploading...' : 'Upload Document'}
-                </button>
-              </div>
-              {verificationDocumentFile ? (
-                <p className="mt-2 text-xs text-primary/80">Selected: {verificationDocumentFile.name}</p>
-              ) : null}
-              {verificationDocumentError ? (
-                <p className="mt-2 text-xs font-medium text-red-600">{verificationDocumentError}</p>
-              ) : null}
+              {userSession?.isVerified ? (
+                <p className="mt-2 rounded-card bg-success/20 px-3 py-2 text-sm font-semibold text-primary ring-1 ring-success/40">
+                  Your document is verified.
+                </p>
+              ) : (
+                <>
+                  <p className="mt-1 text-xs text-primary/75">
+                    Upload an identity document. Successful upload marks your profile as verified.
+                  </p>
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <input
+                      type="file"
+                      accept=".pdf,image/*,.doc,.docx"
+                      onChange={handleVerificationDocumentSelect}
+                      disabled={isVerificationUploading}
+                      className="text-sm text-primary file:mr-3 file:rounded-card file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleUploadVerificationDocument}
+                      disabled={isVerificationUploading || !verificationDocumentFile}
+                      className="interactive-btn rounded-card bg-success px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {isVerificationUploading ? 'Uploading...' : 'Upload Document'}
+                    </button>
+                  </div>
+                  {verificationDocumentFile ? (
+                    <p className="mt-2 text-xs text-primary/80">Selected: {verificationDocumentFile.name}</p>
+                  ) : null}
+                  {verificationDocumentError ? (
+                    <p className="mt-2 text-xs font-medium text-red-600">{verificationDocumentError}</p>
+                  ) : null}
+                </>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-3">
@@ -2185,7 +2592,10 @@ function App() {
               ) : (
                 <button
                   type="button"
-                  onClick={handleProfileEdit}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    handleProfileEdit();
+                  }}
                   className="interactive-btn rounded-card bg-primary px-5 py-2.5 text-sm font-semibold text-white"
                 >
                   Edit
@@ -2267,31 +2677,44 @@ function App() {
   const renderSocialExperience = () => (
     <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-6">
       <div className="grid gap-5 lg:grid-cols-[220px_1fr]">
-        <Sidebar activeView={activeView} onChangeView={setActiveView} />
+        <Sidebar
+          activeView={activeView}
+          onChangeView={setActiveView}
+          userName={userSession?.firstName || userSession?.name || 'Traveler'}
+          profileImageDataUrl={userProfileImageSrc}
+          badgeProgress={Math.min(100, Math.round((postStats.activeCount / 6) * 100) || 0)}
+          onSettingsClick={() => handleNavigation('profile')}
+          onLogoutClick={handleSignOut}
+        />
         <section className="rounded-card border border-primary/10 bg-white/85 p-4 shadow-lg sm:p-5">
-          {activeView === 'feed' ? (
+          {activeView === 'dashboard' ? (
+            <DashboardView
+              totalCompletedTrips={completedTripsMetric}
+              totalConnections={totalConnectionsMetric}
+              activePosts={postStats.activeCount}
+              availableFunds={availableFundsMetric}
+              walletCapacity={walletCapacity}
+            />
+          ) : (
             <MainFeed
-              posts={feedPosts}
+              mode={activeView === 'myPosts' ? 'mine' : 'main'}
+              posts={activeView === 'myPosts' ? myFeedPosts : mainFeedPosts}
               sentRequestPostIds={sentRequestPostIds}
               currentUserAuthorKey={currentUserAuthorKey ?? undefined}
+              currentUserId={userSession?.id ?? null}
+              pendingRequestCountByPostId={pendingRequestCountByTripId}
               isPostActionInProgress={isPostActionInProgress}
               dnaMatchByPostId={dnaMatchByPostId}
               dnaMatchLoadingPostIds={dnaMatchLoadingPostIds}
               onJoinRequest={handleFeedJoinRequest}
+              onOpenTripChat={handleJoinedTripChat}
+              onManageRequests={handleOpenManageRequests}
               onSharePost={handleFeedShare}
               onDismissPost={handleFeedDismiss}
               onEditPost={handleEditFeedPost}
               onDeletePost={handleDeleteFeedPost}
               onCompletePost={handleCompleteFeedPost}
             />
-          ) : (
-              <DashboardView
-                totalCompletedTrips={completedTripsMetric}
-                totalConnections={totalConnectionsMetric}
-                activePosts={postStats.activeCount}
-                availableFunds={availableFundsMetric}
-                walletCapacity={walletCapacity}
-              />
           )}
         </section>
       </div>
@@ -2482,7 +2905,16 @@ function App() {
       case 'home':
         return <HeroView onExploreTrip={handleOpenTrip} onHostTrip={handleHostTrip} />;
       case 'discovery':
-        return <DiscoveryFeedView trips={matchedTrips} onViewTrip={handleOpenTrip} onJoinChat={handleJoinChat} />;
+        return (
+          <DiscoveryFeedView
+            trips={matchedTrips}
+            currentUserId={userSession?.id ?? null}
+            currentUserName={userSession?.name ?? 'Traveler'}
+            authToken={authToken}
+            onViewTrip={handleOpenTrip}
+            onJoinChat={handleJoinChat}
+          />
+        );
       case 'aboutUs':
         return <AboutUsView />;
       case 'contactUs':
@@ -2527,12 +2959,20 @@ function App() {
             status={activeGroupRuntime.status}
             escrowSummary={activeGroupRuntime.escrowSummary}
             hasReleasedCheckInFunds={activeGroupRuntime.hasReleasedCheckInFunds}
+            onBack={() => setCurrentScreen(userSession ? 'home' : 'discovery')}
             onCommitAndPay={handleCommitAndPay}
             onReleaseCheckInFunds={handleReleaseCheckIn}
             onOpenReview={handleOpenReview}
           />
         ) : (
-          <DiscoveryFeedView trips={matchedTrips} onViewTrip={handleOpenTrip} onJoinChat={handleJoinChat} />
+          <DiscoveryFeedView
+            trips={matchedTrips}
+            currentUserId={userSession?.id ?? null}
+            currentUserName={userSession?.name ?? 'Traveler'}
+            authToken={authToken}
+            onViewTrip={handleOpenTrip}
+            onJoinChat={handleJoinChat}
+          />
         );
       case 'reviews':
         return activeGroupTrip && activeGroupRuntime && userSession ? (
@@ -2543,7 +2983,14 @@ function App() {
             onSubmitReview={handleSubmitReview}
           />
         ) : (
-          <DiscoveryFeedView trips={matchedTrips} onViewTrip={handleOpenTrip} onJoinChat={handleJoinChat} />
+          <DiscoveryFeedView
+            trips={matchedTrips}
+            currentUserId={userSession?.id ?? null}
+            currentUserName={userSession?.name ?? 'Traveler'}
+            authToken={authToken}
+            onViewTrip={handleOpenTrip}
+            onJoinChat={handleJoinChat}
+          />
         );
       case 'expenses':
         return (
@@ -2564,7 +3011,14 @@ function App() {
         return selectedTrip ? (
           <TripDetailView trip={selectedTrip} onBack={() => handleNavigation('discovery')} />
         ) : (
-          <DiscoveryFeedView trips={matchedTrips} onViewTrip={handleOpenTrip} onJoinChat={handleJoinChat} />
+          <DiscoveryFeedView
+            trips={matchedTrips}
+            currentUserId={userSession?.id ?? null}
+            currentUserName={userSession?.name ?? 'Traveler'}
+            authToken={authToken}
+            onViewTrip={handleOpenTrip}
+            onJoinChat={handleJoinChat}
+          />
         );
       case 'profile':
         return renderProfileScreen();
@@ -2613,10 +3067,22 @@ function App() {
                 }
                 handleNavigation('discovery');
               }}
-              className={getTopNavClass('discovery')}
+              className={userSession ? getSocialTopNavClass('feed') : getTopNavClass('discovery')}
             >
               Discover
             </button>
+            {userSession ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveView('myPosts');
+                  setCurrentScreen('home');
+                }}
+                className={getSocialTopNavClass('myPosts')}
+              >
+                My Posts
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => handleNavigation('aboutUs')}
@@ -2641,7 +3107,7 @@ function App() {
                 }
                 handleNavigation('dashboard');
               }}
-              className={getTopNavClass('dashboard')}
+              className={userSession ? getSocialTopNavClass('dashboard') : getTopNavClass('dashboard')}
             >
               Trips
             </button>
@@ -2652,10 +3118,19 @@ function App() {
               <button
                 type="button"
                 onClick={() => setIsAccountPanelOpen((previous) => !previous)}
-                className="interactive-btn flex h-10 w-10 items-center justify-center rounded-full bg-primary text-sm font-bold text-white"
+                className="interactive-btn flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-primary text-sm font-bold text-white"
                 aria-label="Open account menu"
               >
-                {userSession.name.charAt(0).toUpperCase()}
+                {userProfileImageSrc ? (
+                  <img
+                    src={userProfileImageSrc}
+                    alt={`${userSession.name} profile`}
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                  />
+                ) : (
+                  userSession.name.charAt(0).toUpperCase()
+                )}
               </button>
               {userSession.isVerified ? (
                 <span className="absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-success text-[10px] font-bold text-white">
@@ -2737,6 +3212,21 @@ function App() {
         )}
       </main>
 
+      <RequestModal
+        isOpen={Boolean(activeRequestModalPost)}
+        tripTitle={activeRequestModalPost?.title ?? 'Trip Requests'}
+        requests={activeRequestModalPost ? hostRequestsByTripId[activeRequestModalPost.id] ?? [] : []}
+        isLoading={isRequestModalLoading}
+        isActionInProgress={isRequestActionInProgress}
+        onClose={handleCloseRequestModal}
+        onAccept={(requestItem) => {
+          void handleReviewTripRequest(requestItem, 'accepted');
+        }}
+        onReject={(requestItem) => {
+          void handleReviewTripRequest(requestItem, 'rejected');
+        }}
+      />
+
       {userSession ? (
         <button
           type="button"
@@ -2770,80 +3260,165 @@ function App() {
             aria-label="Close account panel"
           />
 
-          <aside className="absolute right-0 top-0 h-full w-full max-w-sm bg-white p-6 shadow-2xl ring-1 ring-primary/10">
-            <div className="flex items-center justify-between border-b border-primary/10 pb-4">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Account</p>
-                <h3 className="text-lg font-bold text-primary">{userSession.name}</h3>
+          <aside className="absolute right-0 top-0 h-full w-full max-w-sm overflow-hidden border-l border-primary/15 bg-gradient-to-b from-white/95 via-[#faf6e8] to-[#f4f1de] shadow-2xl ring-1 ring-primary/10">
+            <div className="flex h-full flex-col">
+              <div className="border-b border-primary/10 bg-white/60 px-6 pb-5 pt-6 backdrop-blur-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/20">
+                      {userProfileImageSrc ? (
+                        <img
+                          src={userProfileImageSrc}
+                          alt={`${userSession.name} profile`}
+                          className="h-full w-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <UserCircle2 className="h-7 w-7" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Account</p>
+                      <h3 className="mt-1 flex items-center gap-1.5 text-lg font-bold text-primary">
+                        {userProfileImageSrc ? (
+                          <span className="inline-flex h-4 w-4 overflow-hidden rounded-full ring-1 ring-primary/20">
+                            <img
+                              src={userProfileImageSrc}
+                              alt={`${userSession.name} profile`}
+                              className="h-full w-full object-cover"
+                              loading="lazy"
+                            />
+                          </span>
+                        ) : (
+                          <UserCircle2 className="h-4 w-4 text-primary/80" />
+                        )}
+                        <span className="truncate">{userSession.name}</span>
+                      </h3>
+                      <p className="truncate text-xs text-primary/75">{userSession.email || 'Traveler profile'}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsAccountPanelOpen(false)}
+                    className="interactive-btn inline-flex h-9 w-9 items-center justify-center rounded-card border border-primary/20 bg-white/70 text-primary"
+                    aria-label="Close account panel"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Elite Traveler
+                  </span>
+                  {userSession.isVerified ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-success/20 px-3 py-1 text-xs font-semibold text-primary ring-1 ring-success/40">
+                      <BadgeCheck className="h-3.5 w-3.5" />
+                      Verified Badge
+                    </span>
+                  ) : null}
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsAccountPanelOpen(false)}
-                className="interactive-btn rounded-card border border-primary/20 px-3 py-1.5 text-sm font-semibold text-primary"
-              >
-                Close
-              </button>
+
+              <nav className="flex-1 space-y-2 overflow-y-auto px-4 py-5">
+                <button
+                  type="button"
+                  onClick={() => handleNavigation('profile')}
+                  className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                >
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                    <UserCircle2 className="h-5 w-5" />
+                  </span>
+                  <span>Profile</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleNavigation('history')}
+                  className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                >
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                    <History className="h-5 w-5" />
+                  </span>
+                  <span>History</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleNavigation('wallet')}
+                  className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                >
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                    <Wallet className="h-5 w-5" />
+                  </span>
+                  <span>Wallet</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleNavigation('onboarding')}
+                  className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                >
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                    <Sparkles className="h-5 w-5" />
+                  </span>
+                  <span>Travel DNA</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleNavigation('verification')}
+                  className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                >
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                    <ShieldCheck className="h-5 w-5" />
+                  </span>
+                  <span>Verification</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleNavigation('dashboard')}
+                  className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                >
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                    <LayoutDashboard className="h-5 w-5" />
+                  </span>
+                  <span>Dashboard</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveView('myPosts');
+                    setCurrentScreen('home');
+                    setIsAccountPanelOpen(false);
+                  }}
+                  className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                >
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                    <FileText className="h-5 w-5" />
+                  </span>
+                  <span>My Posts</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleNavigation('createTrip')}
+                  className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                >
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                    <Plus className="h-5 w-5" />
+                  </span>
+                  <span>Create Trip</span>
+                </button>
+              </nav>
+
+              <div className="border-t border-primary/10 px-4 py-4">
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="interactive-btn flex w-full items-center justify-center gap-2 rounded-2xl bg-red-600 px-4 py-3 text-sm font-semibold text-white hover:bg-red-700"
+                >
+                  <LogOut className="h-4.5 w-4.5" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
             </div>
-
-            <nav className="mt-5 space-y-2">
-              <button
-                type="button"
-                onClick={() => handleNavigation('profile')}
-                className="interactive-btn w-full rounded-card bg-background/80 px-4 py-3 text-left text-sm font-semibold text-primary ring-1 ring-primary/10"
-              >
-                Profile
-              </button>
-              <button
-                type="button"
-                onClick={() => handleNavigation('history')}
-                className="interactive-btn w-full rounded-card bg-background/80 px-4 py-3 text-left text-sm font-semibold text-primary ring-1 ring-primary/10"
-              >
-                History
-              </button>
-              <button
-                type="button"
-                onClick={() => handleNavigation('wallet')}
-                className="interactive-btn w-full rounded-card bg-background/80 px-4 py-3 text-left text-sm font-semibold text-primary ring-1 ring-primary/10"
-              >
-                Wallet
-              </button>
-              <button
-                type="button"
-                onClick={() => handleNavigation('onboarding')}
-                className="interactive-btn w-full rounded-card bg-background/80 px-4 py-3 text-left text-sm font-semibold text-primary ring-1 ring-primary/10"
-              >
-                Travel DNA
-              </button>
-              <button
-                type="button"
-                onClick={() => handleNavigation('verification')}
-                className="interactive-btn w-full rounded-card bg-background/80 px-4 py-3 text-left text-sm font-semibold text-primary ring-1 ring-primary/10"
-              >
-                Verification
-              </button>
-              <button
-                type="button"
-                onClick={() => handleNavigation('dashboard')}
-                className="interactive-btn w-full rounded-card bg-background/80 px-4 py-3 text-left text-sm font-semibold text-primary ring-1 ring-primary/10"
-              >
-                Dashboard
-              </button>
-              <button
-                type="button"
-                onClick={() => handleNavigation('createTrip')}
-                className="interactive-btn w-full rounded-card bg-background/80 px-4 py-3 text-left text-sm font-semibold text-primary ring-1 ring-primary/10"
-              >
-                Create Trip
-              </button>
-            </nav>
-
-            <button
-              type="button"
-              onClick={handleSignOut}
-              className="interactive-btn mt-6 w-full rounded-card bg-red-600 px-4 py-3 text-sm font-semibold text-white hover:bg-red-700"
-            >
-              Sign Out
-            </button>
           </aside>
         </div>
       ) : null}

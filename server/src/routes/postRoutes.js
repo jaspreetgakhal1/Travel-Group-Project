@@ -1,5 +1,6 @@
 import express from 'express';
 import { Post } from '../models/Post.js';
+import { Trip } from '../models/Trip.js';
 import { User } from '../models/User.js';
 
 const router = express.Router();
@@ -96,6 +97,15 @@ const getUserLookupKeys = (authorKey) => {
   ];
 };
 
+const getParticipantIds = (value) => (Array.isArray(value) ? value.map((participantId) => String(participantId)) : []);
+const getSpotsFilledPercent = (spotsFilled, maxParticipants) => {
+  if (!Number.isFinite(maxParticipants) || maxParticipants <= 0) {
+    return 0;
+  }
+
+  return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
+};
+
 const findUsersByAuthorKeys = async (authorKeys) => {
   const normalizedAuthorKeys = Array.from(
     new Set(
@@ -112,7 +122,7 @@ const findUsersByAuthorKeys = async (authorKeys) => {
   const users = await User.find({
     $or: [{ email: { $in: normalizedAuthorKeys } }, { userId: { $in: normalizedAuthorKeys } }],
   })
-    .select('email userId firstName lastName profileImageDataUrl isVerified')
+    .select('_id email userId firstName lastName profileImageDataUrl isVerified')
     .lean();
 
   const usersByAuthorKey = new Map();
@@ -140,32 +150,52 @@ const findUserByAuthorKey = async (authorKey) => {
   }
 
   const user = await User.findOne({ $or: lookupKeys })
-    .select('email userId firstName lastName profileImageDataUrl isVerified')
+    .select('_id email userId firstName lastName profileImageDataUrl isVerified')
     .lean();
 
   return user ?? null;
 };
 
-const toFeedPost = (post, user = null) => ({
-  id: post._id.toString(),
-  authorKey: getPostAuthorKey(post),
-  status: getPostStatus(post.status),
-  onlyVerifiedUsers: Boolean(post.onlyVerifiedUsers),
-  title: post.title,
-  hostName: buildDisplayName(user, post.hostName),
-  isVerified: user ? Boolean(user.isVerified) : Boolean(post.isVerified),
-  hostProfileImageDataUrl: getProfileImageDataUrl(user),
-  imageUrl: post.imageUrl,
-  location: post.location,
-  cost: post.cost,
-  durationDays: post.durationDays,
-  requiredPeople: post.requiredPeople,
-  spotsFilledPercent: post.spotsFilledPercent,
-  expectations: post.expectations,
-  travelerType: post.travelerType,
-  startDate: toIsoDateString(post.startDate),
-  endDate: toIsoDateString(post.endDate),
-});
+const toFeedPost = (post, user = null, trip = null) => {
+  const participantIds = getParticipantIds(trip?.participants);
+  const maxParticipants =
+    Number.isInteger(trip?.maxParticipants) && trip.maxParticipants > 0
+      ? trip.maxParticipants
+      : Number.isInteger(post.requiredPeople) && post.requiredPeople > 0
+        ? post.requiredPeople
+        : 1;
+  const fallbackSpotsFilled =
+    Number.isFinite(post.spotsFilledPercent) && maxParticipants > 0
+      ? Math.round((post.spotsFilledPercent / 100) * maxParticipants)
+      : 0;
+  const spotsFilled = trip ? participantIds.length : fallbackSpotsFilled;
+
+  return {
+    id: post._id.toString(),
+    hostId:
+      trip?.organizerId ? String(trip.organizerId) : user?._id ? String(user._id) : undefined,
+    authorKey: getPostAuthorKey(post),
+    status: getPostStatus(post.status),
+    onlyVerifiedUsers: Boolean(post.onlyVerifiedUsers),
+    title: post.title,
+    hostName: buildDisplayName(user, post.hostName),
+    isVerified: user ? Boolean(user.isVerified) : Boolean(post.isVerified),
+    hostProfileImageDataUrl: getProfileImageDataUrl(user),
+    imageUrl: post.imageUrl,
+    location: post.location,
+    cost: post.cost,
+    durationDays: post.durationDays,
+    requiredPeople: post.requiredPeople,
+    maxParticipants,
+    spotsFilled,
+    spotsFilledPercent: getSpotsFilledPercent(spotsFilled, maxParticipants),
+    participantIds,
+    expectations: post.expectations,
+    travelerType: post.travelerType,
+    startDate: toIsoDateString(post.startDate),
+    endDate: toIsoDateString(post.endDate),
+  };
+};
 
 const validatePostPayload = (body) => {
   const {
@@ -354,10 +384,23 @@ router.get('/', async (request, response) => {
   try {
     const posts = await Post.find(filter).sort({ createdAt: -1 });
     const usersByAuthorKey = await findUsersByAuthorKeys(posts.map((post) => getPostAuthorKey(post)));
+    const postIds = posts.map((post) => post._id);
+    const trips = postIds.length > 0
+      ? await Trip.find({ _id: { $in: postIds } }).select('_id organizerId maxParticipants participants').lean()
+      : [];
+    const tripById = new Map(trips.map((trip) => [String(trip._id), trip]));
 
     return response
       .status(200)
-      .json(posts.map((post) => toFeedPost(post, usersByAuthorKey.get(getPostAuthorKey(post)) ?? null)));
+      .json(
+        posts.map((post) =>
+          toFeedPost(
+            post,
+            usersByAuthorKey.get(getPostAuthorKey(post)) ?? null,
+            tripById.get(String(post._id)) ?? null,
+          ),
+        ),
+      );
   } catch (error) {
     console.error('Get posts route failed', error);
     return response.status(500).json({ message: 'Unable to fetch posts right now.' });
