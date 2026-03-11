@@ -2,7 +2,24 @@ import type { FeedPost, FeedPostStatus } from '../types/feed';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
-export type CreateFeedPostPayload = Omit<FeedPost, 'id'>;
+export type CreateFeedPostPayload = {
+  authorKey: string;
+  status?: FeedPostStatus;
+  onlyVerifiedUsers: boolean;
+  title: string;
+  hostName: string;
+  isVerified: boolean;
+  imageUrl: string;
+  location: string;
+  cost: number;
+  durationDays: number;
+  requiredPeople: number;
+  spotsFilledPercent: number;
+  expectations: string[];
+  travelerType: string;
+  startDate: string;
+  endDate: string;
+};
 export type PostStats = {
   activeCount: number;
   completedCount: number;

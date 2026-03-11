@@ -10,6 +10,7 @@ type GroupChatViewProps = {
   status: TripLifecycleStatus;
   escrowSummary: EscrowSummary | null;
   hasReleasedCheckInFunds: boolean;
+  onBack: () => void;
   onCommitAndPay: () => void;
   onReleaseCheckInFunds: () => void;
   onOpenReview: () => void;
@@ -31,6 +32,7 @@ const GroupChatView: React.FC<GroupChatViewProps> = ({
   status,
   escrowSummary,
   hasReleasedCheckInFunds,
+  onBack,
   onCommitAndPay,
   onReleaseCheckInFunds,
   onOpenReview,
@@ -59,6 +61,13 @@ const GroupChatView: React.FC<GroupChatViewProps> = ({
     <section className="mx-auto w-full max-w-5xl px-6 pb-16 pt-8">
       <article className="rounded-card bg-white/95 p-6 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
         <header className="mb-5 border-b border-primary/10 pb-4">
+          <button
+            type="button"
+            onClick={onBack}
+            className="interactive-btn mb-3 rounded-card border border-primary/20 bg-white px-3 py-1.5 text-xs font-semibold text-primary"
+          >
+            Back
+          </button>
           <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Vibe Check Hub</p>
           <h2 className="text-2xl font-bold text-primary">{trip.title}</h2>
           <p className="mt-1 text-sm text-primary/80">Status: {status}</p>
