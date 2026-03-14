@@ -9,6 +9,7 @@ import matchRoutes from './routes/matchRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import postRoutes from './routes/postRoutes.js';
 import tripRoutes from './routes/tripRoutes.js';
+import userRoutes from './routes/userRoutes.js';
 
 const app = express();
 
@@ -42,6 +43,7 @@ app.use('/api/trips', tripRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/join-requests', joinRequestRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/users', userRoutes);
 
 app.use((error: Error, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
   const parseError = error as Error & { type?: string };

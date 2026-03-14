@@ -9,6 +9,7 @@ import matchRoutes from './routes/matchRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import postRoutes from './routes/postRoutes.js';
 import tripRoutes from './routes/tripRoutes.js';
+import userRoutes from './routes/userRoutes.js';
 const app = express();
 app.use(cors({
     origin(origin, callback) {
@@ -33,6 +34,7 @@ app.use('/api/trips', tripRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/join-requests', joinRequestRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/users', userRoutes);
 app.use((error, _request, response, _next) => {
     if (error.message === 'Origin not allowed by CORS') {
         return response.status(403).json({ message: error.message });

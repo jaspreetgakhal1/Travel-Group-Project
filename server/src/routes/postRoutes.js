@@ -122,7 +122,7 @@ const findUsersByAuthorKeys = async (authorKeys) => {
   const users = await User.find({
     $or: [{ email: { $in: normalizedAuthorKeys } }, { userId: { $in: normalizedAuthorKeys } }],
   })
-    .select('_id email userId firstName lastName profileImageDataUrl isVerified')
+    .select('_id email userId firstName lastName profileImageDataUrl isVerified countryCode mobileNumber')
     .lean();
 
   const usersByAuthorKey = new Map();
@@ -150,7 +150,7 @@ const findUserByAuthorKey = async (authorKey) => {
   }
 
   const user = await User.findOne({ $or: lookupKeys })
-    .select('_id email userId firstName lastName profileImageDataUrl isVerified')
+    .select('_id email userId firstName lastName profileImageDataUrl isVerified countryCode mobileNumber')
     .lean();
 
   return user ?? null;
@@ -174,6 +174,8 @@ const toFeedPost = (post, user = null, trip = null) => {
     id: post._id.toString(),
     hostId:
       trip?.organizerId ? String(trip.organizerId) : user?._id ? String(user._id) : undefined,
+    hostCountryCode: typeof user?.countryCode === 'string' ? user.countryCode : undefined,
+    hostMobileNumber: typeof user?.mobileNumber === 'string' ? user.mobileNumber : undefined,
     authorKey: getPostAuthorKey(post),
     status: getPostStatus(post.status),
     onlyVerifiedUsers: Boolean(post.onlyVerifiedUsers),

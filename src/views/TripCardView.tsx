@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { MessageCircle } from 'lucide-react';
-import ChatRoom from '../components/ChatRoom';
 import { checkTripChatAccess } from '../services/chatAccessApi';
 import type { Trip } from '../models/tripModel';
 
@@ -23,14 +22,13 @@ const TripCardView: React.FC<TripCardViewProps> = ({
   trip,
   matchScore,
   currentUserId = null,
-  currentUserName = 'Traveler',
+  currentUserName: _currentUserName = 'Traveler',
   authToken = null,
   onViewMore,
   onJoinChat,
 }) => {
   const canJoinChat = matchScore > 70;
   const [hasChatAccess, setHasChatAccess] = useState(false);
-  const [isChatRoomOpen, setIsChatRoomOpen] = useState(false);
 
   const resolvedAuthToken = useMemo(() => {
     if (typeof authToken === 'string' && authToken.trim()) {
@@ -121,12 +119,7 @@ const TripCardView: React.FC<TripCardViewProps> = ({
           {hasChatAccess ? (
             <button
               type="button"
-              onClick={() => {
-                if (typeof window !== 'undefined') {
-                  window.history.pushState({}, '', `/chat/${encodeURIComponent(trip.id)}`);
-                }
-                setIsChatRoomOpen(true);
-              }}
+              onClick={() => onJoinChat(trip.id)}
               className="interactive-btn inline-flex items-center gap-1 rounded-card border border-primary/20 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary"
               aria-label={`Open chat for ${trip.title}`}
             >
@@ -136,16 +129,6 @@ const TripCardView: React.FC<TripCardViewProps> = ({
           ) : null}
         </div>
       </article>
-
-      <ChatRoom
-        isOpen={isChatRoomOpen}
-        roomId={trip.id}
-        tripTitle={trip.title}
-        currentUserId={currentUserId}
-        currentUserName={currentUserName}
-        isHost={false}
-        onClose={() => setIsChatRoomOpen(false)}
-      />
     </>
   );
 };
