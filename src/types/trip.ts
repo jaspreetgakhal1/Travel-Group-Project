@@ -3,6 +3,8 @@ export interface Trip {
   hostId?: string;
   title: string;
   hostName: string;
+  hostCountryCode?: string;
+  hostMobileNumber?: string;
   priceShare: number;
   matchPercentage: number;
   imageUrl: string;

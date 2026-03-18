@@ -3,6 +3,8 @@ export type FeedPostStatus = 'Active' | 'Completed';
 export type FeedPost = {
   id: string;
   hostId?: string;
+  hostCountryCode?: string;
+  hostMobileNumber?: string;
   authorKey: string;
   status: FeedPostStatus;
   onlyVerifiedUsers: boolean;

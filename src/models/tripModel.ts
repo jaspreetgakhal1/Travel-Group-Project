@@ -2,8 +2,11 @@ import type { TripDNA } from './dnaModel';
 
 export interface Trip {
   id: string;
+  hostId?: string;
   title: string;
   hostName: string;
+  hostCountryCode?: string;
+  hostMobileNumber?: string;
   priceShare: number;
   matchPercentage: number;
   tripDNA: TripDNA;
@@ -20,8 +23,11 @@ export interface Trip {
 export const tripCatalog: Trip[] = [
   {
     id: 'trip-1',
+    hostId: 'host-1',
     title: 'Bali Wellness Escape',
     hostName: 'Maya',
+    hostCountryCode: '+1',
+    hostMobileNumber: '(555)-010-1201',
     priceShare: 420,
     matchPercentage: 93,
     tripDNA: {
@@ -45,8 +51,11 @@ export const tripCatalog: Trip[] = [
   },
   {
     id: 'trip-2',
+    hostId: 'host-2',
     title: 'Lisbon Food + Nightlife Week',
     hostName: 'Andre',
+    hostCountryCode: '+1',
+    hostMobileNumber: '(555)-010-1202',
     priceShare: 360,
     matchPercentage: 88,
     tripDNA: {
@@ -70,8 +79,11 @@ export const tripCatalog: Trip[] = [
   },
   {
     id: 'trip-3',
+    hostId: 'host-3',
     title: 'Patagonia Trek Crew Trip',
     hostName: 'Sofia',
+    hostCountryCode: '+1',
+    hostMobileNumber: '(555)-010-1203',
     priceShare: 510,
     matchPercentage: 95,
     tripDNA: {
@@ -95,8 +107,11 @@ export const tripCatalog: Trip[] = [
   },
   {
     id: 'trip-4',
+    hostId: 'host-4',
     title: 'Tokyo Culture + Cafe Crawl',
     hostName: 'Kenji',
+    hostCountryCode: '+1',
+    hostMobileNumber: '(555)-010-1204',
     priceShare: 470,
     matchPercentage: 84,
     tripDNA: {
@@ -120,8 +135,11 @@ export const tripCatalog: Trip[] = [
   },
   {
     id: 'trip-5',
+    hostId: 'host-5',
     title: 'Iceland Northern Lights Drive',
     hostName: 'Leah',
+    hostCountryCode: '+1',
+    hostMobileNumber: '(555)-010-1205',
     priceShare: 640,
     matchPercentage: 90,
     tripDNA: {
@@ -145,8 +163,11 @@ export const tripCatalog: Trip[] = [
   },
   {
     id: 'trip-6',
+    hostId: 'host-6',
     title: 'Cartagena Beach + Music Weekend',
     hostName: 'Nico',
+    hostCountryCode: '+1',
+    hostMobileNumber: '(555)-010-1206',
     priceShare: 330,
     matchPercentage: 86,
     tripDNA: {

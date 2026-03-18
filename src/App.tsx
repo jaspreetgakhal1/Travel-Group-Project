@@ -289,6 +289,28 @@ const getSessionAuthorKey = (session: UserSession | null): string | null => {
 
 const isMongoObjectId = (value: string): boolean => MONGO_OBJECT_ID_PATTERN.test(value);
 
+const getDigitsOnly = (value?: string): string => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.replace(/\D/g, '');
+};
+
+const toWhatsAppPhone = (countryCode?: string, mobileNumber?: string): string => {
+  const countryDigits = getDigitsOnly(countryCode);
+  const mobileDigits = getDigitsOnly(mobileNumber);
+
+  if (!mobileDigits) {
+    return '';
+  }
+
+  if (countryDigits && mobileDigits.startsWith(countryDigits)) {
+    return mobileDigits;
+  }
+
+  return `${countryDigits}${mobileDigits}`;
+};
+
 const getLocalConflictHint = (viewerDNA: UserDNA, organizerDNA: UserDNA): string => {
   const strongestGap = TRAVEL_DNA_DIMENSIONS.map(({ key }) => ({
     key,
@@ -336,8 +358,11 @@ const toCreateTripPayloadFromFeedPost = (post: FeedPost): CreateTripPayload => (
 
 const toRuntimeTripFromFeedPost = (post: FeedPost): Trip => ({
   id: post.id,
+  hostId: post.hostId,
   title: post.title,
   hostName: post.hostName,
+  hostCountryCode: post.hostCountryCode,
+  hostMobileNumber: post.hostMobileNumber,
   priceShare: post.cost,
   matchPercentage: 100,
   tripDNA: normalizeTravelDNA(defaultUserDNA),
@@ -366,6 +391,9 @@ const createInitialFeedPosts = (): FeedPost[] => {
 
     return {
       id: trip.id,
+      hostId: trip.hostId,
+      hostCountryCode: trip.hostCountryCode,
+      hostMobileNumber: trip.hostMobileNumber,
       authorKey: trip.hostName.trim().toLowerCase(),
       status: 'Active',
       onlyVerifiedUsers: false,
@@ -657,7 +685,7 @@ function App() {
   const [verificationDocumentError, setVerificationDocumentError] = useState('');
   const [isVerificationUploading, setIsVerificationUploading] = useState(false);
 
-  const [publicProfiles, setPublicProfiles] = useState<Record<string, PublicProfile>>(() =>
+  const [, setPublicProfiles] = useState<Record<string, PublicProfile>>(() =>
     createInitialPublicProfiles(),
   );
   const [tripRuntimeById, setTripRuntimeById] = useState<Record<string, TripRuntime>>(() =>
@@ -1039,11 +1067,6 @@ function App() {
     return tripRuntimeById[activeGroupTripId] ?? null;
   }, [activeGroupTripId, tripRuntimeById]);
 
-  const hostProfiles = useMemo(
-    () => Object.values(publicProfiles).sort((left, right) => right.toursCompleted - left.toursCompleted),
-    [publicProfiles],
-  );
-
   const escrowStats = useMemo(() => {
     const summaries = Object.values(tripRuntimeById)
       .map((runtime) => runtime.escrowSummary)
@@ -1284,6 +1307,22 @@ function App() {
     }
   };
 
+  const openTripWhatsApp = (trip: Trip): boolean => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+
+    const phone = toWhatsAppPhone(trip.hostCountryCode, trip.hostMobileNumber);
+    if (!phone) {
+      return false;
+    }
+
+    const message = `Hi ${trip.hostName}, I am interested in "${trip.title}" on SplitNGo.`;
+    const targetUrl = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+    window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    return true;
+  };
+
   const handleJoinChat = (tripId: string) => {
     if (!userSession) {
       setCurrentScreen('auth');
@@ -1311,6 +1350,11 @@ function App() {
 
     const trip = allTrips.find((item) => item.id === tripId);
     if (!trip) {
+      return;
+    }
+
+    if (openTripWhatsApp(trip)) {
+      setSystemNotice(`Opening WhatsApp chat with ${trip.hostName}.`);
       return;
     }
 
@@ -1414,6 +1458,11 @@ function App() {
 
     if (!nextTrip) {
       setSystemNotice('Unable to open trip chat right now.');
+      return;
+    }
+
+    if (openTripWhatsApp(nextTrip)) {
+      setSystemNotice(`Opening WhatsApp chat with ${nextTrip.hostName}.`);
       return;
     }
 
@@ -2354,11 +2403,6 @@ function App() {
   const isSocialExperienceScreen =
     currentScreen === 'home' || currentScreen === 'discovery' || currentScreen === 'dashboard';
 
-  const completedTripsMetric = Math.max(userSession?.toursCompleted ?? 0, completedTripsCount, postStats.completedCount, 6);
-  const totalConnectionsMetric = Math.max(hostProfiles.length * 9 + (userSession?.ratingCount ?? 0), 24);
-  const walletCapacity = 5000;
-  const availableFundsMetric = Math.max(900, walletCapacity - escrowStats.totalPaid + escrowStats.totalReleased);
-
   const isWorkspaceScreen =
     currentScreen === 'dashboard' || currentScreen === 'expenses' || currentScreen === 'chat';
 
@@ -2689,11 +2733,8 @@ function App() {
         <section className="rounded-card border border-primary/10 bg-white/85 p-4 shadow-lg sm:p-5">
           {activeView === 'dashboard' ? (
             <DashboardView
-              totalCompletedTrips={completedTripsMetric}
-              totalConnections={totalConnectionsMetric}
-              activePosts={postStats.activeCount}
-              availableFunds={availableFundsMetric}
-              walletCapacity={walletCapacity}
+              authToken={authToken}
+              onStartFirstJourney={() => handleNavigation('createTrip')}
             />
           ) : (
             <MainFeed

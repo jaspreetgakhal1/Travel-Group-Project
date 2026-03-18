@@ -30,6 +30,23 @@ const TripCard: React.FC<TripCardProps> = ({
   const [isChatOpen, setIsChatOpen] = useState(false);
   const canOpenChat = isHostView || isParticipant;
 
+  const openWhatsAppIfAvailable = (): boolean => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+
+    const countryDigits = (trip.hostCountryCode ?? '').replace(/\D/g, '');
+    const mobileDigits = (trip.hostMobileNumber ?? '').replace(/\D/g, '');
+    if (!mobileDigits) {
+      return false;
+    }
+
+    const phoneNumber = mobileDigits.startsWith(countryDigits) ? mobileDigits : `${countryDigits}${mobileDigits}`;
+    const message = `Hi ${trip.hostName}, I am interested in "${trip.title}" on SplitNGo.`;
+    window.open(`https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+    return true;
+  };
+
   return (
     <>
       <article className="relative overflow-hidden rounded-card bg-white shadow-sm ring-1 ring-primary/10">
@@ -72,6 +89,9 @@ const TripCard: React.FC<TripCardProps> = ({
                     <button
                       type="button"
                       onClick={() => {
+                        if (openWhatsAppIfAvailable()) {
+                          return;
+                        }
                         if (typeof window !== 'undefined') {
                           window.history.pushState(
                             { tripId: trip.id, tripTitle: trip.title },
@@ -130,6 +150,9 @@ const TripCard: React.FC<TripCardProps> = ({
               <motion.button
                 type="button"
                 onClick={() => {
+                  if (openWhatsAppIfAvailable()) {
+                    return;
+                  }
                   if (typeof window !== 'undefined') {
                     window.history.pushState(
                       { tripId: trip.id, tripTitle: trip.title },
