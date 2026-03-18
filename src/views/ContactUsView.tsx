@@ -1,5 +1,6 @@
 // Added by Codex: project documentation comment for src\views\ContactUsView.tsx
 import React, { useEffect, useRef, useState } from 'react';
+import { askSupportAssistant, type SupportChatHistoryItem } from '../services/supportChatApi';
 
 type ChatRole = 'user' | 'ai';
 
@@ -16,26 +17,32 @@ const formatTime = (): string =>
     minute: '2-digit',
   });
 
-const getAiReply = (prompt: string): string => {
+const toSupportHistory = (messages: ChatMessage[]): SupportChatHistoryItem[] =>
+  messages.slice(-10).map((message) => ({
+    role: message.role === 'user' ? 'user' : 'assistant',
+    text: message.text,
+  }));
+
+const getOfflineReply = (prompt: string): string => {
   const normalized = prompt.toLowerCase();
 
-  if (normalized.includes('price') || normalized.includes('cost')) {
-    return 'For pricing details, share your use case and expected group size. We can guide the best plan.';
+  if (normalized.includes('price') || normalized.includes('cost') || normalized.includes('payment')) {
+    return 'Please share the trip title, amount, and exact payment step where you got stuck so support can help quickly.';
   }
 
-  if (normalized.includes('bug') || normalized.includes('issue') || normalized.includes('problem')) {
-    return 'Please describe the issue step-by-step and mention the screen name so support can reproduce it quickly.';
+  if (normalized.includes('bug') || normalized.includes('issue') || normalized.includes('problem') || normalized.includes('error')) {
+    return 'Please describe the issue step-by-step and include the screen name plus exact error text.';
   }
 
   if (normalized.includes('verification') || normalized.includes('verified')) {
-    return 'Verification support is available in the profile flow. If blocked, share your exact error message here.';
+    return 'Open Profile > Verification and upload a clear file under 5MB. If blocked, share your exact error message.';
   }
 
-  if (normalized.includes('trip') || normalized.includes('host')) {
-    return 'To host a trip, use the Host section on landing, sign in, and complete the Create Trip form.';
+  if (normalized.includes('trip') || normalized.includes('host') || normalized.includes('chat') || normalized.includes('whatsapp')) {
+    return 'Use the trip card actions to join, request, or open chat. If chat does not open, share your trip title and current screen.';
   }
 
-  return 'Thanks for contacting us. Share a bit more context and I will guide you to the right support path.';
+  return 'I can help with trips, verification, payments, and app issues. Share your exact question and current screen.';
 };
 
 const ContactUsView: React.FC = () => {
@@ -68,7 +75,7 @@ const ContactUsView: React.FC = () => {
     });
   }, [messages, isResponding, isWidgetOpen]);
 
-  const handleSend = () => {
+  const handleSend = async (): Promise<void> => {
     const text = draft.trim();
     if (!text || isResponding) {
       return;
@@ -81,20 +88,33 @@ const ContactUsView: React.FC = () => {
       sentAt: formatTime(),
     };
 
+    const history = toSupportHistory(messages);
+
     setMessages((previous) => [...previous, userMessage]);
     setDraft('');
     setIsResponding(true);
 
-    window.setTimeout(() => {
+    try {
+      const response = await askSupportAssistant(text, history);
+      const normalizedReply = typeof response.reply === 'string' ? response.reply.trim() : '';
       const aiMessage: ChatMessage = {
         id: `ai-${Date.now()}`,
         role: 'ai',
-        text: getAiReply(text),
+        text: normalizedReply || getOfflineReply(text),
         sentAt: formatTime(),
       };
       setMessages((previous) => [...previous, aiMessage]);
+    } catch {
+      const aiMessage: ChatMessage = {
+        id: `ai-${Date.now()}`,
+        role: 'ai',
+        text: getOfflineReply(text),
+        sentAt: formatTime(),
+      };
+      setMessages((previous) => [...previous, aiMessage]);
+    } finally {
       setIsResponding(false);
-    }, 650);
+    }
   };
 
   return (
@@ -174,7 +194,7 @@ const ContactUsView: React.FC = () => {
               className="flex gap-2 border-t border-primary/10 bg-white p-3"
               onSubmit={(event) => {
                 event.preventDefault();
-                handleSend();
+                void handleSend();
               }}
             >
               <input
@@ -184,7 +204,7 @@ const ContactUsView: React.FC = () => {
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
                     event.preventDefault();
-                    handleSend();
+                    void handleSend();
                   }
                 }}
                 placeholder="Ask anything..."
