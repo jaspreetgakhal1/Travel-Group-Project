@@ -273,18 +273,20 @@ const getRouteLabel = (route: string): string => {
 
 const normalizeAuthorKey = (value: string): string => value.trim().toLowerCase();
 
-const getSessionAuthorKey = (session: UserSession | null): string | null => {
+const getSessionAuthorKeys = (session: UserSession | null): string[] => {
   if (!session) {
-    return null;
+    return [];
   }
 
-  const normalizedEmail = normalizeAuthorKey(session.email);
-  if (normalizedEmail) {
-    return normalizedEmail;
-  }
+  const normalizedKeys = [session.email, session.name]
+    .map((value) => (typeof value === 'string' ? normalizeAuthorKey(value) : ''))
+    .filter(Boolean);
 
-  const normalizedName = normalizeAuthorKey(session.name);
-  return normalizedName || null;
+  return Array.from(new Set(normalizedKeys));
+};
+
+const getSessionAuthorKey = (session: UserSession | null): string | null => {
+  return getSessionAuthorKeys(session)[0] ?? null;
 };
 
 const isMongoObjectId = (value: string): boolean => MONGO_OBJECT_ID_PATTERN.test(value);
@@ -785,6 +787,51 @@ function App() {
     } catch {
       setPostStats(EMPTY_POST_STATS);
     }
+  };
+
+  const syncOwnPostsVerificationStatus = (
+    authorKeys: string[] | null | undefined,
+    userId: string | null | undefined,
+    isVerified: boolean,
+  ) => {
+    const normalizedAuthorKeys = Array.from(
+      new Set(
+        (authorKeys ?? [])
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          .map((value) => normalizeAuthorKey(value)),
+      ),
+    );
+
+    if (normalizedAuthorKeys.length === 0 && !userId) {
+      return;
+    }
+
+    setFeedPosts((previous) =>
+      previous.map((post) => {
+        const normalizedPostAuthorKey =
+          typeof post.authorKey === 'string' && post.authorKey.trim() ? normalizeAuthorKey(post.authorKey) : '';
+        const postAuthorId =
+          typeof post.author === 'object' && post.author !== null && typeof post.author.id === 'string'
+            ? post.author.id
+            : null;
+        const matchesAuthorKey = normalizedPostAuthorKey ? normalizedAuthorKeys.includes(normalizedPostAuthorKey) : false;
+        const matchesHostId = Boolean(userId && post.hostId && post.hostId === userId);
+        const matchesAuthorId = Boolean(userId && postAuthorId && postAuthorId === userId);
+
+        if (!matchesAuthorKey && !matchesHostId && !matchesAuthorId) {
+          return post;
+        }
+
+        const nextAuthor =
+          typeof post.author === 'object' && post.author !== null ? { ...post.author, isVerified } : post.author;
+
+        return {
+          ...post,
+          isVerified,
+          author: nextAuthor,
+        };
+      }),
+    );
   };
 
   const loadSelfTripsForHost = async () => {
@@ -2011,9 +2058,23 @@ function App() {
   };
 
   const handleVerificationComplete = () => {
+    const nextAuthorKeys = getSessionAuthorKeys(userSession);
+    const nextUserId = userSession?.id ?? null;
     setUserSession((previous) => (previous ? { ...previous, isVerified: true } : previous));
+    syncOwnPostsVerificationStatus(nextAuthorKeys, nextUserId, true);
     setCurrentScreen('home');
     setSystemNotice('Verification completed. Verified Badge granted.');
+  };
+
+  const handleDashboardVerificationStatusSync = (isVerified: boolean) => {
+    if (!userSession || userSession.isVerified === isVerified) {
+      return;
+    }
+
+    const nextAuthorKeys = getSessionAuthorKeys(userSession);
+    const nextUserId = userSession?.id ?? null;
+    setUserSession((previous) => (previous ? { ...previous, isVerified } : previous));
+    syncOwnPostsVerificationStatus(nextAuthorKeys, nextUserId, isVerified);
   };
 
   const handleProfileFieldChange = (field: EditableProfileField, value: string) => {
@@ -2113,7 +2174,9 @@ function App() {
       setVerificationDocumentFile(null);
       setSystemNotice(uploadResponse.message);
       const nextIsVerified = Boolean(uploadResponse.user.isVerified);
-      const nextAuthorKey = getSessionAuthorKey(userSession);
+      const nextAuthorKeys = getSessionAuthorKeys(userSession);
+      const nextAuthorKey = nextAuthorKeys[0] ?? null;
+      syncOwnPostsVerificationStatus(nextAuthorKeys, userSession?.id ?? null, nextIsVerified);
       await loadActiveFeedPosts(false, {
         viewerVerified: nextIsVerified,
         viewerAuthorKey: nextAuthorKey,
@@ -2450,11 +2513,11 @@ function App() {
             </div>
             {userSession?.isVerified ? (
               <span className="rounded-full bg-success/20 px-4 py-2 text-sm font-semibold text-primary ring-1 ring-success/40">
-                Verified Badge
+                Verified User
               </span>
             ) : (
               <span className="rounded-full bg-primary/5 px-4 py-2 text-sm font-semibold text-primary">
-                Not Verified
+                Pending Verification
               </span>
             )}
           </div>
@@ -2735,6 +2798,7 @@ function App() {
             <DashboardView
               authToken={authToken}
               onStartFirstJourney={() => handleNavigation('createTrip')}
+              onVerificationStatusSync={handleDashboardVerificationStatusSync}
             />
           ) : (
             <MainFeed
@@ -2743,6 +2807,7 @@ function App() {
               sentRequestPostIds={sentRequestPostIds}
               currentUserAuthorKey={currentUserAuthorKey ?? undefined}
               currentUserId={userSession?.id ?? null}
+              currentUserIsVerified={Boolean(userSession?.isVerified)}
               pendingRequestCountByPostId={pendingRequestCountByTripId}
               isPostActionInProgress={isPostActionInProgress}
               dnaMatchByPostId={dnaMatchByPostId}

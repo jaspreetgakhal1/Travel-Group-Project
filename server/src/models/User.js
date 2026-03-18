@@ -125,6 +125,11 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    verificationStatus: {
+      type: String,
+      enum: ['pending', 'verified'],
+      default: 'pending',
+    },
     verificationDocumentName: {
       type: String,
       default: null,

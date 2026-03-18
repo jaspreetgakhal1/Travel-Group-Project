@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { fetchCurrentUser } from '../services/authApi';
 import { fetchDashboardStats, type DashboardStats } from '../services/dashboardApi';
 import { reviewJoinRequest } from '../services/tripRequestApi';
 
 type DashboardViewProps = {
   authToken: string | null;
   onStartFirstJourney: () => void;
+  onVerificationStatusSync?: (isVerified: boolean) => void;
 };
 
 const REFRESH_INTERVAL_MS = 30000;
@@ -97,7 +99,7 @@ const getDestinationImageUrl = (destination: string | null, backendImageUrl: str
   return `https://source.unsplash.com/1200x700/?${encodeURIComponent(`${destination},travel`)}`;
 };
 
-function DashboardView({ authToken, onStartFirstJourney }: DashboardViewProps) {
+function DashboardView({ authToken, onStartFirstJourney, onVerificationStatusSync }: DashboardViewProps) {
   const [stats, setStats] = useState<DashboardStats>(EMPTY_DASHBOARD_STATS);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -205,6 +207,34 @@ function DashboardView({ authToken, onStartFirstJourney }: DashboardViewProps) {
       window.clearTimeout(timer);
     };
   }, [requestActionMessage]);
+
+  useEffect(() => {
+    if (!authToken || !onVerificationStatusSync) {
+      return;
+    }
+
+    let isActive = true;
+    const silentCheck = async () => {
+      try {
+        const user = await fetchCurrentUser(authToken);
+        if (isActive) {
+          onVerificationStatusSync(Boolean(user.isVerified));
+        }
+      } catch {
+        // Silent check should never block dashboard rendering.
+      }
+    };
+
+    void silentCheck();
+    const timer = window.setInterval(() => {
+      void silentCheck();
+    }, 60000);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(timer);
+    };
+  }, [authToken, onVerificationStatusSync]);
 
   const handleReviewRequest = async (requestId: string, status: 'accepted' | 'rejected') => {
     if (!authToken || requestActionLoadingId) {

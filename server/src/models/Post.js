@@ -2,6 +2,11 @@ import mongoose from 'mongoose';
 
 const postSchema = new mongoose.Schema(
   {
+    author: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
     authorKey: {
       type: String,
       required: true,
