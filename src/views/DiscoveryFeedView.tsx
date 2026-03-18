@@ -10,11 +10,21 @@ type DiscoveryMatch = {
 
 type DiscoveryFeedViewProps = {
   trips: DiscoveryMatch[];
+  currentUserId?: string | null;
+  currentUserName?: string;
+  authToken?: string | null;
   onViewTrip: (tripId: string) => void;
   onJoinChat: (tripId: string) => void;
 };
 
-const DiscoveryFeedView: React.FC<DiscoveryFeedViewProps> = ({ trips, onViewTrip, onJoinChat }) => {
+const DiscoveryFeedView: React.FC<DiscoveryFeedViewProps> = ({
+  trips,
+  currentUserId = null,
+  currentUserName = 'Traveler',
+  authToken = null,
+  onViewTrip,
+  onJoinChat,
+}) => {
   return (
     <section id="discover" className="mx-auto w-full max-w-7xl px-6 pb-16 pt-6">
       <div className="mb-6 flex items-end justify-between gap-4">
@@ -30,6 +40,9 @@ const DiscoveryFeedView: React.FC<DiscoveryFeedViewProps> = ({ trips, onViewTrip
             key={entry.trip.id}
             trip={entry.trip}
             matchScore={entry.matchScore}
+            currentUserId={currentUserId}
+            currentUserName={currentUserName}
+            authToken={authToken}
             onViewMore={onViewTrip}
             onJoinChat={onJoinChat}
           />

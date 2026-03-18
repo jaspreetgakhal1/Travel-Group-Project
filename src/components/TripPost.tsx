@@ -6,12 +6,16 @@ import DNAOverlayChart from './travel-dna/DNAOverlayChart';
 
 type TripPostProps = {
   post: FeedPost;
+  currentUserId?: string | null;
   canManagePost: boolean;
+  pendingRequestCount: number;
   isRequestSent: boolean;
   isActionInProgress: boolean;
   dnaMatch?: TripDNAMatch;
   isDNAMatchLoading: boolean;
   onJoinRequest: (post: FeedPost) => void;
+  onOpenTripChat?: (tripId: string) => void;
+  onManageRequests: (post: FeedPost) => void;
   onShare: (post: FeedPost) => void;
   onDismiss: (postId: string) => void;
   onEditPost: (post: FeedPost) => void;
@@ -27,12 +31,16 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
 
 function TripPost({
   post,
+  currentUserId = null,
   canManagePost,
+  pendingRequestCount,
   isRequestSent,
   isActionInProgress,
   dnaMatch,
   isDNAMatchLoading,
   onJoinRequest,
+  onOpenTripChat,
+  onManageRequests,
   onShare,
   onDismiss,
   onEditPost,
@@ -46,6 +54,11 @@ function TripPost({
   const matchPercentage = dnaMatch?.matchPercentage ?? null;
   const isPerfectVibe = typeof matchPercentage === 'number' && matchPercentage > 85;
   const isVibeWarning = typeof matchPercentage === 'number' && matchPercentage < 50;
+  const maxParticipants = post.maxParticipants > 0 ? post.maxParticipants : post.requiredPeople;
+  const spotsFilled = Math.max(0, Math.min(post.spotsFilled, maxParticipants));
+  const isTripFull = spotsFilled >= maxParticipants;
+  const isJoinedTrip = Boolean(currentUserId && post.participantIds.includes(currentUserId));
+  const hasAcceptedParticipants = post.participantIds.length > 0;
 
   const formattedDates = useMemo(
     () => ({
@@ -159,6 +172,16 @@ function TripPost({
                 Vibe Warning
               </span>
             ) : null}
+            {canManagePost ? (
+              <span className="rounded-full bg-[#E07A5F]/15 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
+                {pendingRequestCount} Pending Requests
+              </span>
+            ) : null}
+            {isTripFull ? (
+              <span className="rounded-full bg-[#E07A5F]/20 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
+                Trip Full
+              </span>
+            ) : null}
           </div>
           <p className="truncate text-xs text-primary/70">{post.title}</p>
         </div>
@@ -233,7 +256,9 @@ function TripPost({
       <section className="mt-4 rounded-card bg-background/80 p-3 ring-1 ring-primary/10">
         <div className="flex items-center justify-between">
           <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Spots Filled</p>
-          <p className="text-sm font-bold text-primary">{post.spotsFilledPercent}%</p>
+          <p className="text-sm font-bold text-primary">
+            {spotsFilled}/{maxParticipants} ({post.spotsFilledPercent}%)
+          </p>
         </div>
         <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-primary/15">
           <div
@@ -327,23 +352,84 @@ function TripPost({
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-primary/10 pt-4">
-        {!canManagePost ? (
-          <button
-            type="button"
-            disabled={isRequestSent}
-            onClick={(event) => {
-              event.stopPropagation();
-              onJoinRequest(post);
-            }}
-            className={
-              isRequestSent
-                ? 'rounded-card border border-success/40 bg-success/25 px-3 py-2 text-xs font-semibold text-primary'
-                : 'interactive-btn rounded-card bg-primary px-3 py-2 text-xs font-semibold text-background'
-            }
-          >
-            {isRequestSent ? 'Request Sent' : 'Join Request'}
-          </button>
-        ) : null}
+        {canManagePost ? (
+          <>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onManageRequests(post);
+              }}
+              className="interactive-btn rounded-card border border-[#E07A5F]/35 bg-[#E07A5F]/15 px-3 py-2 text-xs font-semibold text-[#8C4633]"
+            >
+              Manage Requests ({pendingRequestCount})
+            </button>
+            {hasAcceptedParticipants ? (
+              <div className="group relative">
+                <button
+                  type="button"
+                  aria-label="Join Trip Discussion"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenTripChat?.(post.id);
+                  }}
+                  className="interactive-btn rounded-card border border-primary/20 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary"
+                >
+                  Chat
+                </button>
+                <span className="pointer-events-none absolute -top-8 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-md bg-primary px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow transition-opacity duration-150 group-hover:opacity-100">
+                  Join Trip Discussion
+                </span>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            {isJoinedTrip ? (
+              <>
+                <span className="rounded-card border border-success/40 bg-success/20 px-3 py-2 text-xs font-semibold text-primary">
+                  Joined Trip
+                </span>
+                <div className="group relative">
+                  <button
+                    type="button"
+                    aria-label="Join Trip Discussion"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenTripChat?.(post.id);
+                    }}
+                    className="interactive-btn rounded-card border border-primary/20 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary"
+                  >
+                    Chat
+                  </button>
+                  <span className="pointer-events-none absolute -top-8 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-md bg-primary px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow transition-opacity duration-150 group-hover:opacity-100">
+                    Join Trip Discussion
+                  </span>
+                </div>
+              </>
+            ) : isTripFull ? (
+              <span className="rounded-card border border-[#E07A5F]/35 bg-[#F4F1DE] px-3 py-2 text-xs font-semibold text-[#8C4633]">
+                Trip Full
+              </span>
+            ) : (
+              <button
+                type="button"
+                disabled={isRequestSent || isActionInProgress}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onJoinRequest(post);
+                }}
+                className={
+                  isRequestSent || isActionInProgress
+                    ? 'rounded-card border border-success/40 bg-success/25 px-3 py-2 text-xs font-semibold text-primary disabled:cursor-not-allowed disabled:opacity-70'
+                    : 'interactive-btn rounded-card bg-primary px-3 py-2 text-xs font-semibold text-background'
+                }
+              >
+                {isRequestSent ? 'Request Sent' : isActionInProgress ? 'Sending...' : 'Join Request'}
+              </button>
+            )}
+          </>
+        )}
         <button
           type="button"
           onClick={(event) => {

@@ -6,6 +6,9 @@ import { connectDatabase } from './config/database.js';
 import authRoutes from './routes/authRoutes.js';
 import postRoutes from './routes/postRoutes.js';
 import matchRoutes from './routes/matchRoutes.js';
+import chatRoutes from './routes/chatRoutes.js';
+import tripRoutes from './routes/tripRoutes.js';
+import joinRequestRoutes from './routes/joinRequestRoutes.js';
 
 const app = express();
 
@@ -34,6 +37,9 @@ app.get('/api/health', (_request, response) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/posts', postRoutes);
 app.use('/api/match', matchRoutes);
+app.use('/api/trips', tripRoutes);
+app.use('/api/join-requests', joinRequestRoutes);
+app.use('/api/chat', chatRoutes);
 
 app.use((error, _request, response, _next) => {
   if (error.message === 'Origin not allowed by CORS') {

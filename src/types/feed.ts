@@ -3,6 +3,9 @@ export type FeedPostStatus = 'Active' | 'Completed';
 
 export type FeedPost = {
   id: string;
+  hostId?: string;
+  hostCountryCode?: string;
+  hostMobileNumber?: string;
   authorKey: string;
   status: FeedPostStatus;
   onlyVerifiedUsers: boolean;
@@ -15,10 +18,14 @@ export type FeedPost = {
   cost: number;
   durationDays: number;
   requiredPeople: number;
+  maxParticipants: number;
+  spotsFilled: number;
   spotsFilledPercent: number;
+  participantIds: string[];
   expectations: string[];
   travelerType: string;
   startDate: string;
   endDate: string;
+  pendingRequestCount?: number;
 };
 
