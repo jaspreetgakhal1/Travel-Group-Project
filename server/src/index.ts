@@ -4,6 +4,7 @@ import { connectDatabase } from './config/database.js';
 import { env } from './config/env.js';
 import authRoutes from './routes/authRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
+import expenseRoutes from './routes/expenseRoutes.js';
 import joinRequestRoutes from './routes/joinRequestRoutes.js';
 import matchRoutes from './routes/matchRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
@@ -43,6 +44,7 @@ app.use('/api/trips', tripRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/join-requests', joinRequestRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/expenses', expenseRoutes);
 app.use('/api/users', userRoutes);
 
 app.use((error: Error, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
