@@ -95,6 +95,7 @@ function MainFeed({
               isActionInProgress={isPostActionInProgress}
               dnaMatch={dnaMatchByPostId[post.id]}
               isDNAMatchLoading={dnaMatchLoadingPostIds.includes(post.id)}
+              showDNACompatibility={!isMyFeedMode}
               onJoinRequest={onJoinRequest}
               onOpenTripChat={onOpenTripChat}
               onManageRequests={onManageRequests}

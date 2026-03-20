@@ -23,6 +23,7 @@ type TripPostProps = {
   onEditPost: (post: FeedPost) => void;
   onDeletePost: (post: FeedPost) => void;
   onCompletePost: (post: FeedPost) => void;
+  showDNACompatibility?: boolean;
 };
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -50,6 +51,7 @@ function TripPost({
   onEditPost,
   onDeletePost,
   onCompletePost,
+  showDNACompatibility = true,
 }: TripPostProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
@@ -199,28 +201,32 @@ function TripPost({
                 Verified users only
               </span>
             ) : null}
-            {isDNAMatchLoading ? (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/80">
-                DNA syncing...
-              </span>
-            ) : typeof matchPercentage === 'number' ? (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/90">
-                DNA {matchPercentage}%
-              </span>
-            ) : (
-              <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] font-semibold text-primary/60">
-                DNA unavailable
-              </span>
-            )}
-            {isPerfectVibe ? (
-              <span className="rounded-full bg-[#81B29A]/20 px-2 py-0.5 text-[11px] font-semibold text-[#2F6A5A]">
-                Perfect Vibe
-              </span>
-            ) : null}
-            {isVibeWarning ? (
-              <span className="rounded-full bg-[#E07A5F]/20 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
-                Vibe Warning
-              </span>
+            {showDNACompatibility ? (
+              <>
+                {isDNAMatchLoading ? (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/80">
+                    DNA syncing...
+                  </span>
+                ) : typeof matchPercentage === 'number' ? (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/90">
+                    DNA {matchPercentage}%
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] font-semibold text-primary/60">
+                    DNA unavailable
+                  </span>
+                )}
+                {isPerfectVibe ? (
+                  <span className="rounded-full bg-[#81B29A]/20 px-2 py-0.5 text-[11px] font-semibold text-[#2F6A5A]">
+                    Perfect Vibe
+                  </span>
+                ) : null}
+                {isVibeWarning ? (
+                  <span className="rounded-full bg-[#E07A5F]/20 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
+                    Vibe Warning
+                  </span>
+                ) : null}
+              </>
             ) : null}
             {canManagePost ? (
               <span className="rounded-full bg-[#E07A5F]/15 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
@@ -362,42 +368,44 @@ function TripPost({
             </div>
           </section>
 
-          <section className="mt-3 rounded-card border border-primary/10 bg-white/90 p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">DNA Compatibility</p>
-              <p className="text-base font-black text-primary">
-                {isDNAMatchLoading
-                  ? '...'
-                  : typeof matchPercentage === 'number'
-                    ? `${isExpanded ? animatedMatchScore : matchPercentage}%`
-                    : 'N/A'}
-              </p>
-            </div>
+          {showDNACompatibility ? (
+            <section className="mt-3 rounded-card border border-primary/10 bg-white/90 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">DNA Compatibility</p>
+                <p className="text-base font-black text-primary">
+                  {isDNAMatchLoading
+                    ? '...'
+                    : typeof matchPercentage === 'number'
+                      ? `${isExpanded ? animatedMatchScore : matchPercentage}%`
+                      : 'N/A'}
+                </p>
+              </div>
 
-            {isPerfectVibe ? (
-              <p className="mt-2 rounded-card bg-[#81B29A]/15 px-2 py-1 text-xs font-semibold text-[#2F6A5A]">
-                Perfect Vibe: high compatibility for shared planning and trip rhythm.
-              </p>
-            ) : null}
+              {isPerfectVibe ? (
+                <p className="mt-2 rounded-card bg-[#81B29A]/15 px-2 py-1 text-xs font-semibold text-[#2F6A5A]">
+                  Perfect Vibe: high compatibility for shared planning and trip rhythm.
+                </p>
+              ) : null}
 
-            {isVibeWarning ? (
-              <p className="mt-2 rounded-card bg-[#E07A5F]/15 px-2 py-1 text-xs font-semibold text-[#8C4633]">
-                Vibe Warning: {dnaMatch?.conflictHint ?? 'Major travel-style differences detected.'}
-              </p>
-            ) : null}
+              {isVibeWarning ? (
+                <p className="mt-2 rounded-card bg-[#E07A5F]/15 px-2 py-1 text-xs font-semibold text-[#8C4633]">
+                  Vibe Warning: {dnaMatch?.conflictHint ?? 'Major travel-style differences detected.'}
+                </p>
+              ) : null}
 
-            {dnaMatch ? (
-              <DNAOverlayChart
-                userDNA={dnaMatch.viewerDNA}
-                organizerDNA={dnaMatch.organizerDNA}
-                className="mt-3"
-              />
-            ) : (
-              <p className="mt-3 text-xs text-primary/65">
-                Sign in and complete Travel DNA to unlock organizer compatibility visuals.
-              </p>
-            )}
-          </section>
+              {dnaMatch ? (
+                <DNAOverlayChart
+                  userDNA={dnaMatch.viewerDNA}
+                  organizerDNA={dnaMatch.organizerDNA}
+                  className="mt-3"
+                />
+              ) : (
+                <p className="mt-3 text-xs text-primary/65">
+                  Sign in and complete Travel DNA to unlock organizer compatibility visuals.
+                </p>
+              )}
+            </section>
+          ) : null}
         </div>
       </div>
 
