@@ -1,3 +1,4 @@
+
 import type { TravelDNA } from '../../models/dnaModel';
 import TravelDNARadar from './TravelDNARadar';
 
@@ -35,4 +36,6 @@ function TravelDNARadarChart(props: TravelDNARadarChartProps) {
 }
 
 export default TravelDNARadarChart;
+
 export type { TravelDNARadarChartProps };
+

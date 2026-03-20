@@ -1,4 +1,5 @@
-﻿import type { Config } from 'tailwindcss';
+// Added by Codex: project documentation comment for tailwind.config.ts
+import type { Config } from 'tailwindcss';
 
 const config: Config = {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
@@ -19,3 +20,4 @@ const config: Config = {
 };
 
 export default config;
+

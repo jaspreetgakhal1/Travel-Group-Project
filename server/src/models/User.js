@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for server\src\models\User.js
 import mongoose from 'mongoose';
 
 const TRAVEL_ROLES = ['The Navigator', 'The Foodie', 'The Photographer', 'The Budgeter'];
@@ -153,3 +154,4 @@ const userSchema = new mongoose.Schema(
 );
 
 export const User = mongoose.model('User', userSchema);
+

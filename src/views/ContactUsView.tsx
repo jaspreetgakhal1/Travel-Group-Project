@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\ContactUsView.tsx
 import React, { useEffect, useRef, useState } from 'react';
 import { askSupportAssistant, type SupportChatHistoryItem } from '../services/supportChatApi';
 
@@ -233,3 +234,4 @@ const ContactUsView: React.FC = () => {
 };
 
 export default ContactUsView;
+

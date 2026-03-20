@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import type { LucideIcon } from 'lucide-react';
@@ -242,3 +243,4 @@ function Sidebar({
 }
 
 export default Sidebar;
+

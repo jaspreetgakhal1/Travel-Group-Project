@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\App.tsx
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   chatMessages,
@@ -4175,3 +4176,4 @@ function App() {
 }
 
 export default App;
+

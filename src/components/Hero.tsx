@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\components\Hero.tsx
+import React from 'react';
 
 const Hero: React.FC = () => {
   return (
@@ -50,3 +51,4 @@ const Hero: React.FC = () => {
 };
 
 export default Hero;
+

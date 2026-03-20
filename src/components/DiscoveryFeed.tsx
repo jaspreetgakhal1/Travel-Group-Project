@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\components\DiscoveryFeed.tsx
+import React from 'react';
 import type { Trip } from '../types/trip';
 import TripCard from './TripCard';
 
@@ -85,3 +86,4 @@ const DiscoveryFeed: React.FC = () => {
 };
 
 export default DiscoveryFeed;
+

@@ -1,3 +1,4 @@
+
 import { TRAVEL_DNA_DIMENSIONS, type TravelDNA } from '../../models/dnaModel';
 import TravelDNARadarChart from './TravelDNARadarChart';
 
@@ -62,3 +63,4 @@ function DNAOverlayChart({ userDNA, organizerDNA, className = '' }: DNAOverlayCh
 }
 
 export default DNAOverlayChart;
+

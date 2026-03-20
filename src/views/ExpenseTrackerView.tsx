@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\views\ExpenseTrackerView.tsx
+import React from 'react';
 import type { ExpenseCategory } from '../models/dashboardModel';
 
 type ExpenseTrackerViewProps = {
@@ -80,3 +81,4 @@ const ExpenseTrackerView: React.FC<ExpenseTrackerViewProps> = ({
 };
 
 export default ExpenseTrackerView;
+

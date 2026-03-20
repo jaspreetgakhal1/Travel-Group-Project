@@ -1,4 +1,5 @@
-﻿import type { NavItem } from '../types/dashboard';
+// Added by Codex: project documentation comment for src\data\navItems.ts
+import type { NavItem } from '../types/dashboard';
 
 export const navItems: NavItem[] = [
   {
@@ -22,3 +23,4 @@ export const navItems: NavItem[] = [
     icon: 'support',
   },
 ];
+

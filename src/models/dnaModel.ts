@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\models\dnaModel.ts
 export const TRAVEL_ROLE_OPTIONS = ['The Navigator', 'The Foodie', 'The Photographer', 'The Budgeter'] as const;
 
 export type TravelRole = (typeof TRAVEL_ROLE_OPTIONS)[number];
@@ -96,3 +97,4 @@ export const normalizeTravelDNA = (value?: Partial<TravelDNA> | null): TravelDNA
     travelRoles: normalizedRoles.filter((role, index, allRoles) => allRoles.indexOf(role) === index),
   };
 };
+

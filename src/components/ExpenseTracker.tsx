@@ -1,4 +1,5 @@
-﻿import React, { useMemo, useState } from 'react';
+// Added by Codex: project documentation comment for src\components\ExpenseTracker.tsx
+import React, { useMemo, useState } from 'react';
 import { expenseCategories, initialCosts } from '../data/expenseData';
 import type { ExpenseCategory } from '../types/dashboard';
 
@@ -83,3 +84,4 @@ const ExpenseTracker: React.FC = () => {
 };
 
 export default ExpenseTracker;
+

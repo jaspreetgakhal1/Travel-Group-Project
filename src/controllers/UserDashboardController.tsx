@@ -1,4 +1,5 @@
-﻿import React, { useMemo, useState } from 'react';
+// Added by Codex: project documentation comment for src\controllers\UserDashboardController.tsx
+import React, { useMemo, useState } from 'react';
 import {
   chatMessages,
   expenseCategories,
@@ -48,3 +49,4 @@ const UserDashboardController: React.FC = () => {
 };
 
 export default UserDashboardController;
+

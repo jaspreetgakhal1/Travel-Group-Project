@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\components\ChatInterface.tsx
+import React from 'react';
 import { chatMessages } from '../data/chatMessages';
 
 const ChatInterface: React.FC = () => {
@@ -57,3 +58,4 @@ const ChatInterface: React.FC = () => {
 };
 
 export default ChatInterface;
+

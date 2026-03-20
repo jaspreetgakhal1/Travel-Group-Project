@@ -1,4 +1,5 @@
-﻿import type { ChatMessage } from '../types/dashboard';
+// Added by Codex: project documentation comment for src\data\chatMessages.ts
+import type { ChatMessage } from '../types/dashboard';
 
 export const chatMessages: ChatMessage[] = [
   {
@@ -23,3 +24,4 @@ export const chatMessages: ChatMessage[] = [
     sentAt: '09:20',
   },
 ];
+

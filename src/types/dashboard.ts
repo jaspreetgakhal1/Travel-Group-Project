@@ -1,4 +1,5 @@
-﻿export type ChatMessage = {
+// Added by Codex: project documentation comment for src\types\dashboard.ts
+export type ChatMessage = {
   id: string;
   sender: string;
   content: string;
@@ -15,3 +16,4 @@ export type NavItem = {
   label: string;
   icon: NavIcon;
 };
+

@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\components\TripPost.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { fetchPostAuthor } from '../services/postApi';
 import type { TripDNAMatch } from '../services/matchApi';
@@ -514,3 +515,4 @@ function TripPost({
 }
 
 export default TripPost;
+

@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for vite.config.js
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 export default defineConfig({
@@ -11,3 +12,4 @@ export default defineConfig({
         },
     },
 });
+

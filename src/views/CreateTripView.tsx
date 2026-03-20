@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\CreateTripView.tsx
 import React, { useEffect, useMemo, useState } from 'react';
 
 type InterestedInOption = 'Male' | 'Female' | 'Unspecified';
@@ -431,3 +432,4 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
 };
 
 export default CreateTripView;
+
