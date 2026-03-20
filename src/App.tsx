@@ -53,6 +53,7 @@ import {
   updateFeedPostStatus,
   type PostStats,
 } from './services/postApi';
+import { fetchTripExpenseSummary, splitTripExpense, type TripExpenseSummary } from './services/expenseApi';
 import {
   fetchSelfTrips,
   fetchTripRequests,
@@ -660,6 +661,13 @@ function App() {
   const [userCreatedTrips, setUserCreatedTrips] = useState<Trip[]>([]);
   const [postStats, setPostStats] = useState<PostStats>(EMPTY_POST_STATS);
   const [isPostActionInProgress, setIsPostActionInProgress] = useState(false);
+  const [splitTripId, setSplitTripId] = useState('');
+  const [splitExpenseDescription, setSplitExpenseDescription] = useState('');
+  const [splitExpenseAmount, setSplitExpenseAmount] = useState('');
+  const [tripExpenseSummary, setTripExpenseSummary] = useState<TripExpenseSummary | null>(null);
+  const [tripExpenseError, setTripExpenseError] = useState('');
+  const [isTripExpenseLoading, setIsTripExpenseLoading] = useState(false);
+  const [isTripExpenseSubmitting, setIsTripExpenseSubmitting] = useState(false);
 
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authForm, setAuthForm] = useState<AuthForm>({ userId: '', password: '', confirmPassword: '' });
@@ -746,6 +754,22 @@ function App() {
       pendingRequestCount: pendingRequestCountByTripId[post.id] ?? post.pendingRequestCount ?? 0,
     }));
   }, [feedPosts, normalizedCurrentUserAuthorKey, pendingRequestCountByTripId, selfTripIdSet, userSession?.id]);
+  const splitEligiblePosts = useMemo(() => {
+    const currentUserId = userSession?.id;
+    if (!currentUserId) {
+      return [];
+    }
+
+    return feedPosts.filter((post, index, collection) => {
+      const isHost = Boolean(post.hostId && post.hostId === currentUserId);
+      const isParticipant = post.participantIds.includes(currentUserId);
+      if (!isHost && !isParticipant) {
+        return false;
+      }
+
+      return collection.findIndex((candidate) => candidate.id === post.id) === index;
+    });
+  }, [feedPosts, userSession?.id]);
 
   const loadActiveFeedPosts = async (
     showFallbackNotice = true,
@@ -1015,6 +1039,55 @@ function App() {
 
     void loadSelfTripsForHost();
   }, [activeView, userSession?.id, userSession?.email, userSession?.name]);
+  useEffect(() => {
+    if (currentScreen !== 'wallet') {
+      return;
+    }
+
+    if (splitTripId) {
+      return;
+    }
+
+    if (activeGroupTripId) {
+      setSplitTripId(activeGroupTripId);
+      return;
+    }
+
+    if (splitEligiblePosts.length > 0) {
+      setSplitTripId(splitEligiblePosts[0].id);
+    }
+  }, [activeGroupTripId, currentScreen, splitEligiblePosts, splitTripId]);
+  useEffect(() => {
+    if (currentScreen !== 'wallet' || !splitTripId || !authToken) {
+      return;
+    }
+
+    let isActive = true;
+    setIsTripExpenseLoading(true);
+    setTripExpenseError('');
+
+    void fetchTripExpenseSummary(splitTripId, authToken)
+      .then((summary) => {
+        if (isActive) {
+          setTripExpenseSummary(summary);
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setTripExpenseSummary(null);
+          setTripExpenseError(error instanceof Error ? error.message : 'Unable to load split expenses for this trip.');
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsTripExpenseLoading(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [authToken, currentScreen, splitTripId]);
 
   useEffect(() => {
     if (!userSession || feedPosts.length === 0) {
@@ -1128,6 +1201,28 @@ function App() {
       inEscrow: Number((totalPaid - totalReleased).toFixed(2)),
     };
   }, [tripRuntimeById]);
+  const splitPreviewAmount = useMemo(() => {
+    const parsedAmount = Number.parseFloat(splitExpenseAmount);
+    return Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : 0;
+  }, [splitExpenseAmount]);
+  const splitPreviewMembers = useMemo(() => {
+    if (!tripExpenseSummary || !userSession?.id || splitPreviewAmount <= 0) {
+      return [];
+    }
+
+    const memberCount = tripExpenseSummary.members.length;
+    if (memberCount <= 1) {
+      return [];
+    }
+
+    const share = Math.round(((splitPreviewAmount / memberCount) * 100)) / 100;
+    return tripExpenseSummary.members
+      .filter((member) => member.id !== userSession.id)
+      .map((member) => ({
+        ...member,
+        owesAmount: share,
+      }));
+  }, [splitPreviewAmount, tripExpenseSummary, userSession?.id]);
 
   const completedTripsCount = useMemo(
     () => Object.values(tripRuntimeById).filter((runtime) => runtime.status === 'Completed').length,
@@ -2433,6 +2528,52 @@ function App() {
     setSystemNotice('Review submitted. Tours completed and ratings updated.');
   };
 
+  const handleSplitExpenseSubmit = async () => {
+    if (!authToken) {
+      setTripExpenseError('Sign in again to split an expense.');
+      return;
+    }
+
+    if (!splitTripId.trim()) {
+      setTripExpenseError('Enter a trip id to split this expense.');
+      return;
+    }
+
+    const normalizedDescription = splitExpenseDescription.trim();
+    if (normalizedDescription.length < 2) {
+      setTripExpenseError('Enter a short description for the expense.');
+      return;
+    }
+
+    const parsedAmount = Number.parseFloat(splitExpenseAmount);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setTripExpenseError('Enter a valid amount greater than 0.');
+      return;
+    }
+
+    setIsTripExpenseSubmitting(true);
+    setTripExpenseError('');
+
+    try {
+      const summary = await splitTripExpense(
+        {
+          tripId: splitTripId.trim(),
+          description: normalizedDescription,
+          amount: parsedAmount,
+        },
+        authToken,
+      );
+      setTripExpenseSummary(summary);
+      setSplitExpenseDescription('');
+      setSplitExpenseAmount('');
+      setSystemNotice('Expense added and split equally with trip members.');
+    } catch (error) {
+      setTripExpenseError(error instanceof Error ? error.message : 'Unable to split this expense right now.');
+    } finally {
+      setIsTripExpenseSubmitting(false);
+    }
+  };
+
   const handleSOS = () => {
     const triggerEmergency = (message: string) => {
       setIsEmergencyAlertActive(true);
@@ -2747,11 +2888,11 @@ function App() {
     );
   };
 
-  const renderWalletScreen = () => (
+  const renderWalletScreenLegacy = () => (
     <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
       <article className="rounded-card bg-white/95 p-8 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
         <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Wallet</p>
-        <h2 className="mt-1 text-3xl font-black text-primary">Escrow & Payments</h2>
+        <h2 className="mt-1 text-3xl font-black text-primary">Escrow, Payments, and Split Bills</h2>
 
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
           <div className="rounded-card bg-primary p-4 text-white">
@@ -2766,6 +2907,507 @@ function App() {
             <p className="text-xs font-semibold uppercase tracking-wide text-white/75">Still in Escrow</p>
             <p className="mt-1 text-2xl font-black">${escrowStats.inEscrow.toFixed(2)}</p>
           </div>
+        </div>
+
+        <div className="mt-8 grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+          <section className="rounded-card border border-primary/10 bg-background/55 p-5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Split Bill By Trip</p>
+            <h3 className="mt-1 text-xl font-bold text-primary">Add a shared expense</h3>
+            <p className="mt-2 text-sm text-primary/75">
+              Hosts and joined users can split an expense equally across everyone in the trip.
+            </p>
+
+            <label className="mt-5 block">
+              <span className="mb-2 block text-sm font-semibold text-primary">Trip ID</span>
+              <input
+                type="text"
+                value={splitTripId}
+                onChange={(event) => setSplitTripId(event.target.value)}
+                className="w-full rounded-card border border-primary/15 bg-white px-3 py-2.5 text-sm text-primary outline-none ring-accent/30 transition focus:ring-2"
+                placeholder="Enter trip id"
+              />
+            </label>
+
+            {splitEligiblePosts.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {splitEligiblePosts.slice(0, 8).map((post) => (
+                  <button
+                    key={post.id}
+                    type="button"
+                    onClick={() => setSplitTripId(post.id)}
+                    className={
+                      splitTripId === post.id
+                        ? 'rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-white'
+                        : 'rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-primary ring-1 ring-primary/15'
+                    }
+                  >
+                    {post.title}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-primary/65">No joined or hosted active trips are loaded yet.</p>
+            )}
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-[1.5fr_1fr]">
+              <label className="block">
+                <span className="mb-2 block text-sm font-semibold text-primary">Description</span>
+                <input
+                  type="text"
+                  value={splitExpenseDescription}
+                  onChange={(event) => setSplitExpenseDescription(event.target.value)}
+                  className="w-full rounded-card border border-primary/15 bg-white px-3 py-2.5 text-sm text-primary outline-none ring-accent/30 transition focus:ring-2"
+                  placeholder="Dinner, Gas, Airbnb"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-2 block text-sm font-semibold text-primary">Amount</span>
+                <div className="flex rounded-card border border-primary/15 bg-white px-3 py-2.5">
+                  <span className="mr-2 text-sm font-semibold text-primary/70">$</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={splitExpenseAmount}
+                    onChange={(event) => setSplitExpenseAmount(event.target.value)}
+                    className="w-full bg-transparent text-sm text-primary outline-none"
+                    placeholder="0.00"
+                  />
+                </div>
+              </label>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void handleSplitExpenseSubmit()}
+              disabled={isTripExpenseSubmitting || isTripExpenseLoading}
+              className="interactive-btn mt-4 rounded-card bg-primary px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-55"
+            >
+              {isTripExpenseSubmitting ? 'Splitting...' : 'Add Expense'}
+            </button>
+
+            {tripExpenseError ? (
+              <p className="mt-3 rounded-card border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {tripExpenseError}
+              </p>
+            ) : null}
+
+            {tripExpenseSummary ? (
+              <>
+                <div className="mt-6 overflow-hidden rounded-card border border-primary/10 bg-white shadow-sm">
+                  {tripExpenseSummary.trip.imageUrl ? (
+                    <img
+                      src={tripExpenseSummary.trip.imageUrl}
+                      alt={tripExpenseSummary.trip.title}
+                      className="h-40 w-full object-cover"
+                    />
+                  ) : null}
+                  <div className="p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Selected Trip</p>
+                    <h4 className="mt-1 text-lg font-bold text-primary">{tripExpenseSummary.trip.title}</h4>
+                    <p className="mt-1 text-sm text-primary/75">{tripExpenseSummary.trip.location}</p>
+                    <p className="mt-2 text-xs text-primary/60">Trip ID: {tripExpenseSummary.trip.id}</p>
+                  </div>
+                </div>
+
+                <div className="mt-5">
+                  <p className="text-sm font-semibold text-primary">Equal split preview</p>
+                  <div className="mt-3 space-y-2">
+                    {splitPreviewMembers.length > 0 ? (
+                      splitPreviewMembers.map((member) => (
+                        <div
+                          key={member.id}
+                          className="flex items-center justify-between rounded-card border border-primary/10 bg-white px-3 py-2"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-xs font-bold text-primary">
+                              {member.avatar ? (
+                                <img src={member.avatar} alt={member.name} className="h-full w-full object-cover" />
+                              ) : (
+                                member.name.charAt(0).toUpperCase()
+                              )}
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-primary">{member.name}</p>
+                              <p className="text-xs text-primary/65">{member.isHost ? 'Host' : 'Trip member'}</p>
+                            </div>
+                          </div>
+                          <span className="text-sm font-semibold text-red-600">Owes: ${member.owesAmount.toFixed(2)}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="rounded-card bg-white px-3 py-2 text-sm text-primary/70 ring-1 ring-primary/10">
+                        Enter an amount to preview how this expense will be split.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : isTripExpenseLoading ? (
+              <p className="mt-4 text-sm text-primary/70">Loading trip split summary...</p>
+            ) : null}
+          </section>
+
+          <section className="space-y-4">
+            <article className="rounded-card border border-primary/10 bg-background/55 p-5">
+              <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Total Settlement</p>
+              <h3 className="mt-1 text-xl font-bold text-primary">Who owes whom</h3>
+              <div className="mt-4 space-y-3">
+                {tripExpenseSummary && tripExpenseSummary.settlementSummary.length > 0 ? (
+                  tripExpenseSummary.settlementSummary.map((settlement) => (
+                    <div
+                      key={`${settlement.fromUserId}-${settlement.toUserId}`}
+                      className="flex items-center justify-between rounded-card border border-primary/10 bg-white px-4 py-3"
+                    >
+                      <div>
+                        <p className="text-sm font-semibold text-red-600">{settlement.fromName}</p>
+                        <p className="text-xs text-primary/70">owes {settlement.toName}</p>
+                      </div>
+                      <span className="text-sm font-bold text-green-700">${settlement.amount.toFixed(2)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-card bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
+                    Add the first expense to generate a settlement summary for this trip.
+                  </p>
+                )}
+              </div>
+            </article>
+
+            <article className="rounded-card border border-primary/10 bg-background/55 p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Trip Expenses</p>
+                  <h3 className="mt-1 text-xl font-bold text-primary">Recorded split bills</h3>
+                </div>
+                <div className="rounded-card bg-primary px-3 py-2 text-right text-white">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Total</p>
+                  <p className="text-lg font-black">${tripExpenseSummary?.totalExpenses.toFixed(2) ?? '0.00'}</p>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {tripExpenseSummary && tripExpenseSummary.expenses.length > 0 ? (
+                  tripExpenseSummary.expenses.map((expense) => (
+                    <div key={expense.id} className="rounded-card border border-primary/10 bg-white px-4 py-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-primary">{expense.description}</p>
+                          <p className="text-xs text-primary/70">
+                            Paid by {expense.paidBy.name} · Split ${expense.splitAmount.toFixed(2)} each
+                          </p>
+                        </div>
+                        <span className="text-sm font-bold text-primary">${expense.amount.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-card bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
+                    No expenses recorded for this trip yet.
+                  </p>
+                )}
+              </div>
+            </article>
+          </section>
+        </div>
+      </article>
+    </section>
+  );
+
+  void renderWalletScreenLegacy;
+
+  const renderWalletScreen = () => (
+    <section className="mx-auto w-full max-w-6xl px-6 pb-16 pt-8">
+      <article className="rounded-[32px] bg-white/95 p-6 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm sm:p-8">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary/60">Split Bills</p>
+            <h2 className="mt-1 text-3xl font-black text-primary">Split expenses by trip</h2>
+            <p className="mt-2 max-w-2xl text-sm text-primary/70">
+              Pick a trip, add what you paid, and everyone&apos;s share is calculated automatically.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-3xl bg-primary px-4 py-3 text-white">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Paid</p>
+              <p className="mt-1 text-xl font-black">${escrowStats.totalPaid.toFixed(2)}</p>
+            </div>
+            <div className="rounded-3xl bg-success px-4 py-3 text-white">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Released</p>
+              <p className="mt-1 text-xl font-black">${escrowStats.totalReleased.toFixed(2)}</p>
+            </div>
+            <div className="rounded-3xl bg-accent px-4 py-3 text-white">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Escrow</p>
+              <p className="mt-1 text-xl font-black">${escrowStats.inEscrow.toFixed(2)}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-8 grid gap-6 xl:grid-cols-[1.08fr_0.92fr]">
+          <section className="space-y-5">
+            <article className="rounded-[28px] border border-primary/10 bg-background/55 p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Step 1</p>
+                  <h3 className="mt-1 text-xl font-bold text-primary">Choose a trip</h3>
+                </div>
+                <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-primary ring-1 ring-primary/10">
+                  {splitEligiblePosts.length} active trips
+                </div>
+              </div>
+
+              {splitEligiblePosts.length > 0 ? (
+                <label className="mt-4 block">
+                  <span className="mb-2 block text-sm font-semibold text-primary">Trip</span>
+                  <select
+                    value={splitTripId}
+                    onChange={(event) => setSplitTripId(event.target.value)}
+                    className="w-full rounded-2xl border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none ring-accent/30 transition focus:ring-2"
+                  >
+                    <option value="">Select a trip</option>
+                    {splitEligiblePosts.map((post) => (
+                      <option key={post.id} value={post.id}>
+                        {post.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <p className="mt-4 rounded-3xl bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
+                  No active hosted or joined trips are available for splitting right now.
+                </p>
+              )}
+            </article>
+
+            <article className="rounded-[28px] border border-primary/10 bg-white p-5 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Step 2</p>
+                  <h3 className="mt-1 text-xl font-bold text-primary">Add an expense</h3>
+                </div>
+                {tripExpenseSummary ? (
+                  <div className="rounded-full bg-background px-3 py-1 text-xs font-semibold text-primary/70 ring-1 ring-primary/10">
+                    {tripExpenseSummary.members.length} people in split
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-[1.6fr_1fr_auto]">
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-primary">Description</span>
+                  <input
+                    type="text"
+                    value={splitExpenseDescription}
+                    onChange={(event) => setSplitExpenseDescription(event.target.value)}
+                    className="w-full rounded-2xl border border-primary/15 bg-background px-4 py-3 text-sm text-primary outline-none ring-accent/30 transition focus:ring-2"
+                    placeholder="Dinner, gas, Airbnb"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-primary">Amount</span>
+                  <div className="flex rounded-2xl border border-primary/15 bg-background px-4 py-3">
+                    <span className="mr-2 text-sm font-semibold text-primary/70">$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={splitExpenseAmount}
+                      onChange={(event) => setSplitExpenseAmount(event.target.value)}
+                      className="w-full bg-transparent text-sm text-primary outline-none"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </label>
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={() => void handleSplitExpenseSubmit()}
+                    disabled={isTripExpenseSubmitting || isTripExpenseLoading}
+                    className="interactive-btn w-full rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-55"
+                  >
+                    {isTripExpenseSubmitting ? 'Adding...' : 'Add expense'}
+                  </button>
+                </div>
+              </div>
+
+              {tripExpenseError ? (
+                <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {tripExpenseError}
+                </p>
+              ) : null}
+
+              {tripExpenseSummary ? (
+                <div className="mt-5 overflow-hidden rounded-[28px] border border-primary/10 bg-background/40">
+                  {tripExpenseSummary.trip.imageUrl ? (
+                    <img
+                      src={tripExpenseSummary.trip.imageUrl}
+                      alt={tripExpenseSummary.trip.title}
+                      className="h-44 w-full object-cover"
+                    />
+                  ) : null}
+                  <div className="space-y-4 p-5">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Selected Trip</p>
+                        <h4 className="mt-1 text-xl font-bold text-primary">{tripExpenseSummary.trip.title}</h4>
+                        <p className="mt-1 text-sm text-primary/70">{tripExpenseSummary.trip.location}</p>
+                      </div>
+                      <div className="rounded-2xl bg-white px-4 py-3 text-right ring-1 ring-primary/10">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-primary/60">Trip Total</p>
+                        <p className="mt-1 text-lg font-black text-primary">${tripExpenseSummary.totalExpenses.toFixed(2)}</p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-sm font-semibold text-primary">Who owes on this new expense</p>
+                      <div className="mt-3 space-y-2">
+                        {splitPreviewMembers.length > 0 ? (
+                          splitPreviewMembers.map((member) => (
+                            <div
+                              key={member.id}
+                              className="flex items-center justify-between rounded-2xl bg-white px-4 py-3 ring-1 ring-primary/10"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
+                                  {member.avatar ? (
+                                    <img src={member.avatar} alt={member.name} className="h-full w-full object-cover" />
+                                  ) : (
+                                    member.name.charAt(0).toUpperCase()
+                                  )}
+                                </div>
+                                <div>
+                                  <p className="text-sm font-semibold text-primary">{member.name}</p>
+                                  <p className="text-xs text-primary/60">{member.isHost ? 'Host' : 'Member'}</p>
+                                </div>
+                              </div>
+                              <span className="text-sm font-bold text-red-600">${member.owesAmount.toFixed(2)}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="rounded-2xl bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
+                            Enter an amount to preview each person&apos;s share.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : isTripExpenseLoading ? (
+                <p className="mt-4 text-sm text-primary/70">Loading trip split summary...</p>
+              ) : (
+                <p className="mt-4 rounded-2xl bg-background/60 px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
+                  Select a trip to see balances, members, and recent expenses.
+                </p>
+              )}
+            </article>
+          </section>
+
+          <section className="space-y-5">
+            <article className="rounded-[28px] border border-primary/10 bg-background/55 p-5">
+              <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Balances</p>
+              <h3 className="mt-1 text-xl font-bold text-primary">Who should pay whom</h3>
+              <div className="mt-4 space-y-3">
+                {tripExpenseSummary && tripExpenseSummary.settlementSummary.length > 0 ? (
+                  tripExpenseSummary.settlementSummary.map((settlement) => (
+                    <div
+                      key={`${settlement.fromUserId}-${settlement.toUserId}`}
+                      className="rounded-2xl bg-white px-4 py-3 ring-1 ring-primary/10"
+                    >
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-red-600">{settlement.fromName}</p>
+                          <p className="text-xs text-primary/65">owes {settlement.toName}</p>
+                        </div>
+                        <span className="text-sm font-bold text-green-700">${settlement.amount.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
+                    No balances yet. Add an expense to generate settlements.
+                  </p>
+                )}
+              </div>
+            </article>
+
+            <article className="rounded-[28px] border border-primary/10 bg-white p-5 shadow-sm">
+              <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Member Summary</p>
+              <h3 className="mt-1 text-xl font-bold text-primary">Net balances</h3>
+
+              <div className="mt-4 space-y-3">
+                {tripExpenseSummary && tripExpenseSummary.balances.length > 0 ? (
+                  tripExpenseSummary.balances.map((balance) => (
+                    <div
+                      key={balance.userId}
+                      className="flex items-center justify-between rounded-2xl border border-primary/10 bg-background/45 px-4 py-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
+                          {balance.avatar ? (
+                            <img src={balance.avatar} alt={balance.name} className="h-full w-full object-cover" />
+                          ) : (
+                            balance.name.charAt(0).toUpperCase()
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-primary">{balance.name}</p>
+                          <p className="text-xs text-primary/60">
+                            Owes ${balance.totalOwed.toFixed(2)} / Gets back ${balance.totalReceivable.toFixed(2)}
+                          </p>
+                        </div>
+                      </div>
+                      <span
+                        className={`text-sm font-bold ${
+                          balance.netBalance >= 0 ? 'text-green-700' : 'text-red-600'
+                        }`}
+                      >
+                        {balance.netBalance >= 0 ? '+' : '-'}${Math.abs(balance.netBalance).toFixed(2)}
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl bg-background/50 px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
+                    Member balances will appear here after the first shared expense.
+                  </p>
+                )}
+              </div>
+            </article>
+
+            <article className="rounded-[28px] border border-primary/10 bg-background/55 p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Recent Expenses</p>
+                  <h3 className="mt-1 text-xl font-bold text-primary">Trip activity</h3>
+                </div>
+                <div className="rounded-2xl bg-primary px-4 py-3 text-right text-white">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Total</p>
+                  <p className="mt-1 text-lg font-black">${tripExpenseSummary?.totalExpenses.toFixed(2) ?? '0.00'}</p>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {tripExpenseSummary && tripExpenseSummary.expenses.length > 0 ? (
+                  tripExpenseSummary.expenses.map((expense) => (
+                    <div key={expense.id} className="rounded-2xl bg-white px-4 py-3 ring-1 ring-primary/10">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-primary">{expense.description}</p>
+                          <p className="text-xs text-primary/65">
+                            Paid by {expense.paidBy.name} / Split ${expense.splitAmount.toFixed(2)} each
+                          </p>
+                        </div>
+                        <span className="text-sm font-bold text-primary">${expense.amount.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
+                    No expenses recorded for this trip yet.
+                  </p>
+                )}
+              </div>
+            </article>
+          </section>
         </div>
       </article>
     </section>

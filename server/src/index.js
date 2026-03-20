@@ -6,6 +6,7 @@ import authRoutes from './routes/authRoutes.js';
 import postRoutes from './routes/postRoutes.js';
 import matchRoutes from './routes/matchRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
+import expenseRoutes from './routes/expenseRoutes.js';
 import tripRoutes from './routes/tripRoutes.js';
 import joinRequestRoutes from './routes/joinRequestRoutes.js';
 import userRoutes from './routes/userRoutes.js';
@@ -40,6 +41,7 @@ app.use('/api/match', matchRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/join-requests', joinRequestRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/expenses', expenseRoutes);
 app.use('/api/users', userRoutes);
 
 app.use((error, _request, response, _next) => {
