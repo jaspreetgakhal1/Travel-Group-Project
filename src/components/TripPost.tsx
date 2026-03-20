@@ -1,12 +1,15 @@
 // Added by Codex: project documentation comment for src\components\TripPost.tsx
 import { useEffect, useMemo, useState } from 'react';
-import type { FeedPost } from '../types/feed';
+import { fetchPostAuthor } from '../services/postApi';
 import type { TripDNAMatch } from '../services/matchApi';
+import type { FeedPost, FeedPostAuthor } from '../types/feed';
 import DNAOverlayChart from './travel-dna/DNAOverlayChart';
 
 type TripPostProps = {
   post: FeedPost;
   currentUserId?: string | null;
+  currentUserAuthorKey?: string | null;
+  currentUserIsVerified?: boolean;
   canManagePost: boolean;
   pendingRequestCount: number;
   isRequestSent: boolean;
@@ -21,6 +24,7 @@ type TripPostProps = {
   onEditPost: (post: FeedPost) => void;
   onDeletePost: (post: FeedPost) => void;
   onCompletePost: (post: FeedPost) => void;
+  showDNACompatibility?: boolean;
 };
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -32,6 +36,8 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
 function TripPost({
   post,
   currentUserId = null,
+  currentUserAuthorKey = null,
+  currentUserIsVerified = false,
   canManagePost,
   pendingRequestCount,
   isRequestSent,
@@ -46,10 +52,14 @@ function TripPost({
   onEditPost,
   onDeletePost,
   onCompletePost,
+  showDNACompatibility = true,
 }: TripPostProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [animatedMatchScore, setAnimatedMatchScore] = useState(0);
+  const [resolvedAuthor, setResolvedAuthor] = useState<FeedPostAuthor | null>(() =>
+    typeof post.author === 'object' && post.author !== null ? post.author : null,
+  );
 
   const matchPercentage = dnaMatch?.matchPercentage ?? null;
   const isPerfectVibe = typeof matchPercentage === 'number' && matchPercentage > 85;
@@ -59,6 +69,25 @@ function TripPost({
   const isTripFull = spotsFilled >= maxParticipants;
   const isJoinedTrip = Boolean(currentUserId && post.participantIds.includes(currentUserId));
   const hasAcceptedParticipants = post.participantIds.length > 0;
+  const hostName = resolvedAuthor?.name ?? post.hostName;
+  const hostAvatar = resolvedAuthor?.avatar ?? post.hostProfileImageDataUrl ?? null;
+  const normalizedCurrentUserAuthorKey =
+    typeof currentUserAuthorKey === 'string' && currentUserAuthorKey.trim()
+      ? currentUserAuthorKey.trim().toLowerCase()
+      : null;
+  const normalizedPostAuthorKey = typeof post.authorKey === 'string' ? post.authorKey.trim().toLowerCase() : '';
+  const isOwnPostByHostId = Boolean(currentUserId && post.hostId && post.hostId === currentUserId);
+  const isOwnPostByAuthorKey = Boolean(
+    normalizedCurrentUserAuthorKey && normalizedPostAuthorKey && normalizedCurrentUserAuthorKey === normalizedPostAuthorKey,
+  );
+  const postAuthorId =
+    typeof post.author === 'object' && post.author !== null && typeof post.author.id === 'string' ? post.author.id : null;
+  const resolvedAuthorId = typeof resolvedAuthor?.id === 'string' ? resolvedAuthor.id : null;
+  const isOwnPostByAuthorId = Boolean(
+    currentUserId && (postAuthorId === currentUserId || resolvedAuthorId === currentUserId),
+  );
+  const isOwnPost = isOwnPostByHostId || isOwnPostByAuthorKey || isOwnPostByAuthorId;
+  const isAuthorVerified = isOwnPost && currentUserIsVerified ? true : Boolean(post.isVerified || resolvedAuthor?.isVerified);
 
   const formattedDates = useMemo(
     () => ({
@@ -71,6 +100,39 @@ function TripPost({
   const handleCardToggle = () => {
     setIsExpanded((previous) => !previous);
   };
+
+  useEffect(() => {
+    const authorFromPost = typeof post.author === 'object' && post.author !== null ? post.author : null;
+    if (authorFromPost) {
+      setResolvedAuthor({
+        ...authorFromPost,
+        isVerified: Boolean(authorFromPost.isVerified || post.isVerified),
+      });
+      return;
+    }
+
+    if (typeof post.author !== 'string') {
+      setResolvedAuthor(null);
+      return;
+    }
+
+    let isActive = true;
+    void fetchPostAuthor(post.id)
+      .then((author) => {
+        if (isActive) {
+          setResolvedAuthor(author);
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setResolvedAuthor(null);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [post.author, post.id, post.isVerified]);
 
   useEffect(() => {
     if (!isExpanded || typeof matchPercentage !== 'number') {
@@ -118,59 +180,54 @@ function TripPost({
     >
       <header className="flex items-center gap-3">
         <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary text-sm font-bold uppercase text-background">
-          {post.hostProfileImageDataUrl ? (
+          {hostAvatar ? (
             <img
-              src={post.hostProfileImageDataUrl}
-              alt={`${post.hostName} profile`}
+              src={hostAvatar}
+              alt={`${hostName} profile`}
               className="h-full w-full object-cover"
               loading="lazy"
             />
           ) : (
-            (post.hostName.charAt(0) || '?').toUpperCase()
+            (hostName.charAt(0) || '?').toUpperCase()
           )}
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-bold text-primary">{post.hostName}</p>
-            {post.isVerified ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-success/25 px-2 py-0.5 text-[11px] font-semibold text-primary">
-                <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-success text-[10px] text-white">
-                  V
-                </span>
-                Verified
-              </span>
-            ) : (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/80">
-                Pending
-              </span>
-            )}
+            <p className="truncate text-sm font-bold text-primary">{hostName}</p>
+            <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">
+              {isAuthorVerified ? 'Verified user' : 'Pending Verification'}
+            </span>
             {post.onlyVerifiedUsers ? (
               <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-primary">
                 Verified users only
               </span>
             ) : null}
-            {isDNAMatchLoading ? (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/80">
-                DNA syncing...
-              </span>
-            ) : typeof matchPercentage === 'number' ? (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/90">
-                DNA {matchPercentage}%
-              </span>
-            ) : (
-              <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] font-semibold text-primary/60">
-                DNA unavailable
-              </span>
-            )}
-            {isPerfectVibe ? (
-              <span className="rounded-full bg-[#81B29A]/20 px-2 py-0.5 text-[11px] font-semibold text-[#2F6A5A]">
-                Perfect Vibe
-              </span>
-            ) : null}
-            {isVibeWarning ? (
-              <span className="rounded-full bg-[#E07A5F]/20 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
-                Vibe Warning
-              </span>
+            {showDNACompatibility ? (
+              <>
+                {isDNAMatchLoading ? (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/80">
+                    DNA syncing...
+                  </span>
+                ) : typeof matchPercentage === 'number' ? (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary/90">
+                    DNA {matchPercentage}%
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-primary/5 px-2 py-0.5 text-[11px] font-semibold text-primary/60">
+                    DNA unavailable
+                  </span>
+                )}
+                {isPerfectVibe ? (
+                  <span className="rounded-full bg-[#81B29A]/20 px-2 py-0.5 text-[11px] font-semibold text-[#2F6A5A]">
+                    Perfect Vibe
+                  </span>
+                ) : null}
+                {isVibeWarning ? (
+                  <span className="rounded-full bg-[#E07A5F]/20 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
+                    Vibe Warning
+                  </span>
+                ) : null}
+              </>
             ) : null}
             {canManagePost ? (
               <span className="rounded-full bg-[#E07A5F]/15 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
@@ -312,42 +369,44 @@ function TripPost({
             </div>
           </section>
 
-          <section className="mt-3 rounded-card border border-primary/10 bg-white/90 p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">DNA Compatibility</p>
-              <p className="text-base font-black text-primary">
-                {isDNAMatchLoading
-                  ? '...'
-                  : typeof matchPercentage === 'number'
-                    ? `${isExpanded ? animatedMatchScore : matchPercentage}%`
-                    : 'N/A'}
-              </p>
-            </div>
+          {showDNACompatibility ? (
+            <section className="mt-3 rounded-card border border-primary/10 bg-white/90 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">DNA Compatibility</p>
+                <p className="text-base font-black text-primary">
+                  {isDNAMatchLoading
+                    ? '...'
+                    : typeof matchPercentage === 'number'
+                      ? `${isExpanded ? animatedMatchScore : matchPercentage}%`
+                      : 'N/A'}
+                </p>
+              </div>
 
-            {isPerfectVibe ? (
-              <p className="mt-2 rounded-card bg-[#81B29A]/15 px-2 py-1 text-xs font-semibold text-[#2F6A5A]">
-                Perfect Vibe: high compatibility for shared planning and trip rhythm.
-              </p>
-            ) : null}
+              {isPerfectVibe ? (
+                <p className="mt-2 rounded-card bg-[#81B29A]/15 px-2 py-1 text-xs font-semibold text-[#2F6A5A]">
+                  Perfect Vibe: high compatibility for shared planning and trip rhythm.
+                </p>
+              ) : null}
 
-            {isVibeWarning ? (
-              <p className="mt-2 rounded-card bg-[#E07A5F]/15 px-2 py-1 text-xs font-semibold text-[#8C4633]">
-                Vibe Warning: {dnaMatch?.conflictHint ?? 'Major travel-style differences detected.'}
-              </p>
-            ) : null}
+              {isVibeWarning ? (
+                <p className="mt-2 rounded-card bg-[#E07A5F]/15 px-2 py-1 text-xs font-semibold text-[#8C4633]">
+                  Vibe Warning: {dnaMatch?.conflictHint ?? 'Major travel-style differences detected.'}
+                </p>
+              ) : null}
 
-            {dnaMatch ? (
-              <DNAOverlayChart
-                userDNA={dnaMatch.viewerDNA}
-                organizerDNA={dnaMatch.organizerDNA}
-                className="mt-3"
-              />
-            ) : (
-              <p className="mt-3 text-xs text-primary/65">
-                Sign in and complete Travel DNA to unlock organizer compatibility visuals.
-              </p>
-            )}
-          </section>
+              {dnaMatch ? (
+                <DNAOverlayChart
+                  userDNA={dnaMatch.viewerDNA}
+                  organizerDNA={dnaMatch.organizerDNA}
+                  className="mt-3"
+                />
+              ) : (
+                <p className="mt-3 text-xs text-primary/65">
+                  Sign in and complete Travel DNA to unlock organizer compatibility visuals.
+                </p>
+              )}
+            </section>
+          ) : null}
         </div>
       </div>
 

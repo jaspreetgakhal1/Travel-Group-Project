@@ -10,6 +10,11 @@ const normalizeAuthorKey = (value) => value.trim().toLowerCase();
 const ACTIVE_STATUS_FILTER = {
   $or: [{ status: 'Active' }, { status: { $exists: false } }, { status: null }],
 };
+const AUTHOR_SELECT_FIELDS = '_id email userId firstName lastName profileImageDataUrl isVerified countryCode mobileNumber';
+const AUTHOR_POPULATE_CONFIG = {
+  path: 'author',
+  select: AUTHOR_SELECT_FIELDS,
+};
 
 const resolveStatusQuery = (rawValue) => {
   if (typeof rawValue !== 'string') {
@@ -57,6 +62,30 @@ const getPostAuthorKey = (post) => {
   return normalizeAuthorKey(rawValue || 'unknown-host');
 };
 
+const getPostHostKey = (post) => {
+  if (typeof post?.hostName !== 'string' || !post.hostName.trim()) {
+    return '';
+  }
+
+  return normalizeAuthorKey(post.hostName);
+};
+
+const getPostLookupKeys = (post) => {
+  const keys = new Set();
+  const authorKey = getPostAuthorKey(post);
+  const hostKey = getPostHostKey(post);
+
+  if (authorKey && authorKey !== 'unknown-host') {
+    keys.add(authorKey);
+  }
+
+  if (hostKey && hostKey !== 'unknown-host') {
+    keys.add(hostKey);
+  }
+
+  return Array.from(keys);
+};
+
 const buildDisplayName = (user, fallbackName) => {
   const firstName = typeof user?.firstName === 'string' ? user.firstName.trim() : '';
   const lastName = typeof user?.lastName === 'string' ? user.lastName.trim() : '';
@@ -85,18 +114,40 @@ const getProfileImageDataUrl = (user) => {
   return normalizedValue || null;
 };
 
-const getUserLookupKeys = (authorKey) => {
-  const normalizedAuthorKey =
-    typeof authorKey === 'string' && authorKey.trim() ? normalizeAuthorKey(authorKey) : '';
-  if (!normalizedAuthorKey) {
-    return [];
+const getPopulatedAuthorFromPost = (post) => {
+  const value = post?.author;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
   }
 
-  return [
-    { email: normalizedAuthorKey },
-    { userId: normalizedAuthorKey },
-  ];
+  if (!('_id' in value)) {
+    return null;
+  }
+
+  return value;
 };
+
+const toFeedAuthor = (user, fallbackName, fallbackVerified, fallbackAuthorKey) => {
+  if (!user) {
+    return typeof fallbackAuthorKey === 'string' && fallbackAuthorKey.trim() ? fallbackAuthorKey : null;
+  }
+
+  return {
+    id: String(user._id),
+    name: buildDisplayName(user, fallbackName),
+    avatar: getProfileImageDataUrl(user),
+    isVerified: Boolean(user.isVerified ?? fallbackVerified),
+  };
+};
+
+const getNormalizedLookupValues = (lookupKeys) =>
+  Array.from(
+    new Set(
+      lookupKeys
+        .filter((value) => typeof value === 'string' && value.trim())
+        .map((value) => normalizeAuthorKey(value)),
+    ),
+  );
 
 const getParticipantIds = (value) => (Array.isArray(value) ? value.map((participantId) => String(participantId)) : []);
 const getSpotsFilledPercent = (spotsFilled, maxParticipants) => {
@@ -107,23 +158,17 @@ const getSpotsFilledPercent = (spotsFilled, maxParticipants) => {
   return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
 };
 
-const findUsersByAuthorKeys = async (authorKeys) => {
-  const normalizedAuthorKeys = Array.from(
-    new Set(
-      authorKeys
-        .filter((value) => typeof value === 'string' && value.trim())
-        .map((value) => normalizeAuthorKey(value)),
-    ),
-  );
+const findUsersByLookupKeys = async (lookupKeys) => {
+  const normalizedLookupValues = getNormalizedLookupValues(lookupKeys);
 
-  if (normalizedAuthorKeys.length === 0) {
+  if (normalizedLookupValues.length === 0) {
     return new Map();
   }
 
   const users = await User.find({
-    $or: [{ email: { $in: normalizedAuthorKeys } }, { userId: { $in: normalizedAuthorKeys } }],
+    $or: [{ email: { $in: normalizedLookupValues } }, { userId: { $in: normalizedLookupValues } }],
   })
-    .select('_id email userId firstName lastName profileImageDataUrl isVerified countryCode mobileNumber')
+    .select(AUTHOR_SELECT_FIELDS)
     .lean();
 
   const usersByAuthorKey = new Map();
@@ -144,20 +189,38 @@ const findUsersByAuthorKeys = async (authorKeys) => {
   return usersByAuthorKey;
 };
 
-const findUserByAuthorKey = async (authorKey) => {
-  const lookupKeys = getUserLookupKeys(authorKey);
-  if (lookupKeys.length === 0) {
+const findUserByLookupKeys = async (lookupKeys) => {
+  const normalizedLookupValues = getNormalizedLookupValues(lookupKeys);
+  if (normalizedLookupValues.length === 0) {
     return null;
   }
 
-  const user = await User.findOne({ $or: lookupKeys })
-    .select('_id email userId firstName lastName profileImageDataUrl isVerified countryCode mobileNumber')
+  const user = await User.findOne({ $or: [{ email: { $in: normalizedLookupValues } }, { userId: { $in: normalizedLookupValues } }] })
+    .select(AUTHOR_SELECT_FIELDS)
     .lean();
 
   return user ?? null;
 };
 
+const resolveUserForPost = (post, usersByLookupKey) => {
+  const lookupKeys = getPostLookupKeys(post);
+
+  for (const lookupKey of lookupKeys) {
+    const matchedUser = usersByLookupKey.get(lookupKey);
+    if (matchedUser) {
+      return matchedUser;
+    }
+  }
+
+  return null;
+};
+
 const toFeedPost = (post, user = null, trip = null) => {
+  const populatedAuthor = getPopulatedAuthorFromPost(post);
+  const resolvedAuthor = user ?? populatedAuthor;
+  const fallbackAuthorKey = getPostAuthorKey(post);
+  const hostDisplayName = buildDisplayName(resolvedAuthor, post.hostName);
+  const author = toFeedAuthor(resolvedAuthor, post.hostName, post.isVerified, fallbackAuthorKey);
   const participantIds = getParticipantIds(trip?.participants);
   const maxParticipants =
     Number.isInteger(trip?.maxParticipants) && trip.maxParticipants > 0
@@ -174,16 +237,17 @@ const toFeedPost = (post, user = null, trip = null) => {
   return {
     id: post._id.toString(),
     hostId:
-      trip?.organizerId ? String(trip.organizerId) : user?._id ? String(user._id) : undefined,
-    hostCountryCode: typeof user?.countryCode === 'string' ? user.countryCode : undefined,
-    hostMobileNumber: typeof user?.mobileNumber === 'string' ? user.mobileNumber : undefined,
-    authorKey: getPostAuthorKey(post),
+      trip?.organizerId ? String(trip.organizerId) : resolvedAuthor?._id ? String(resolvedAuthor._id) : undefined,
+    hostCountryCode: typeof resolvedAuthor?.countryCode === 'string' ? resolvedAuthor.countryCode : undefined,
+    hostMobileNumber: typeof resolvedAuthor?.mobileNumber === 'string' ? resolvedAuthor.mobileNumber : undefined,
+    author,
+    authorKey: fallbackAuthorKey,
     status: getPostStatus(post.status),
     onlyVerifiedUsers: Boolean(post.onlyVerifiedUsers),
     title: post.title,
-    hostName: buildDisplayName(user, post.hostName),
-    isVerified: user ? Boolean(user.isVerified) : Boolean(post.isVerified),
-    hostProfileImageDataUrl: getProfileImageDataUrl(user),
+    hostName: hostDisplayName,
+    isVerified: resolvedAuthor ? Boolean(resolvedAuthor.isVerified) : Boolean(post.isVerified),
+    hostProfileImageDataUrl: getProfileImageDataUrl(resolvedAuthor),
     imageUrl: post.imageUrl,
     location: post.location,
     cost: post.cost,
@@ -385,8 +449,8 @@ router.get('/', async (request, response) => {
         };
 
   try {
-    const posts = await Post.find(filter).sort({ createdAt: -1 });
-    const usersByAuthorKey = await findUsersByAuthorKeys(posts.map((post) => getPostAuthorKey(post)));
+    const posts = await Post.find(filter).sort({ createdAt: -1 }).populate(AUTHOR_POPULATE_CONFIG);
+    const usersByAuthorKey = await findUsersByLookupKeys(posts.flatMap((post) => getPostLookupKeys(post)));
     const postIds = posts.map((post) => post._id);
     const trips = postIds.length > 0
       ? await Trip.find({ _id: { $in: postIds } }).select('_id organizerId maxParticipants participants').lean()
@@ -399,7 +463,7 @@ router.get('/', async (request, response) => {
         posts.map((post) =>
           toFeedPost(
             post,
-            usersByAuthorKey.get(getPostAuthorKey(post)) ?? null,
+            resolveUserForPost(post, usersByAuthorKey),
             tripById.get(String(post._id)) ?? null,
           ),
         ),
@@ -407,6 +471,52 @@ router.get('/', async (request, response) => {
   } catch (error) {
     console.error('Get posts route failed', error);
     return response.status(500).json({ message: 'Unable to fetch posts right now.' });
+  }
+});
+
+router.get('/:postId', async (request, response) => {
+  const { postId } = request.params;
+
+  try {
+    const post = await Post.findById(postId).populate(AUTHOR_POPULATE_CONFIG);
+    if (!post) {
+      return response.status(404).json({ message: 'Post not found.' });
+    }
+
+    const fallbackAuthor = getPopulatedAuthorFromPost(post) ? null : await findUserByLookupKeys(getPostLookupKeys(post));
+    const trip = await Trip.findById(postId).select('_id organizerId maxParticipants participants').lean();
+    return response.status(200).json(toFeedPost(post, fallbackAuthor, trip ?? null));
+  } catch (error) {
+    console.error('Get post route failed', error);
+    return response.status(500).json({ message: 'Unable to fetch post right now.' });
+  }
+});
+
+router.get('/:postId/author', async (request, response) => {
+  const { postId } = request.params;
+
+  try {
+    const post = await Post.findById(postId).populate(AUTHOR_POPULATE_CONFIG);
+    if (!post) {
+      return response.status(404).json({ message: 'Post not found.' });
+    }
+
+    const fallbackAuthor = getPopulatedAuthorFromPost(post) ? null : await findUserByLookupKeys(getPostLookupKeys(post));
+    const resolvedAuthor = fallbackAuthor ?? getPopulatedAuthorFromPost(post);
+
+    if (!resolvedAuthor) {
+      return response.status(404).json({ message: 'Post author details not found.' });
+    }
+
+    return response.status(200).json({
+      id: String(resolvedAuthor._id),
+      name: buildDisplayName(resolvedAuthor, post.hostName),
+      avatar: getProfileImageDataUrl(resolvedAuthor),
+      isVerified: Boolean(resolvedAuthor.isVerified),
+    });
+  } catch (error) {
+    console.error('Get post author route failed', error);
+    return response.status(500).json({ message: 'Unable to fetch post author right now.' });
   }
 });
 
@@ -421,7 +531,12 @@ router.post('/', async (request, response) => {
       ...validationResult.payload,
       status: validationResult.payload.status ?? 'Active',
     });
-    const authorUser = await findUserByAuthorKey(getPostAuthorKey(createdPost));
+    const authorUser = await findUserByLookupKeys(getPostLookupKeys(createdPost));
+    if (authorUser?._id) {
+      createdPost.author = authorUser._id;
+      createdPost.isVerified = Boolean(authorUser.isVerified);
+      await createdPost.save();
+    }
     return response.status(201).json(toFeedPost(createdPost, authorUser));
   } catch (error) {
     console.error('Create post route failed', error);
@@ -451,7 +566,6 @@ router.put('/:postId', async (request, response) => {
     post.status = validationResult.payload.status ?? getPostStatus(post.status);
     post.title = validationResult.payload.title;
     post.hostName = validationResult.payload.hostName;
-    post.isVerified = validationResult.payload.isVerified;
     post.onlyVerifiedUsers = validationResult.payload.onlyVerifiedUsers;
     post.imageUrl = validationResult.payload.imageUrl;
     post.location = validationResult.payload.location;
@@ -463,9 +577,11 @@ router.put('/:postId', async (request, response) => {
     post.travelerType = validationResult.payload.travelerType;
     post.startDate = validationResult.payload.startDate;
     post.endDate = validationResult.payload.endDate;
+    const authorUser = await findUserByLookupKeys(getPostLookupKeys(post));
+    post.author = authorUser?._id ?? null;
+    post.isVerified = authorUser ? Boolean(authorUser.isVerified) : validationResult.payload.isVerified;
 
     await post.save();
-    const authorUser = await findUserByAuthorKey(getPostAuthorKey(post));
     return response.status(200).json(toFeedPost(post, authorUser));
   } catch (error) {
     console.error('Update post route failed', error);
@@ -497,8 +613,10 @@ router.patch('/:postId/status', async (request, response) => {
 
     post.authorKey = getPostAuthorKey(post);
     post.status = status;
+    const authorUser = await findUserByLookupKeys(getPostLookupKeys(post));
+    post.author = authorUser?._id ?? null;
+    post.isVerified = authorUser ? Boolean(authorUser.isVerified) : Boolean(post.isVerified);
     await post.save();
-    const authorUser = await findUserByAuthorKey(getPostAuthorKey(post));
     return response.status(200).json(toFeedPost(post, authorUser));
   } catch (error) {
     console.error('Update post status route failed', error);

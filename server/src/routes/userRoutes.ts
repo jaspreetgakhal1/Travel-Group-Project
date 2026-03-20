@@ -51,6 +51,56 @@ const getDisplayName = (user: DashboardUser): string => {
   return 'Traveler';
 };
 
+const toVerificationStatus = (user: {
+  verificationStatus?: string | null;
+  isVerified?: boolean;
+}): 'pending' | 'verified' =>
+  user.verificationStatus === 'verified' || Boolean(user.isVerified) ? 'verified' : 'pending';
+
+const toPublicUser = (user: {
+  _id: unknown;
+  userId?: string;
+  provider?: string;
+  isVerified?: boolean;
+  verificationStatus?: string | null;
+}) => ({
+  id: String(user._id),
+  userId: typeof user.userId === 'string' ? user.userId : '',
+  provider: typeof user.provider === 'string' ? user.provider : 'Email',
+  isVerified: Boolean(user.isVerified),
+  verificationStatus: toVerificationStatus(user),
+});
+
+router.get('/me', requireAuth, async (req, res) => {
+  const authRequest = req as typeof req & { user?: AuthenticatedUser };
+  const userId = authRequest.user?.id;
+
+  if (!userId || !mongoose.isValidObjectId(userId)) {
+    return res.status(401).json({ message: 'Unauthorized request.' });
+  }
+
+  try {
+    const user = await User.findById(userId)
+      .select('_id userId provider isVerified verificationStatus')
+      .lean<{
+        _id: unknown;
+        userId?: string;
+        provider?: string;
+        isVerified?: boolean;
+        verificationStatus?: string | null;
+      } | null>();
+
+    if (!user) {
+      return res.status(404).json({ message: 'User account not found.' });
+    }
+
+    return res.status(200).json({ user: toPublicUser(user) });
+  } catch (error) {
+    console.error('GET /api/users/me failed', error);
+    return res.status(500).json({ message: 'Unable to fetch current user right now.' });
+  }
+});
+
 router.get('/dashboard-stats', requireAuth, async (req, res) => {
   const authRequest = req as typeof req & { user?: AuthenticatedUser };
   const userId = authRequest.user?.id;

@@ -1,11 +1,19 @@
 // Added by Codex: project documentation comment for src\types\feed.ts
 export type FeedPostStatus = 'Active' | 'Completed';
 
+export type FeedPostAuthor = {
+  id: string;
+  name: string;
+  avatar: string | null;
+  isVerified: boolean;
+};
+
 export type FeedPost = {
   id: string;
   hostId?: string;
   hostCountryCode?: string;
   hostMobileNumber?: string;
+  author?: FeedPostAuthor | string | null;
   authorKey: string;
   status: FeedPostStatus;
   onlyVerifiedUsers: boolean;

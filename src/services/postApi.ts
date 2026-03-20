@@ -1,3 +1,4 @@
+
 // Added by Codex: project documentation comment for src\services\postApi.ts
 import type { FeedPost, FeedPostStatus } from '../types/feed';
 

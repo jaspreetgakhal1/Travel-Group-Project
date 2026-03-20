@@ -8,6 +8,7 @@
     "dev:client": "vite",
     "dev:server": "tsx watch server/src/index.ts",
     "server": "node server/src/index.js",
+    "seed:trips": "node server/src/seedTrips.js",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

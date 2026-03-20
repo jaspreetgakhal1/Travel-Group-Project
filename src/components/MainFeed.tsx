@@ -9,6 +9,7 @@ type MainFeedProps = {
   sentRequestPostIds: string[];
   currentUserAuthorKey?: string;
   currentUserId?: string | null;
+  currentUserIsVerified?: boolean;
   pendingRequestCountByPostId?: Record<string, number>;
   isPostActionInProgress: boolean;
   dnaMatchByPostId: Record<string, TripDNAMatch>;
@@ -31,6 +32,7 @@ function MainFeed({
   sentRequestPostIds,
   currentUserAuthorKey,
   currentUserId,
+  currentUserIsVerified = false,
   pendingRequestCountByPostId = {},
   isPostActionInProgress,
   dnaMatchByPostId,
@@ -86,12 +88,15 @@ function MainFeed({
               key={post.id}
               post={post}
               currentUserId={currentUserId}
+              currentUserAuthorKey={currentUserAuthorKey ?? null}
+              currentUserIsVerified={currentUserIsVerified}
               canManagePost={canManagePost}
               pendingRequestCount={pendingRequestCountByPostId[post.id] ?? post.pendingRequestCount ?? 0}
               isRequestSent={sentRequestPostIds.includes(post.id)}
               isActionInProgress={isPostActionInProgress}
               dnaMatch={dnaMatchByPostId[post.id]}
               isDNAMatchLoading={dnaMatchLoadingPostIds.includes(post.id)}
+              showDNACompatibility={!isMyFeedMode}
               onJoinRequest={onJoinRequest}
               onOpenTripChat={onOpenTripChat}
               onManageRequests={onManageRequests}
