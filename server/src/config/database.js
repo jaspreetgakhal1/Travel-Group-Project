@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for server\src\config\database.js
 import mongoose from 'mongoose';
 import { env } from './env.js';
 
@@ -12,3 +13,4 @@ export const connectDatabase = async () => {
     process.exit(1);
   }
 };
+

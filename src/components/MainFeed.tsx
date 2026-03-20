@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\components\MainFeed.tsx
 import TripPost from './TripPost';
 import type { FeedPost } from '../types/feed';
 import type { TripDNAMatch } from '../services/matchApi';
@@ -113,3 +114,4 @@ function MainFeed({
 }
 
 export default MainFeed;
+

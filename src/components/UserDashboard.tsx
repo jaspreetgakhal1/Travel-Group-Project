@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\components\UserDashboard.tsx
+import React from 'react';
 import { navItems } from '../data/navItems';
 import type { NavIcon } from '../types/dashboard';
 import ChatInterface from './ChatInterface';
@@ -85,3 +86,4 @@ const UserDashboard: React.FC = () => {
 };
 
 export default UserDashboard;
+

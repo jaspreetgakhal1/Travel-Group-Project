@@ -1,7 +1,9 @@
+
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MessageCircle } from 'lucide-react';
 import ChatRoom from './ChatRoom';
+
 import type { Trip } from '../types/trip';
 
 type TripCardProps = {
@@ -191,3 +193,4 @@ const TripCard: React.FC<TripCardProps> = ({
 };
 
 export default TripCard;
+

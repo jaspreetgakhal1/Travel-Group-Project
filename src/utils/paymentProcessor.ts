@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\utils\paymentProcessor.ts
 export type TripLifecycleStatus = 'Open' | 'Introductory' | 'Locked' | 'Completed';
 
 export interface EscrowSummary {
@@ -28,3 +29,4 @@ export const releaseCheckInFunds = (summary: EscrowSummary): EscrowSummary => {
     releasedToOrganizer: toCurrency(summary.totalAmount * 0.5),
   };
 };
+

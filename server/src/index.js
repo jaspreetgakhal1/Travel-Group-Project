@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for server\src\index.js
 import express from 'express';
 import cors from 'cors';
 import { env } from './config/env.js';
@@ -59,3 +60,4 @@ const startServer = async () => {
 };
 
 startServer();
+

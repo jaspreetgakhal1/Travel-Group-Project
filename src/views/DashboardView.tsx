@@ -1,7 +1,9 @@
+
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchCurrentUser } from '../services/authApi';
 import { fetchDashboardStats, type DashboardStats } from '../services/dashboardApi';
 import { reviewJoinRequest } from '../services/tripRequestApi';
+
 
 type DashboardViewProps = {
   authToken: string | null;
@@ -456,3 +458,4 @@ function DashboardView({ authToken, onStartFirstJourney, onVerificationStatusSyn
 }
 
 export default DashboardView;
+

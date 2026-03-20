@@ -1,6 +1,8 @@
+
 import React, { useEffect, useMemo, useState } from 'react';
 import { MessageCircle } from 'lucide-react';
 import { checkTripChatAccess } from '../services/chatAccessApi';
+
 import type { Trip } from '../models/tripModel';
 
 type TripCardViewProps = {
@@ -134,3 +136,4 @@ const TripCardView: React.FC<TripCardViewProps> = ({
 };
 
 export default TripCardView;
+

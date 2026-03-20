@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\ReviewSystemView.tsx
 import React, { useState } from 'react';
 import type { Trip } from '../models/tripModel';
 
@@ -70,3 +71,4 @@ const ReviewSystemView: React.FC<ReviewSystemViewProps> = ({
 };
 
 export default ReviewSystemView;
+

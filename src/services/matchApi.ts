@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\services\matchApi.ts
 import { normalizeTravelDNA, type TravelDNA } from '../models/dnaModel';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
@@ -66,3 +67,4 @@ export const fetchTripDNAMatch = async (tripId: string, authToken: string): Prom
         : 'Travel vibe difference detected.',
   };
 };
+

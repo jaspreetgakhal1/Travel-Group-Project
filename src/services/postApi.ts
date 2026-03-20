@@ -1,4 +1,6 @@
-import type { FeedPost, FeedPostAuthor, FeedPostStatus } from '../types/feed';
+
+// Added by Codex: project documentation comment for src\services\postApi.ts
+import type { FeedPost, FeedPostStatus } from '../types/feed';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
@@ -130,7 +132,3 @@ export const fetchPostStats = async (authorKey?: string): Promise<PostStats> => 
   });
 };
 
-export const fetchPostAuthor = async (postId: string): Promise<FeedPostAuthor> =>
-  request<FeedPostAuthor>(`/api/posts/${postId}/author`, {
-    method: 'GET',
-  });

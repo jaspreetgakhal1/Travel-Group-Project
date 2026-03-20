@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\views\TripDetailView.tsx
+import React from 'react';
 import type { Trip } from '../models/tripModel';
 
 type TripDetailViewProps = {
@@ -93,3 +94,4 @@ const TripDetailView: React.FC<TripDetailViewProps> = ({ trip, onBack }) => {
 };
 
 export default TripDetailView;
+

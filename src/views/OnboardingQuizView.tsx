@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\OnboardingQuizView.tsx
 import React, { useState } from 'react';
 import TravelDNARadarChart from '../components/travel-dna/TravelDNARadarChart';
 import VibeSlider from '../components/travel-dna/VibeSlider';
@@ -131,3 +132,4 @@ const OnboardingQuizView: React.FC<OnboardingQuizViewProps> = ({ userName, initi
 };
 
 export default OnboardingQuizView;
+

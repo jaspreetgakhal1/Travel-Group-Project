@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\components\Navbar.tsx
+import React from 'react';
 
 const Navbar: React.FC = () => {
   return (
@@ -38,3 +39,4 @@ const Navbar: React.FC = () => {
 };
 
 export default Navbar;
+

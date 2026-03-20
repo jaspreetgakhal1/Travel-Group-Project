@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for server\src\routes\matchRoutes.js
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
@@ -275,3 +276,4 @@ router.get('/:tripId', async (request, response) => {
 });
 
 export default router;
+

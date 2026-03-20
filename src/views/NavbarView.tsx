@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\views\NavbarView.tsx
+import React from 'react';
 
 const NavbarView: React.FC = () => {
   return (
@@ -38,3 +39,4 @@ const NavbarView: React.FC = () => {
 };
 
 export default NavbarView;
+

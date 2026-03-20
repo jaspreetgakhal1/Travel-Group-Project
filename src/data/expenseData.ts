@@ -1,4 +1,5 @@
-﻿import type { ExpenseCategory } from '../types/dashboard';
+// Added by Codex: project documentation comment for src\data\expenseData.ts
+import type { ExpenseCategory } from '../types/dashboard';
 
 export const expenseCategories: ExpenseCategory[] = ['Transport', 'Stay', 'Food', 'Tickets'];
 
@@ -8,3 +9,4 @@ export const initialCosts: Record<ExpenseCategory, number> = {
   Food: 320,
   Tickets: 180,
 };
+

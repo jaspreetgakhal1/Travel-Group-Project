@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\VerificationGateView.tsx
 import React, { useState } from 'react';
 
 type VerificationGateViewProps = {
@@ -76,3 +77,4 @@ const VerificationGateView: React.FC<VerificationGateViewProps> = ({ isVerified,
 };
 
 export default VerificationGateView;
+

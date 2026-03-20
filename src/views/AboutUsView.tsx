@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\views\AboutUsView.tsx
 import React from 'react';
 
 type AboutSection = {
@@ -89,3 +90,4 @@ const AboutUsView: React.FC = () => {
 };
 
 export default AboutUsView;
+

@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for tailwind.config.js
 var config = {
     content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
     theme: {
@@ -16,3 +17,4 @@ var config = {
     plugins: [],
 };
 export default config;
+

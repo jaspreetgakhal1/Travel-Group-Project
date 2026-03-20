@@ -1,3 +1,5 @@
+
+
 export interface Trip {
   id: string;
   hostId?: string;
@@ -14,3 +16,4 @@ export interface Trip {
   participantIds?: string[];
   pendingRequestCount?: number;
 }
+

@@ -1,3 +1,4 @@
+// Added by Codex: project documentation comment for src\types\feed.ts
 export type FeedPostStatus = 'Active' | 'Completed';
 
 export type FeedPostAuthor = {
@@ -35,3 +36,4 @@ export type FeedPost = {
   endDate: string;
   pendingRequestCount?: number;
 };
+

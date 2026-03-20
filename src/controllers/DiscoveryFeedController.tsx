@@ -1,4 +1,5 @@
-﻿import React from 'react';
+// Added by Codex: project documentation comment for src\controllers\DiscoveryFeedController.tsx
+import React from 'react';
 import { tripCatalog } from '../models/tripModel';
 import DiscoveryFeedView from '../views/DiscoveryFeedView';
 
@@ -12,3 +13,4 @@ const DiscoveryFeedController: React.FC = () => {
 };
 
 export default DiscoveryFeedController;
+
