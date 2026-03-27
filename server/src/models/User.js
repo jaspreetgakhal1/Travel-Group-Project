@@ -110,6 +110,11 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    escrowBalance: {
+      type: Number,
+      default: 500,
+      min: 0,
+    },
     travelDNA: {
       type: travelDNASchema,
       default: () => ({

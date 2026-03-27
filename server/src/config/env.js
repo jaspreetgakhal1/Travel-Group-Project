@@ -15,8 +15,8 @@ if (missingVariables.length > 0) {
 }
 
 const getAllowedOrigins = () => {
-  // Use a local frontend origin by default for development.
-  const rawValue = process.env.CLIENT_ORIGIN ?? 'http://localhost:5173';
+  // Support both common Vite dev ports when no explicit allowlist is provided.
+  const rawValue = process.env.CLIENT_ORIGIN ?? 'http://localhost:5173,http://localhost:5174';
   // Support comma-separated origins and remove empty values.
   return rawValue
     .split(',')

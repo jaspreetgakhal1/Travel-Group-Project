@@ -1,223 +1,172 @@
 import express from 'express';
-import mongoose from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { Participant } from '../models/Participant.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
-
 const router = express.Router();
 const UPDATE_STATUSES = ['accepted', 'rejected'];
-
 const isValidUpdateStatus = (status) => typeof status === 'string' && UPDATE_STATUSES.includes(status);
-
-const toParticipantIds = (value) => (Array.isArray(value) ? value.map((participantId) => String(participantId)) : []);
-
+const toParticipantIds = (value) => Array.isArray(value) ? value.map((participantId) => String(participantId)) : [];
 const toSpotsFilledPercent = (spotsFilled, maxParticipants) => {
-  if (!Number.isFinite(maxParticipants) || maxParticipants <= 0) {
-    return 0;
-  }
-
-  return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
+    if (!Number.isFinite(maxParticipants) || maxParticipants <= 0) {
+        return 0;
+    }
+    return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
 };
-
 router.patch('/:requestId', requireAuth, async (req, res) => {
-  const { requestId } = req.params;
-  const hostId = req.user?.id;
-  const { status } = req.body ?? {};
-
-  if (!hostId || !mongoose.isValidObjectId(hostId)) {
-    return res.status(401).json({ message: 'Unauthorized request.' });
-  }
-
-  if (!mongoose.isValidObjectId(requestId)) {
-    return res.status(400).json({ message: 'Join request id is invalid.' });
-  }
-
-  if (!isValidUpdateStatus(status)) {
-    return res.status(400).json({ message: 'Status must be accepted or rejected.' });
-  }
-
-  const hostObjectId = new mongoose.Types.ObjectId(hostId);
-
-  try {
-    if (status === 'rejected') {
-      const rejectedRequest = await TripJoinRequest.findOneAndUpdate(
-        {
-          _id: new mongoose.Types.ObjectId(requestId),
-          hostId: hostObjectId,
-          status: 'pending',
-        },
-        {
-          $set: { status: 'rejected' },
-        },
-        {
-          new: true,
-        },
-      );
-
-      if (!rejectedRequest) {
-        const existingRequest = await TripJoinRequest.findById(requestId).select('_id hostId status');
-        if (!existingRequest) {
-          return res.status(404).json({ message: 'Join request not found.' });
+    const requestId = typeof req.params.requestId === 'string' ? req.params.requestId : '';
+    const authRequest = req;
+    const hostId = authRequest.user?.id;
+    const status = req.body?.status;
+    if (!hostId || !mongoose.isValidObjectId(hostId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    if (!mongoose.isValidObjectId(requestId)) {
+        return res.status(400).json({ message: 'Join request id is invalid.' });
+    }
+    if (!isValidUpdateStatus(status)) {
+        return res.status(400).json({ message: 'Status must be accepted or rejected.' });
+    }
+    const hostObjectId = new Types.ObjectId(hostId);
+    try {
+        if (status === 'rejected') {
+            const rejectedRequest = await TripJoinRequest.findOneAndUpdate({
+                _id: new Types.ObjectId(requestId),
+                hostId: hostObjectId,
+                status: 'pending',
+            }, {
+                $set: { status: 'rejected' },
+            }, {
+                new: true,
+            });
+            if (!rejectedRequest) {
+                const existingRequest = await TripJoinRequest.findById(requestId).select('_id hostId status');
+                if (!existingRequest) {
+                    return res.status(404).json({ message: 'Join request not found.' });
+                }
+                if (!existingRequest.hostId.equals(hostObjectId)) {
+                    return res.status(403).json({ message: 'Only the trip host can update this request.' });
+                }
+                return res.status(409).json({ message: `Request already ${existingRequest.status}.` });
+            }
+            return res.status(200).json({
+                message: 'Join request rejected.',
+                request: {
+                    id: rejectedRequest._id.toString(),
+                    tripId: rejectedRequest.tripId.toString(),
+                    requesterId: rejectedRequest.requesterId.toString(),
+                    hostId: rejectedRequest.hostId.toString(),
+                    status: rejectedRequest.status,
+                    updatedAt: rejectedRequest.updatedAt,
+                },
+            });
         }
-
-        if (!existingRequest.hostId.equals(hostObjectId)) {
-          return res.status(403).json({ message: 'Only the trip host can update this request.' });
+        const joinRequest = await TripJoinRequest.findById(requestId).select('_id tripId requesterId hostId status');
+        if (!joinRequest) {
+            return res.status(404).json({ message: 'Join request not found.' });
         }
-
-        return res.status(409).json({ message: `Request already ${existingRequest.status}.` });
-      }
-
-      return res.status(200).json({
-        message: 'Join request rejected.',
-        request: {
-          id: rejectedRequest._id.toString(),
-          tripId: rejectedRequest.tripId.toString(),
-          requesterId: rejectedRequest.requesterId.toString(),
-          hostId: rejectedRequest.hostId.toString(),
-          status: rejectedRequest.status,
-          updatedAt: rejectedRequest.updatedAt,
-        },
-      });
+        if (!joinRequest.hostId.equals(hostObjectId)) {
+            return res.status(403).json({ message: 'Only the trip host can update this request.' });
+        }
+        if (joinRequest.status !== 'pending') {
+            return res.status(409).json({ message: `Request already ${joinRequest.status}.` });
+        }
+        const requesterObjectId = new Types.ObjectId(String(joinRequest.requesterId));
+        const updatedTrip = await Trip.findOneAndUpdate({
+            _id: joinRequest.tripId,
+            participants: { $ne: requesterObjectId },
+            $expr: {
+                $lt: [{ $size: { $ifNull: ['$participants', []] } }, '$maxParticipants'],
+            },
+        }, {
+            $addToSet: {
+                participants: requesterObjectId,
+            },
+        }, {
+            new: true,
+        }).select('_id organizerId maxParticipants participants');
+        let tripSnapshot = updatedTrip;
+        const didAddParticipant = Boolean(updatedTrip);
+        if (!tripSnapshot) {
+            const existingTrip = await Trip.findById(joinRequest.tripId).select('_id organizerId maxParticipants participants');
+            if (!existingTrip) {
+                return res.status(404).json({ message: 'Trip not found.' });
+            }
+            const participantIds = toParticipantIds(existingTrip.participants);
+            if (participantIds.includes(String(joinRequest.requesterId))) {
+                tripSnapshot = existingTrip;
+            }
+            else if (participantIds.length >= existingTrip.maxParticipants) {
+                return res.status(409).json({ message: 'Trip has reached the maximum participant limit.' });
+            }
+            else {
+                return res.status(409).json({ message: 'Unable to accept join request right now.' });
+            }
+        }
+        const acceptedRequest = await TripJoinRequest.findOneAndUpdate({
+            _id: joinRequest._id,
+            hostId: hostObjectId,
+            status: 'pending',
+        }, {
+            $set: { status: 'accepted' },
+        }, {
+            new: true,
+        });
+        if (!acceptedRequest) {
+            if (didAddParticipant) {
+                await Trip.updateOne({ _id: joinRequest.tripId }, { $pull: { participants: requesterObjectId } });
+            }
+            const latestRequest = await TripJoinRequest.findById(requestId).select('status');
+            if (latestRequest?.status && latestRequest.status !== 'pending') {
+                return res.status(409).json({ message: `Request already ${latestRequest.status}.` });
+            }
+            return res.status(409).json({ message: 'Unable to accept join request right now.' });
+        }
+        await Participant.updateOne({
+            tripId: joinRequest.tripId,
+            userId: joinRequest.hostId,
+        }, {
+            $setOnInsert: { role: 'host' },
+        }, {
+            upsert: true,
+        });
+        await Participant.updateOne({
+            tripId: joinRequest.tripId,
+            userId: joinRequest.requesterId,
+        }, {
+            $setOnInsert: { role: 'participant' },
+        }, {
+            upsert: true,
+        });
+        const participantIds = toParticipantIds(tripSnapshot.participants);
+        const spotsFilled = participantIds.length;
+        return res.status(200).json({
+            message: 'Join request accepted.',
+            request: {
+                id: acceptedRequest._id.toString(),
+                tripId: acceptedRequest.tripId.toString(),
+                requesterId: acceptedRequest.requesterId.toString(),
+                hostId: acceptedRequest.hostId.toString(),
+                status: acceptedRequest.status,
+                updatedAt: acceptedRequest.updatedAt,
+            },
+            trip: {
+                id: tripSnapshot._id.toString(),
+                hostId: tripSnapshot.organizerId.toString(),
+                maxParticipants: tripSnapshot.maxParticipants,
+                spotsFilled,
+                spotsFilledPercent: toSpotsFilledPercent(spotsFilled, tripSnapshot.maxParticipants),
+                participantIds,
+            },
+        });
     }
-
-    const joinRequest = await TripJoinRequest.findById(requestId).select('_id tripId requesterId hostId status');
-    if (!joinRequest) {
-      return res.status(404).json({ message: 'Join request not found.' });
+    catch (error) {
+        if (error?.code === 11000) {
+            return res.status(409).json({ message: 'Participant already exists for this trip.' });
+        }
+        console.error('PATCH /api/join-requests/:requestId failed', error);
+        return res.status(500).json({ message: 'Unable to update join request right now.' });
     }
-
-    if (!joinRequest.hostId.equals(hostObjectId)) {
-      return res.status(403).json({ message: 'Only the trip host can update this request.' });
-    }
-
-    if (joinRequest.status !== 'pending') {
-      return res.status(409).json({ message: `Request already ${joinRequest.status}.` });
-    }
-
-    const requesterObjectId = new mongoose.Types.ObjectId(String(joinRequest.requesterId));
-
-    const updatedTrip = await Trip.findOneAndUpdate(
-      {
-        _id: joinRequest.tripId,
-        participants: { $ne: requesterObjectId },
-        $expr: {
-          $lt: [{ $size: { $ifNull: ['$participants', []] } }, '$maxParticipants'],
-        },
-      },
-      {
-        $addToSet: {
-          participants: requesterObjectId,
-        },
-      },
-      {
-        new: true,
-      },
-    ).select('_id organizerId maxParticipants participants');
-
-    let tripSnapshot = updatedTrip;
-    const didAddParticipant = Boolean(updatedTrip);
-    if (!tripSnapshot) {
-      const existingTrip = await Trip.findById(joinRequest.tripId).select('_id organizerId maxParticipants participants');
-      if (!existingTrip) {
-        return res.status(404).json({ message: 'Trip not found.' });
-      }
-
-      const participantIds = toParticipantIds(existingTrip.participants);
-      if (participantIds.includes(String(joinRequest.requesterId))) {
-        tripSnapshot = existingTrip;
-      } else if (participantIds.length >= existingTrip.maxParticipants) {
-        return res.status(409).json({ message: 'Trip has reached the maximum participant limit.' });
-      } else {
-        return res.status(409).json({ message: 'Unable to accept join request right now.' });
-      }
-    }
-
-    const acceptedRequest = await TripJoinRequest.findOneAndUpdate(
-      {
-        _id: joinRequest._id,
-        hostId: hostObjectId,
-        status: 'pending',
-      },
-      {
-        $set: { status: 'accepted' },
-      },
-      {
-        new: true,
-      },
-    );
-
-    if (!acceptedRequest) {
-      if (didAddParticipant) {
-        await Trip.updateOne(
-          { _id: joinRequest.tripId },
-          { $pull: { participants: requesterObjectId } },
-        );
-      }
-
-      const latestRequest = await TripJoinRequest.findById(requestId).select('status');
-      if (latestRequest?.status && latestRequest.status !== 'pending') {
-        return res.status(409).json({ message: `Request already ${latestRequest.status}.` });
-      }
-
-      return res.status(409).json({ message: 'Unable to accept join request right now.' });
-    }
-
-    await Participant.updateOne(
-      {
-        tripId: joinRequest.tripId,
-        userId: joinRequest.hostId,
-      },
-      {
-        $setOnInsert: { role: 'host' },
-      },
-      {
-        upsert: true,
-      },
-    );
-
-    await Participant.updateOne(
-      {
-        tripId: joinRequest.tripId,
-        userId: joinRequest.requesterId,
-      },
-      {
-        $setOnInsert: { role: 'participant' },
-      },
-      {
-        upsert: true,
-      },
-    );
-
-    const participantIds = toParticipantIds(tripSnapshot.participants);
-    const spotsFilled = participantIds.length;
-
-    return res.status(200).json({
-      message: 'Join request accepted.',
-      request: {
-        id: acceptedRequest._id.toString(),
-        tripId: acceptedRequest.tripId.toString(),
-        requesterId: acceptedRequest.requesterId.toString(),
-        hostId: acceptedRequest.hostId.toString(),
-        status: acceptedRequest.status,
-        updatedAt: acceptedRequest.updatedAt,
-      },
-      trip: {
-        id: tripSnapshot._id.toString(),
-        hostId: tripSnapshot.organizerId.toString(),
-        maxParticipants: tripSnapshot.maxParticipants,
-        spotsFilled,
-        spotsFilledPercent: toSpotsFilledPercent(spotsFilled, tripSnapshot.maxParticipants),
-        participantIds,
-      },
-    });
-  } catch (error) {
-    if (error?.code === 11000) {
-      return res.status(409).json({ message: 'Participant already exists for this trip.' });
-    }
-
-    console.error('PATCH /api/join-requests/:requestId failed', error);
-    return res.status(500).json({ message: 'Unable to update join request right now.' });
-  }
 });
-
 export default router;

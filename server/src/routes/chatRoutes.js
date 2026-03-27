@@ -12,10 +12,11 @@ If the user reports a bug, ask for exact screen name and error text.
 If policy or account data is unknown, say so clearly and suggest next support step.
 Never claim you performed account actions.`;
 const extractTextFromResponsePayload = (payload) => {
-    if (typeof payload?.output_text === 'string' && payload.output_text.trim()) {
-        return payload.output_text.trim();
+    const root = payload;
+    if (typeof root?.output_text === 'string' && root.output_text.trim()) {
+        return root.output_text.trim();
     }
-    const output = Array.isArray(payload?.output) ? payload.output : [];
+    const output = Array.isArray(root?.output) ? root.output : [];
     const collected = [];
     output.forEach((item) => {
         const content = Array.isArray(item?.content) ? item.content : [];
@@ -42,7 +43,10 @@ const toFallbackSupportReply = (prompt) => {
     if (normalized.includes('payment') || normalized.includes('escrow') || normalized.includes('refund')) {
         return 'For escrow or payment issues, include the trip title, amount, and the step where it failed so support can trace it quickly.';
     }
-    if (normalized.includes('bug') || normalized.includes('issue') || normalized.includes('error') || normalized.includes('problem')) {
+    if (normalized.includes('bug') ||
+        normalized.includes('issue') ||
+        normalized.includes('error') ||
+        normalized.includes('problem')) {
         return 'Please share: 1) screen name, 2) exact steps, 3) expected result, 4) actual result, and 5) screenshot if possible.';
     }
     if (normalized.includes('host') || normalized.includes('trip')) {
@@ -55,9 +59,9 @@ const normalizeHistory = (rawHistory) => {
         return [];
     }
     return rawHistory
-        .filter((item) => item && typeof item === 'object')
+        .filter((item) => Boolean(item) && typeof item === 'object')
         .map((item) => ({
-        role: item.role === 'assistant' ? 'assistant' : 'user',
+        role: (item.role === 'assistant' ? 'assistant' : 'user'),
         text: typeof item.text === 'string' ? item.text.trim() : '',
     }))
         .filter((item) => item.text.length > 0)
@@ -88,7 +92,7 @@ const askOpenAI = async (message, history, apiKey, model) => {
     if (!response.ok) {
         let reason = 'Support AI request failed.';
         try {
-            const errorPayload = await response.json();
+            const errorPayload = (await response.json());
             const errorMessage = errorPayload?.error?.message;
             if (typeof errorMessage === 'string' && errorMessage.trim()) {
                 reason = errorMessage.trim();
@@ -99,7 +103,7 @@ const askOpenAI = async (message, history, apiKey, model) => {
         }
         throw new Error(reason);
     }
-    const payload = await response.json();
+    const payload = (await response.json());
     const reply = extractTextFromResponsePayload(payload);
     if (!reply) {
         throw new Error('Support AI returned an empty response.');

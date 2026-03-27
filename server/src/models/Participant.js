@@ -1,14 +1,15 @@
-import mongoose from 'mongoose';
+import mongoose, { Schema } from 'mongoose';
+const { model, models } = mongoose;
 export const PARTICIPANT_ROLES = ['host', 'participant'];
-const participantSchema = new mongoose.Schema({
+const participantSchema = new Schema({
     tripId: {
-        type: mongoose.Schema.Types.ObjectId,
+        type: Schema.Types.ObjectId,
         ref: 'Trip',
         required: true,
         index: true,
     },
     userId: {
-        type: mongoose.Schema.Types.ObjectId,
+        type: Schema.Types.ObjectId,
         ref: 'User',
         required: true,
         index: true,
@@ -25,6 +26,5 @@ const participantSchema = new mongoose.Schema({
 participantSchema.index({ tripId: 1, userId: 1 }, { unique: true });
 participantSchema.index({ userId: 1, createdAt: -1 });
 participantSchema.index({ tripId: 1, role: 1 });
-export const Participant =
-    mongoose.models.Participant ||
-        mongoose.model('Participant', participantSchema);
+export const Participant = models.Participant ||
+    model('Participant', participantSchema);

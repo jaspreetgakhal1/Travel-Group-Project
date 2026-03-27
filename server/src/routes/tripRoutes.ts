@@ -6,6 +6,7 @@ import { Post } from '../models/Post.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
+import { buildTripSettlement } from '../utils/wallet.js';
 import type { AuthenticatedUser } from '../types/auth.js';
 
 const router = express.Router();
@@ -184,6 +185,28 @@ router.get('/self', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('GET /api/trips/self failed', error);
     return res.status(500).json({ message: 'Unable to load your trips right now.' });
+  }
+});
+
+router.get('/:tripId/settlement', requireAuth, async (req, res) => {
+  const authRequest = req as typeof req & { user?: AuthenticatedUser };
+  const requesterId = authRequest.user?.id;
+  const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+
+  if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+    return res.status(401).json({ message: 'Unauthorized request.' });
+  }
+
+  try {
+    const settlement = await buildTripSettlement(tripId, requesterId);
+    if ('error' in settlement) {
+      return res.status(settlement.error.status).json({ message: settlement.error.message });
+    }
+
+    return res.status(200).json(settlement);
+  } catch (error) {
+    console.error('GET /api/trips/:tripId/settlement failed', error);
+    return res.status(500).json({ message: 'Unable to load trip settlement right now.' });
   }
 });
 

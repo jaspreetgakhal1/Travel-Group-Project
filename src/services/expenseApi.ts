@@ -50,10 +50,30 @@ export type TripExpenseSummary = {
     userId: string;
     name: string;
     avatar: string | null;
+    totalSpent?: number;
+    equalShare?: number;
     totalOwed: number;
     totalReceivable: number;
     netBalance: number;
   }>;
+};
+
+export type WalletSummaryEntry = {
+  id: string;
+  tripId: string;
+  tripTitle: string;
+  recipientUserId: string;
+  recipientName: string;
+  recipientAvatar: string | null;
+  amount: number;
+};
+
+export type WalletSummary = {
+  paidTotal: number;
+  releasedTotal: number;
+  escrowBalance: number;
+  paidEntries: WalletSummaryEntry[];
+  releasedEntries: WalletSummaryEntry[];
 };
 
 const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
@@ -95,7 +115,7 @@ const request = async <T>(path: string, init: RequestInit, authToken: string): P
 };
 
 export const fetchTripExpenseSummary = async (tripId: string, authToken: string): Promise<TripExpenseSummary> =>
-  request<TripExpenseSummary>(`/api/expenses/trips/${encodeURIComponent(tripId)}`, { method: 'GET' }, authToken);
+  request<TripExpenseSummary>(`/api/trips/${encodeURIComponent(tripId)}/settlement`, { method: 'GET' }, authToken);
 
 export const splitTripExpense = async (
   payload: { tripId: string; description: string; amount: number },
@@ -103,6 +123,22 @@ export const splitTripExpense = async (
 ): Promise<TripExpenseSummary> =>
   request<TripExpenseSummary>(
     '/api/expenses/split',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    authToken,
+  );
+
+export const fetchWalletSummary = async (authToken: string): Promise<WalletSummary> =>
+  request<WalletSummary>('/api/wallet/summary', { method: 'GET' }, authToken);
+
+export const releaseWalletPayment = async (
+  payload: { tripId: string; recipientUserId: string; amount: number },
+  authToken: string,
+): Promise<WalletSummary> =>
+  request<WalletSummary>(
+    '/api/wallet/release',
     {
       method: 'POST',
       body: JSON.stringify(payload),

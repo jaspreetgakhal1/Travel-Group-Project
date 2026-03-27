@@ -2,10 +2,15 @@ import { HydratedDocument, Model, Types } from 'mongoose';
 export interface ITrip {
     organizerId: Types.ObjectId;
     title: string;
+    description?: string;
     location: string;
+    imageUrl?: string;
+    price?: number;
+    category?: 'Adventure' | 'Luxury' | 'Budget' | 'Nature';
     startDate: Date;
     endDate: Date;
     maxParticipants: number;
+    participants: Types.ObjectId[];
     createdAt: Date;
     updatedAt: Date;
 }
