@@ -1297,6 +1297,82 @@ function App() {
     }),
     [walletSummary],
   );
+  const selectedTripPaidEntries = useMemo(() => {
+    if (!walletSummary?.paidEntries?.length) {
+      return [];
+    }
+
+    if (!splitTripId) {
+      return walletSummary.paidEntries;
+    }
+
+    return walletSummary.paidEntries.filter((entry) => entry.tripId === splitTripId);
+  }, [splitTripId, walletSummary?.paidEntries]);
+  const selectedTripParticipantEntries = useMemo(() => {
+    if (!tripExpenseSummary || !userSession?.id) {
+      return [];
+    }
+
+    const payableByUserId = new Map(selectedTripPaidEntries.map((entry) => [entry.recipientUserId, entry]));
+    const releasedAmountByUserId = new Map(
+      (walletSummary?.releasedEntries ?? [])
+        .filter((entry) => entry.tripId === tripExpenseSummary.trip.id)
+        .map((entry) => [entry.recipientUserId, entry.amount]),
+    );
+    const settlementAmountByUserId = tripExpenseSummary.settlementSummary.reduce<Map<string, number>>((accumulator, settlement) => {
+      if (settlement.fromUserId !== userSession.id) {
+        return accumulator;
+      }
+
+      accumulator.set(
+        settlement.toUserId,
+        Number((((accumulator.get(settlement.toUserId) ?? 0) + settlement.amount)).toFixed(2)),
+      );
+      return accumulator;
+    }, new Map());
+
+    return tripExpenseSummary.balances
+      .filter((balance) => balance.userId !== userSession.id)
+      .map((balance) => {
+        const member = tripExpenseSummary.members.find((tripMember) => tripMember.id === balance.userId);
+        const payableEntry = payableByUserId.get(balance.userId);
+        const settledAmount = settlementAmountByUserId.get(balance.userId) ?? 0;
+        const releasedAmount = releasedAmountByUserId.get(balance.userId) ?? 0;
+        const remainingAmount = Math.max(0, Number((settledAmount - releasedAmount).toFixed(2)));
+        const totalOwesAmount = payableEntry?.amount ?? remainingAmount;
+
+        return {
+          id: payableEntry?.id ?? `trip-balance:${balance.userId}`,
+          userId: balance.userId,
+          name: balance.name,
+          avatar: balance.avatar ?? member?.avatar ?? null,
+          tripId: tripExpenseSummary.trip.id,
+          tripTitle: tripExpenseSummary.trip.title,
+          totalOwesAmount: Number((totalOwesAmount ?? 0).toFixed(2)),
+          netBalanceAmount: Number((payableEntry?.amount ?? remainingAmount).toFixed(2)),
+          payableEntry: payableEntry ?? null,
+        };
+      })
+      .sort((left, right) => right.totalOwesAmount - left.totalOwesAmount);
+  }, [selectedTripPaidEntries, tripExpenseSummary, userSession?.id, walletSummary?.releasedEntries]);
+  const selectedTripPayableTotal = useMemo(
+    () => Number(selectedTripPaidEntries.reduce((total, entry) => total + entry.amount, 0).toFixed(2)),
+    [selectedTripPaidEntries],
+  );
+  const currentUserTripBalance = useMemo(() => {
+    if (!tripExpenseSummary || !userSession?.id) {
+      return null;
+    }
+
+    return tripExpenseSummary.balances.find((balance) => balance.userId === userSession.id) ?? null;
+  }, [tripExpenseSummary, userSession?.id]);
+  const tripScopedPayableAmount = useMemo(() => {
+    if (currentUserTripBalance && currentUserTripBalance.totalOwed > 0) {
+      return Number(currentUserTripBalance.totalOwed.toFixed(2));
+    }
+
+    return selectedTripPayableTotal;
+  }, [currentUserTripBalance, selectedTripPayableTotal]);
   const splitPreviewAmount = useMemo(() => {
     const parsedAmount = Number.parseFloat(splitExpenseAmount);
     return Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : 0;
@@ -2694,6 +2770,34 @@ function App() {
     setWalletError('');
   };
 
+  const handleWalletParticipantSelect = (participantEntry: {
+    userId: string;
+    payableEntry: WalletSummaryEntry | null;
+    name: string;
+    avatar: string | null;
+    tripId: string;
+    tripTitle: string;
+    totalOwesAmount: number;
+    netBalanceAmount: number;
+  }) => {
+    if (participantEntry.netBalanceAmount <= 0) {
+      setWalletError(`No payable amount is available for ${participantEntry.name} right now.`);
+      return;
+    }
+
+    handleWalletRelease(
+      {
+        id: `paid:${participantEntry.tripId}:${participantEntry.userId}`,
+        tripId: participantEntry.tripId,
+        tripTitle: participantEntry.tripTitle,
+        recipientUserId: participantEntry.userId,
+        recipientName: participantEntry.name,
+        recipientAvatar: participantEntry.avatar,
+        amount: participantEntry.netBalanceAmount,
+      },
+    );
+  };
+
   const handleWalletReleaseConfirm = async () => {
     const currentAuthToken =
       typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
@@ -2730,7 +2834,7 @@ function App() {
       setWalletSummary(nextSummary);
       setWalletReleaseEntry(null);
       setWalletReleaseAmount('');
-      setSystemNotice(`Released $${parsedAmount.toFixed(2)} to ${entry.recipientName}.`);
+      setSystemNotice(`Paid $${parsedAmount.toFixed(2)} to ${entry.recipientName}. Your wallet balance has been updated.`);
     } catch (error) {
       const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
       if (isUnauthorized) {
@@ -3303,40 +3407,40 @@ function App() {
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="relative">
-              <button
-                type="button"
-                onClick={() => setActiveWalletPanel((previous) => (previous === 'payables' ? null : 'payables'))}
-                className="w-full rounded-3xl bg-primary px-4 py-3 text-left text-white"
-              >
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Total Payables</p>
-                <p className="mt-1 text-xl font-black">${escrowStats.totalPaid.toFixed(2)}</p>
-              </button>
+	              <button
+	                type="button"
+	                onClick={() => setActiveWalletPanel((previous) => (previous === 'payables' ? null : 'payables'))}
+	                className="w-full rounded-3xl bg-primary px-4 py-3 text-left text-white"
+	              >
+	                <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Total Payables</p>
+	                <p className="mt-1 text-xl font-black">${tripScopedPayableAmount.toFixed(2)}</p>
+	              </button>
               {activeWalletPanel === 'payables' ? (
                 <div className="absolute right-0 z-20 mt-2 w-[320px] max-w-[85vw] rounded-3xl border border-primary/10 bg-white p-3 shadow-xl">
-                  <p className="px-2 text-xs font-semibold uppercase tracking-wide text-primary/55">Who you owe</p>
+                  <p className="px-2 text-xs font-semibold uppercase tracking-wide text-primary/55">Trip joiners and net balance</p>
                   <div className="mt-2 space-y-2">
-                    {walletSummary?.paidEntries.length ? (
-                      walletSummary.paidEntries.map((entry) => (
+                    {selectedTripParticipantEntries.length ? (
+                      selectedTripParticipantEntries.map((entry) => (
                         <div key={entry.id} className="rounded-2xl bg-background/60 px-3 py-3 ring-1 ring-primary/10">
                           <div className="flex items-center gap-3">
                             <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
-                              {entry.recipientAvatar ? (
-                                <img src={entry.recipientAvatar} alt={entry.recipientName} className="h-full w-full object-cover" />
+                              {entry.avatar ? (
+                                <img src={entry.avatar} alt={entry.name} className="h-full w-full object-cover" />
                               ) : (
-                                entry.recipientName.charAt(0).toUpperCase()
+                                entry.name.charAt(0).toUpperCase()
                               )}
                             </div>
                             <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-semibold text-primary">{entry.recipientName}</p>
+                              <p className="truncate text-sm font-semibold text-primary">{entry.name}</p>
                               <p className="truncate text-xs text-primary/60">{entry.tripTitle}</p>
                             </div>
-                            <span className="text-sm font-black text-red-600">${entry.amount.toFixed(2)}</span>
+                            <span className="text-sm font-black text-red-600">${entry.netBalanceAmount.toFixed(2)}</span>
                           </div>
                         </div>
                       ))
                     ) : (
                       <p className="rounded-2xl bg-background/60 px-3 py-3 text-sm text-primary/65 ring-1 ring-primary/10">
-                        No unpaid splits right now.
+                        No joiners with payable balances right now.
                       </p>
                     )}
                   </div>
@@ -3344,51 +3448,51 @@ function App() {
               ) : null}
             </div>
             <div className="relative">
-              <button
-                type="button"
-                onClick={() => setActiveWalletPanel((previous) => (previous === 'release' ? null : 'release'))}
-                className="w-full rounded-3xl bg-success px-4 py-3 text-left text-white"
-              >
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Release Amount</p>
-                <p className="mt-1 text-xl font-black">${escrowStats.totalPaid.toFixed(2)}</p>
-              </button>
-              {activeWalletPanel === 'release' ? (
-                <div className="absolute right-0 z-20 mt-2 w-[320px] max-w-[85vw] rounded-3xl border border-primary/10 bg-white p-3 shadow-xl">
-                  <p className="px-2 text-xs font-semibold uppercase tracking-wide text-primary/55">Choose a payable user</p>
-                  <div className="mt-2 space-y-2">
-                    {walletSummary?.paidEntries.length ? (
-                      walletSummary.paidEntries.map((entry) => (
-                        <button
-                          key={entry.id}
-                          type="button"
-                          onClick={() => handleWalletRelease(entry)}
-                          className="interactive-btn w-full rounded-2xl bg-background/60 px-3 py-3 text-left ring-1 ring-primary/10"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-success/15 text-sm font-bold text-primary">
-                              {entry.recipientAvatar ? (
-                                <img src={entry.recipientAvatar} alt={entry.recipientName} className="h-full w-full object-cover" />
-                              ) : (
-                                entry.recipientName.charAt(0).toUpperCase()
-                              )}
+                <button
+                  type="button"
+                  onClick={() => setActiveWalletPanel((previous) => (previous === 'release' ? null : 'release'))}
+                  className="w-full rounded-3xl bg-success px-4 py-3 text-left text-white"
+                >
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Release Amount</p>
+                  <p className="mt-1 text-xl font-black">${tripScopedPayableAmount.toFixed(2)}</p>
+                </button>
+                {activeWalletPanel === 'release' ? (
+                  <div className="absolute right-0 z-20 mt-2 w-[320px] max-w-[85vw] rounded-3xl border border-primary/10 bg-white p-3 shadow-xl">
+                    <p className="px-2 text-xs font-semibold uppercase tracking-wide text-primary/55">Trip joiners and net balance</p>
+                    <div className="mt-2 space-y-2">
+                      {selectedTripParticipantEntries.length ? (
+                        selectedTripParticipantEntries.map((entry) => (
+                          <button
+                            key={entry.id}
+                            type="button"
+                            onClick={() => handleWalletParticipantSelect(entry)}
+                            className="interactive-btn w-full rounded-2xl bg-background/60 px-3 py-3 text-left ring-1 ring-primary/10"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-success/15 text-sm font-bold text-primary">
+                                {entry.avatar ? (
+                                  <img src={entry.avatar} alt={entry.name} className="h-full w-full object-cover" />
+                                ) : (
+                                  entry.name.charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-semibold text-primary">{entry.name}</p>
+                                <p className="truncate text-xs text-primary/60">{entry.tripTitle}</p>
+                              </div>
+                              <span className="text-sm font-black text-success">${entry.netBalanceAmount.toFixed(2)}</span>
                             </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-semibold text-primary">{entry.recipientName}</p>
-                              <p className="truncate text-xs text-primary/60">{entry.tripTitle}</p>
-                            </div>
-                            <span className="text-sm font-black text-success">${entry.amount.toFixed(2)}</span>
-                          </div>
-                        </button>
-                      ))
-                    ) : (
-                      <p className="rounded-2xl bg-background/60 px-3 py-3 text-sm text-primary/65 ring-1 ring-primary/10">
-                        No payables available to release right now.
-                      </p>
-                    )}
+                          </button>
+                        ))
+                      ) : (
+                        <p className="rounded-2xl bg-background/60 px-3 py-3 text-sm text-primary/65 ring-1 ring-primary/10">
+                          No joiners with payable balances right now.
+                        </p>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ) : null}
-            </div>
+                ) : null}
+              </div>
             <div className="rounded-3xl bg-accent px-4 py-3 text-white">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Escrow</p>
               <p className="mt-1 text-xl font-black">${escrowStats.inEscrow.toFixed(2)}</p>
@@ -3670,52 +3774,102 @@ function App() {
 
         {walletReleaseEntry ? (
           <div className="fixed inset-0 z-30 flex items-center justify-center bg-primary/30 px-4 backdrop-blur-sm">
-            <div className="w-full max-w-md rounded-[28px] bg-white p-6 shadow-2xl ring-1 ring-primary/10">
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-primary/55">Confirm Release</p>
-              <h3 className="mt-2 text-2xl font-black text-primary">Release payment</h3>
-              <p className="mt-3 text-sm text-primary/75">
-                Are you sure you want to release ${walletReleaseAmount || walletReleaseEntry.amount.toFixed(2)} to{' '}
-                {walletReleaseEntry.recipientName}?
-              </p>
-
-              <label className="mt-5 block">
-                <span className="mb-2 block text-sm font-semibold text-primary">Amount</span>
-                <div className="flex rounded-2xl border border-primary/15 bg-background px-4 py-3">
-                  <span className="mr-2 text-sm font-semibold text-primary/70">$</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={walletReleaseAmount}
-                    onChange={(event) => setWalletReleaseAmount(event.target.value)}
-                    className="w-full bg-transparent text-sm text-primary outline-none"
-                  />
+            <div className="w-full max-w-lg overflow-hidden rounded-[32px] bg-white shadow-2xl ring-1 ring-primary/10">
+              <div className="bg-[linear-gradient(135deg,rgba(61,64,91,0.98),rgba(129,178,154,0.95))] px-6 py-5 text-white">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/70">Confirm Payment</p>
+                <div className="mt-3 flex items-center gap-4">
+                  <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-full bg-white/15 text-lg font-black text-white ring-1 ring-white/20">
+                    {walletReleaseEntry.recipientAvatar ? (
+                      <img
+                        src={walletReleaseEntry.recipientAvatar}
+                        alt={walletReleaseEntry.recipientName}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      walletReleaseEntry.recipientName.charAt(0).toUpperCase()
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="truncate text-2xl font-black">{walletReleaseEntry.recipientName}</h3>
+                    <p className="truncate text-sm text-white/80">{walletReleaseEntry.tripTitle}</p>
+                  </div>
                 </div>
-                <p className="mt-2 text-xs text-primary/60">
-                  Total owed to {walletReleaseEntry.recipientName}: ${walletReleaseEntry.amount.toFixed(2)}
-                </p>
-              </label>
+              </div>
 
-              <div className="mt-6 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setWalletReleaseEntry(null);
-                    setWalletReleaseAmount('');
-                  }}
-                  disabled={walletReleaseKey === walletReleaseEntry.id}
-                  className="rounded-2xl border border-primary/15 bg-white px-4 py-2.5 text-sm font-semibold text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleWalletReleaseConfirm()}
-                  disabled={walletReleaseKey === walletReleaseEntry.id}
-                  className="interactive-btn rounded-2xl bg-primary px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {walletReleaseKey === walletReleaseEntry.id ? 'Processing...' : 'Confirm Release'}
-                </button>
+              <div className="space-y-5 p-6">
+                <div className="grid gap-4 rounded-[28px] bg-background/55 p-4 ring-1 ring-primary/10 sm:grid-cols-[1.1fr_0.9fr]">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-primary/55">You are paying</p>
+                    <div className="mt-2 rounded-2xl bg-white px-4 py-4 ring-1 ring-primary/10">
+                      <p className="text-3xl font-black text-primary">
+                        ${Number.parseFloat(walletReleaseAmount || '0').toFixed(2)}
+                      </p>
+                      <p className="mt-1 text-xs text-primary/60">This amount will be deducted from your wallet balance.</p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-primary/55">Payment Summary</p>
+                    <div className="mt-2 space-y-3 rounded-2xl bg-white px-4 py-4 ring-1 ring-primary/10">
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="text-primary/60">Recipient</span>
+                        <span className="font-semibold text-primary">{walletReleaseEntry.recipientName}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="text-primary/60">Trip</span>
+                        <span className="truncate text-right font-semibold text-primary">{walletReleaseEntry.tripTitle}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="text-primary/60">Total owed</span>
+                        <span className="font-semibold text-primary">${walletReleaseEntry.amount.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-primary">Adjust amount</span>
+                  <div className="flex items-center rounded-2xl border border-primary/15 bg-background/70 px-4 py-3 shadow-sm">
+                    <span className="mr-3 text-base font-bold text-primary/60">$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={walletReleaseAmount}
+                      onChange={(event) => setWalletReleaseAmount(event.target.value)}
+                      className="w-full bg-transparent text-base font-semibold text-primary outline-none"
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-primary/60">
+                    Enter a partial amount or keep the full balance for this payment.
+                  </p>
+                </label>
+
+                <div className="rounded-2xl border border-success/20 bg-success/10 px-4 py-3 text-sm text-primary/80">
+                  Confirming will move the amount from your wallet to {walletReleaseEntry.recipientName}&apos;s account immediately.
+                </div>
+
+                <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWalletReleaseEntry(null);
+                      setWalletReleaseAmount('');
+                    }}
+                    disabled={walletReleaseKey === walletReleaseEntry.id}
+                    className="rounded-2xl border border-primary/15 bg-white px-5 py-3 text-sm font-semibold text-primary transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleWalletReleaseConfirm()}
+                    disabled={walletReleaseKey === walletReleaseEntry.id}
+                    className="interactive-btn rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {walletReleaseKey === walletReleaseEntry.id ? 'Paying...' : 'Confirm Pay'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
