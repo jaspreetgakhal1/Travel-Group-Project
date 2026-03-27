@@ -54,7 +54,15 @@ import {
   updateFeedPostStatus,
   type PostStats,
 } from './services/postApi';
-import { fetchTripExpenseSummary, splitTripExpense, type TripExpenseSummary } from './services/expenseApi';
+import {
+  fetchTripExpenseSummary,
+  fetchWalletSummary,
+  releaseWalletPayment,
+  splitTripExpense,
+  type TripExpenseSummary,
+  type WalletSummary,
+  type WalletSummaryEntry,
+} from './services/expenseApi';
 import {
   fetchSelfTrips,
   fetchTripRequests,
@@ -178,6 +186,7 @@ type PublicProfile = {
 type DNAMatchByPostId = Record<string, TripDNAMatch>;
 type HostTripRequestsByTripId = Record<string, HostTripRequest[]>;
 type HostRequestReviewStatus = Extract<JoinRequestStatus, 'accepted' | 'rejected'>;
+type WalletPanel = 'payables' | 'release' | null;
 
 type TripRuntime = {
   status: TripLifecycleStatus;
@@ -568,6 +577,15 @@ const createSession = (name: string, provider: 'Email' | SocialProvider): UserSe
   };
 };
 
+const clearStoredAuthState = (): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  window.localStorage.removeItem(USER_SESSION_STORAGE_KEY);
+};
+
 const createInitialTripRuntime = (): Record<string, TripRuntime> =>
   tripCatalog.reduce<Record<string, TripRuntime>>((accumulator, trip) => {
     accumulator[trip.id] = {
@@ -669,6 +687,13 @@ function App() {
   const [tripExpenseError, setTripExpenseError] = useState('');
   const [isTripExpenseLoading, setIsTripExpenseLoading] = useState(false);
   const [isTripExpenseSubmitting, setIsTripExpenseSubmitting] = useState(false);
+  const [walletSummary, setWalletSummary] = useState<WalletSummary | null>(null);
+  const [isWalletLoading, setIsWalletLoading] = useState(false);
+  const [walletError, setWalletError] = useState('');
+  const [activeWalletPanel, setActiveWalletPanel] = useState<WalletPanel>(null);
+  const [walletReleaseKey, setWalletReleaseKey] = useState<string | null>(null);
+  const [walletReleaseEntry, setWalletReleaseEntry] = useState<WalletSummaryEntry | null>(null);
+  const [walletReleaseAmount, setWalletReleaseAmount] = useState('');
 
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authForm, setAuthForm] = useState<AuthForm>({ userId: '', password: '', confirmPassword: '' });
@@ -992,8 +1017,19 @@ function App() {
           return;
         }
         setUserSession(nextSession);
-      } catch {
-        // Keep local session if profile sync fails.
+      } catch (error) {
+        if (!isActive) {
+          return;
+        }
+
+        const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+        if (isUnauthorized && userSession.provider === 'Email') {
+          clearStoredAuthState();
+          setUserSession(null);
+          setSystemNotice('Your session expired. Please sign in again.');
+          setCurrentScreen('auth');
+          return;
+        }
       } finally {
         if (isActive) {
           setHydratedProfileToken(authToken);
@@ -1016,6 +1052,12 @@ function App() {
       setIsProfileSaving(false);
       setVerificationDocumentFile(null);
       setVerificationDocumentError('');
+      setWalletSummary(null);
+      setWalletError('');
+      setActiveWalletPanel(null);
+      setWalletReleaseKey(null);
+      setWalletReleaseEntry(null);
+      setWalletReleaseAmount('');
       return;
     }
 
@@ -1059,7 +1101,10 @@ function App() {
     }
   }, [activeGroupTripId, currentScreen, splitEligiblePosts, splitTripId]);
   useEffect(() => {
-    if (currentScreen !== 'wallet' || !splitTripId || !authToken) {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (currentScreen !== 'wallet' || !splitTripId || !currentAuthToken) {
       return;
     }
 
@@ -1067,7 +1112,7 @@ function App() {
     setIsTripExpenseLoading(true);
     setTripExpenseError('');
 
-    void fetchTripExpenseSummary(splitTripId, authToken)
+    void fetchTripExpenseSummary(splitTripId, currentAuthToken)
       .then((summary) => {
         if (isActive) {
           setTripExpenseSummary(summary);
@@ -1075,6 +1120,15 @@ function App() {
       })
       .catch((error) => {
         if (isActive) {
+          const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+          if (isUnauthorized) {
+            clearStoredAuthState();
+            setUserSession(null);
+            setSystemNotice('Your session expired. Please sign in again.');
+            setCurrentScreen('auth');
+            return;
+          }
+
           setTripExpenseSummary(null);
           setTripExpenseError(error instanceof Error ? error.message : 'Unable to load split expenses for this trip.');
         }
@@ -1089,6 +1143,53 @@ function App() {
       isActive = false;
     };
   }, [authToken, currentScreen, splitTripId]);
+
+  useEffect(() => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (currentScreen !== 'wallet' || !currentAuthToken) {
+      return;
+    }
+
+    let isActive = true;
+    setIsWalletLoading(true);
+    setWalletError('');
+
+    void fetchWalletSummary(currentAuthToken)
+      .then((summary) => {
+        if (isActive) {
+          setWalletSummary(summary);
+        }
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+
+        const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+        if (isUnauthorized) {
+          clearStoredAuthState();
+          setHydratedProfileToken(null);
+          setUserSession(null);
+          setCurrentScreen('auth');
+          setSystemNotice('Your session expired. Please sign in again.');
+          return;
+        }
+
+        setWalletSummary(null);
+        setWalletError(error instanceof Error ? error.message : 'Unable to load wallet summary right now.');
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsWalletLoading(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [authToken, currentScreen]);
 
   useEffect(() => {
     if (!userSession || feedPosts.length === 0) {
@@ -1188,20 +1289,14 @@ function App() {
     return tripRuntimeById[activeGroupTripId] ?? null;
   }, [activeGroupTripId, tripRuntimeById]);
 
-  const escrowStats = useMemo(() => {
-    const summaries = Object.values(tripRuntimeById)
-      .map((runtime) => runtime.escrowSummary)
-      .filter((summary): summary is EscrowSummary => summary !== null);
-
-    const totalPaid = summaries.reduce((total, summary) => total + summary.totalAmount, 0);
-    const totalReleased = summaries.reduce((total, summary) => total + summary.releasedToOrganizer, 0);
-
-    return {
-      totalPaid: Number(totalPaid.toFixed(2)),
-      totalReleased: Number(totalReleased.toFixed(2)),
-      inEscrow: Number((totalPaid - totalReleased).toFixed(2)),
-    };
-  }, [tripRuntimeById]);
+  const escrowStats = useMemo(
+    () => ({
+      totalPaid: Number((walletSummary?.paidTotal ?? 0).toFixed(2)),
+      totalReleased: Number((walletSummary?.releasedTotal ?? 0).toFixed(2)),
+      inEscrow: Number((walletSummary?.escrowBalance ?? 0).toFixed(2)),
+    }),
+    [walletSummary],
+  );
   const splitPreviewAmount = useMemo(() => {
     const parsedAmount = Number.parseFloat(splitExpenseAmount);
     return Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : 0;
@@ -1216,13 +1311,15 @@ function App() {
       return [];
     }
 
-    const share = Math.round(((splitPreviewAmount / memberCount) * 100)) / 100;
+    const totalCents = Math.round(splitPreviewAmount * 100);
+    const baseShareCents = Math.floor(totalCents / memberCount);
+    const remainderCents = totalCents - baseShareCents * memberCount;
     return tripExpenseSummary.members
-      .filter((member) => member.id !== userSession.id)
-      .map((member) => ({
+      .map((member, index) => ({
         ...member,
-        owesAmount: share,
-      }));
+        owesAmount: Number(((baseShareCents + (index < remainderCents ? 1 : 0)) / 100).toFixed(2)),
+      }))
+      .filter((member) => member.id !== userSession.id);
   }, [splitPreviewAmount, tripExpenseSummary, userSession?.id]);
 
   const completedTripsCount = useMemo(
@@ -2095,8 +2192,7 @@ function App() {
   };
 
   const handleSignOut = () => {
-    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
-    window.localStorage.removeItem(USER_SESSION_STORAGE_KEY);
+    clearStoredAuthState();
     setHydratedProfileToken(null);
     setUserSession(null);
     setAuthMode('signin');
@@ -2530,7 +2626,10 @@ function App() {
   };
 
   const handleSplitExpenseSubmit = async () => {
-    if (!authToken) {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (!currentAuthToken) {
       setTripExpenseError('Sign in again to split an expense.');
       return;
     }
@@ -2562,16 +2661,90 @@ function App() {
           description: normalizedDescription,
           amount: parsedAmount,
         },
-        authToken,
+        currentAuthToken,
       );
       setTripExpenseSummary(summary);
+      const nextWalletSummary = await fetchWalletSummary(currentAuthToken);
+      setWalletSummary(nextWalletSummary);
       setSplitExpenseDescription('');
       setSplitExpenseAmount('');
       setSystemNotice('Expense added and split equally with trip members.');
     } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        setTripExpenseError('Please sign in again to add an expense.');
+        return;
+      }
+
       setTripExpenseError(error instanceof Error ? error.message : 'Unable to split this expense right now.');
     } finally {
       setIsTripExpenseSubmitting(false);
+    }
+  };
+
+  const handleWalletRelease = (entry: WalletSummaryEntry) => {
+    setActiveWalletPanel(null);
+    setWalletReleaseEntry(entry);
+    setWalletReleaseAmount(entry.amount.toFixed(2));
+    setWalletError('');
+  };
+
+  const handleWalletReleaseConfirm = async () => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const entry = walletReleaseEntry;
+
+    if (!currentAuthToken || !entry) {
+      setWalletError('Please sign in again to release this payment.');
+      return;
+    }
+
+    const parsedAmount = Number.parseFloat(walletReleaseAmount);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setWalletError('Enter a valid release amount greater than 0.');
+      return;
+    }
+
+    if (parsedAmount > entry.amount) {
+      setWalletError('Release amount exceeds the total payable.');
+      return;
+    }
+
+    setWalletReleaseKey(entry.id);
+    setWalletError('');
+
+    try {
+      const nextSummary = await releaseWalletPayment(
+        {
+          tripId: entry.tripId,
+          recipientUserId: entry.recipientUserId,
+          amount: parsedAmount,
+        },
+        currentAuthToken,
+      );
+      setWalletSummary(nextSummary);
+      setWalletReleaseEntry(null);
+      setWalletReleaseAmount('');
+      setSystemNotice(`Released $${parsedAmount.toFixed(2)} to ${entry.recipientName}.`);
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        return;
+      }
+
+      setWalletError(error instanceof Error ? error.message : 'Unable to release this payment right now.');
+    } finally {
+      setWalletReleaseKey(null);
     }
   };
 
@@ -3129,13 +3302,92 @@ function App() {
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-3xl bg-primary px-4 py-3 text-white">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Paid</p>
-              <p className="mt-1 text-xl font-black">${escrowStats.totalPaid.toFixed(2)}</p>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setActiveWalletPanel((previous) => (previous === 'payables' ? null : 'payables'))}
+                className="w-full rounded-3xl bg-primary px-4 py-3 text-left text-white"
+              >
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Total Payables</p>
+                <p className="mt-1 text-xl font-black">${escrowStats.totalPaid.toFixed(2)}</p>
+              </button>
+              {activeWalletPanel === 'payables' ? (
+                <div className="absolute right-0 z-20 mt-2 w-[320px] max-w-[85vw] rounded-3xl border border-primary/10 bg-white p-3 shadow-xl">
+                  <p className="px-2 text-xs font-semibold uppercase tracking-wide text-primary/55">Who you owe</p>
+                  <div className="mt-2 space-y-2">
+                    {walletSummary?.paidEntries.length ? (
+                      walletSummary.paidEntries.map((entry) => (
+                        <div key={entry.id} className="rounded-2xl bg-background/60 px-3 py-3 ring-1 ring-primary/10">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
+                              {entry.recipientAvatar ? (
+                                <img src={entry.recipientAvatar} alt={entry.recipientName} className="h-full w-full object-cover" />
+                              ) : (
+                                entry.recipientName.charAt(0).toUpperCase()
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-semibold text-primary">{entry.recipientName}</p>
+                              <p className="truncate text-xs text-primary/60">{entry.tripTitle}</p>
+                            </div>
+                            <span className="text-sm font-black text-red-600">${entry.amount.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="rounded-2xl bg-background/60 px-3 py-3 text-sm text-primary/65 ring-1 ring-primary/10">
+                        No unpaid splits right now.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
-            <div className="rounded-3xl bg-success px-4 py-3 text-white">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Released</p>
-              <p className="mt-1 text-xl font-black">${escrowStats.totalReleased.toFixed(2)}</p>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setActiveWalletPanel((previous) => (previous === 'release' ? null : 'release'))}
+                className="w-full rounded-3xl bg-success px-4 py-3 text-left text-white"
+              >
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Release Amount</p>
+                <p className="mt-1 text-xl font-black">${escrowStats.totalPaid.toFixed(2)}</p>
+              </button>
+              {activeWalletPanel === 'release' ? (
+                <div className="absolute right-0 z-20 mt-2 w-[320px] max-w-[85vw] rounded-3xl border border-primary/10 bg-white p-3 shadow-xl">
+                  <p className="px-2 text-xs font-semibold uppercase tracking-wide text-primary/55">Choose a payable user</p>
+                  <div className="mt-2 space-y-2">
+                    {walletSummary?.paidEntries.length ? (
+                      walletSummary.paidEntries.map((entry) => (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          onClick={() => handleWalletRelease(entry)}
+                          className="interactive-btn w-full rounded-2xl bg-background/60 px-3 py-3 text-left ring-1 ring-primary/10"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-success/15 text-sm font-bold text-primary">
+                              {entry.recipientAvatar ? (
+                                <img src={entry.recipientAvatar} alt={entry.recipientName} className="h-full w-full object-cover" />
+                              ) : (
+                                entry.recipientName.charAt(0).toUpperCase()
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-semibold text-primary">{entry.recipientName}</p>
+                              <p className="truncate text-xs text-primary/60">{entry.tripTitle}</p>
+                            </div>
+                            <span className="text-sm font-black text-success">${entry.amount.toFixed(2)}</span>
+                          </div>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="rounded-2xl bg-background/60 px-3 py-3 text-sm text-primary/65 ring-1 ring-primary/10">
+                        No payables available to release right now.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
             <div className="rounded-3xl bg-accent px-4 py-3 text-white">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Escrow</p>
@@ -3143,6 +3395,11 @@ function App() {
             </div>
           </div>
         </div>
+
+        {walletError ? (
+          <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{walletError}</p>
+        ) : null}
+        {isWalletLoading ? <p className="mt-4 text-sm text-primary/65">Refreshing wallet balances...</p> : null}
 
         <div className="mt-8 grid gap-6 xl:grid-cols-[1.08fr_0.92fr]">
           <section className="space-y-5">
@@ -3353,7 +3610,7 @@ function App() {
                         <div>
                           <p className="text-sm font-semibold text-primary">{balance.name}</p>
                           <p className="text-xs text-primary/60">
-                            Owes ${balance.totalOwed.toFixed(2)} / Gets back ${balance.totalReceivable.toFixed(2)}
+                            Spent ${balance.totalSpent?.toFixed(2) ?? '0.00'} / Equal share ${balance.equalShare?.toFixed(2) ?? '0.00'}
                           </p>
                         </div>
                       </div>
@@ -3410,6 +3667,59 @@ function App() {
             </article>
           </section>
         </div>
+
+        {walletReleaseEntry ? (
+          <div className="fixed inset-0 z-30 flex items-center justify-center bg-primary/30 px-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-[28px] bg-white p-6 shadow-2xl ring-1 ring-primary/10">
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-primary/55">Confirm Release</p>
+              <h3 className="mt-2 text-2xl font-black text-primary">Release payment</h3>
+              <p className="mt-3 text-sm text-primary/75">
+                Are you sure you want to release ${walletReleaseAmount || walletReleaseEntry.amount.toFixed(2)} to{' '}
+                {walletReleaseEntry.recipientName}?
+              </p>
+
+              <label className="mt-5 block">
+                <span className="mb-2 block text-sm font-semibold text-primary">Amount</span>
+                <div className="flex rounded-2xl border border-primary/15 bg-background px-4 py-3">
+                  <span className="mr-2 text-sm font-semibold text-primary/70">$</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={walletReleaseAmount}
+                    onChange={(event) => setWalletReleaseAmount(event.target.value)}
+                    className="w-full bg-transparent text-sm text-primary outline-none"
+                  />
+                </div>
+                <p className="mt-2 text-xs text-primary/60">
+                  Total owed to {walletReleaseEntry.recipientName}: ${walletReleaseEntry.amount.toFixed(2)}
+                </p>
+              </label>
+
+              <div className="mt-6 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWalletReleaseEntry(null);
+                    setWalletReleaseAmount('');
+                  }}
+                  disabled={walletReleaseKey === walletReleaseEntry.id}
+                  className="rounded-2xl border border-primary/15 bg-white px-4 py-2.5 text-sm font-semibold text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleWalletReleaseConfirm()}
+                  disabled={walletReleaseKey === walletReleaseEntry.id}
+                  className="interactive-btn rounded-2xl bg-primary px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {walletReleaseKey === walletReleaseEntry.id ? 'Processing...' : 'Confirm Release'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </article>
     </section>
   );

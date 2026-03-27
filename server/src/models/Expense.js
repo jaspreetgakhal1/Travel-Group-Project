@@ -1,81 +1,72 @@
-import mongoose from 'mongoose';
-
-const settlementSchema = new mongoose.Schema(
-  {
+import mongoose, { Schema } from 'mongoose';
+const { model, models } = mongoose;
+const settlementSchema = new Schema({
     userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
     },
     owesToUserId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
     },
     amount: {
-      type: Number,
-      required: true,
-      min: 0,
+        type: Number,
+        required: true,
+        min: 0,
     },
-  },
-  { _id: false },
-);
-
-const expenseSchema = new mongoose.Schema(
-  {
+}, { _id: false });
+const expenseSchema = new Schema({
     tripId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Trip',
-      required: true,
-      index: true,
+        type: Schema.Types.ObjectId,
+        ref: 'Trip',
+        required: true,
+        index: true,
     },
     paidBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-      index: true,
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
+        index: true,
     },
     description: {
-      type: String,
-      required: true,
-      trim: true,
-      minlength: 2,
-      maxlength: 160,
+        type: String,
+        required: true,
+        trim: true,
+        minlength: 2,
+        maxlength: 160,
     },
     amount: {
-      type: Number,
-      required: true,
-      min: 0.01,
+        type: Number,
+        required: true,
+        min: 0.01,
     },
     splitAmount: {
-      type: Number,
-      required: true,
-      min: 0,
+        type: Number,
+        required: true,
+        min: 0,
     },
     memberCount: {
-      type: Number,
-      required: true,
-      min: 1,
+        type: Number,
+        required: true,
+        min: 1,
     },
     memberUserIds: {
-      type: [
-        {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: 'User',
-        },
-      ],
-      default: [],
+        type: [
+            {
+                type: Schema.Types.ObjectId,
+                ref: 'User',
+            },
+        ],
+        default: [],
     },
     settlements: {
-      type: [settlementSchema],
-      default: [],
+        type: [settlementSchema],
+        default: [],
     },
-  },
-  {
+}, {
     timestamps: true,
-  },
-);
-
+});
 expenseSchema.index({ tripId: 1, createdAt: -1 });
-
-export const Expense = mongoose.models.Expense || mongoose.model('Expense', expenseSchema);
+export const Expense = models.Expense || model('Expense', expenseSchema);

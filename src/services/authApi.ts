@@ -228,6 +228,19 @@ export const fetchUserProfile = async (authToken: string): Promise<ProfileRespon
   return normalizeProfileResponse(profileResponse);
 };
 
+export const fetchCurrentUser = async (authToken: string): Promise<AuthenticatedUser> => {
+  if (authToken === DUMMY_AUTH_TOKEN) {
+    return createDummyUser();
+  }
+
+  const response = await request<CurrentUserResponse>('/api/users/me', {
+    method: 'GET',
+    authToken,
+  });
+
+  return response.user;
+};
+
 export const updateUserProfile = async (
   requestBody: UpdateProfileRequest,
   authToken: string,

@@ -11,6 +11,7 @@ import notificationRoutes from './routes/notificationRoutes.js';
 import postRoutes from './routes/postRoutes.js';
 import tripRoutes from './routes/tripRoutes.js';
 import userRoutes from './routes/userRoutes.js';
+import walletRoutes from './routes/walletRoutes.js';
 
 const app = express();
 
@@ -46,6 +47,7 @@ app.use('/api/join-requests', joinRequestRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/expenses', expenseRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/wallet', walletRoutes);
 
 app.use((error: Error, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
   const parseError = error as Error & { type?: string };
