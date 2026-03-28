@@ -11,6 +11,8 @@ type MainFeedProps = {
   currentUserId?: string | null;
   currentUserIsVerified?: boolean;
   pendingRequestCountByPostId?: Record<string, number>;
+  joinConflictMessageByPostId?: Record<string, string>;
+  activePostIds?: Set<string>;
   isPostActionInProgress: boolean;
   dnaMatchByPostId: Record<string, TripDNAMatch>;
   dnaMatchLoadingPostIds: string[];
@@ -22,6 +24,7 @@ type MainFeedProps = {
   onEditPost: (post: FeedPost) => void;
   onDeletePost: (post: FeedPost) => void;
   onCompletePost: (post: FeedPost) => void;
+  onCancelPost: (post: FeedPost) => void;
 };
 
 const normalizeName = (value: string): string => value.trim().toLowerCase();
@@ -34,6 +37,8 @@ function MainFeed({
   currentUserId,
   currentUserIsVerified = false,
   pendingRequestCountByPostId = {},
+  joinConflictMessageByPostId = {},
+  activePostIds = new Set<string>(),
   isPostActionInProgress,
   dnaMatchByPostId,
   dnaMatchLoadingPostIds,
@@ -45,6 +50,7 @@ function MainFeed({
   onEditPost,
   onDeletePost,
   onCompletePost,
+  onCancelPost,
 }: MainFeedProps) {
   const normalizedCurrentUserAuthorKey = currentUserAuthorKey ? normalizeName(currentUserAuthorKey) : null;
   const isMyFeedMode = mode === 'mine';
@@ -92,6 +98,8 @@ function MainFeed({
               currentUserIsVerified={currentUserIsVerified}
               canManagePost={canManagePost}
               pendingRequestCount={pendingRequestCountByPostId[post.id] ?? post.pendingRequestCount ?? 0}
+              joinConflictMessage={joinConflictMessageByPostId[post.id] ?? null}
+              isCurrentActiveTrip={activePostIds.has(post.id)}
               isRequestSent={sentRequestPostIds.includes(post.id)}
               isActionInProgress={isPostActionInProgress}
               dnaMatch={dnaMatchByPostId[post.id]}
@@ -105,6 +113,7 @@ function MainFeed({
               onEditPost={onEditPost}
               onDeletePost={onDeletePost}
               onCompletePost={onCompletePost}
+              onCancelPost={onCancelPost}
             />
           );
         })}

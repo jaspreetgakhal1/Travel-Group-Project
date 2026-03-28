@@ -1,4 +1,5 @@
 import mongoose, { Schema } from 'mongoose';
+import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 const { model, models } = mongoose;
 const tripSchema = new Schema({
     organizerId: {
@@ -51,6 +52,13 @@ const tripSchema = new Schema({
         type: Date,
         required: true,
     },
+    status: {
+        type: String,
+        enum: TRIP_STATUS_VALUES,
+        required: true,
+        default: ACTIVE_TRIP_STATUS,
+        index: true,
+    },
     maxParticipants: {
         type: Number,
         required: true,
@@ -78,6 +86,7 @@ const tripSchema = new Schema({
 tripSchema.index({ organizerId: 1, startDate: 1 });
 tripSchema.index({ startDate: 1, endDate: 1 });
 tripSchema.index({ participants: 1 });
+tripSchema.index({ status: 1, startDate: 1, endDate: 1 });
 tripSchema.virtual('currentParticipantCount', {
     ref: 'Participant',
     localField: '_id',

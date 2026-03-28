@@ -4,6 +4,13 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { Participant } from '../models/Participant.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest, type TripJoinRequestStatus } from '../models/TripJoinRequest.js';
+import {
+  ACTIVE_TRIP_STATUS,
+  CANCELLED_TRIP_STATUS,
+  COMPLETED_TRIP_STATUS,
+  TRIP_OVERLAP_ERROR_MESSAGE,
+  findTripOverlap,
+} from '../utils/tripScheduling.js';
 import type { AuthenticatedUser } from '../types/auth.js';
 
 const router = express.Router();
@@ -21,6 +28,18 @@ const toSpotsFilledPercent = (spotsFilled: number, maxParticipants: number): num
   }
 
   return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
+};
+
+const getTripStatus = (value: unknown): string => {
+  if (value === COMPLETED_TRIP_STATUS) {
+    return COMPLETED_TRIP_STATUS;
+  }
+
+  if (value === CANCELLED_TRIP_STATUS) {
+    return CANCELLED_TRIP_STATUS;
+  }
+
+  return ACTIVE_TRIP_STATUS;
 };
 
 router.patch('/:requestId', requireAuth, async (req, res) => {
@@ -100,10 +119,36 @@ router.patch('/:requestId', requireAuth, async (req, res) => {
 
     const requesterObjectId = new Types.ObjectId(String(joinRequest.requesterId));
 
+    const targetTrip = await Trip.findById(joinRequest.tripId)
+      .select('_id organizerId maxParticipants participants startDate endDate status');
+    if (!targetTrip) {
+      return res.status(404).json({ message: 'Trip not found.' });
+    }
+
+    const tripStatus = getTripStatus(targetTrip.status);
+    if (tripStatus === CANCELLED_TRIP_STATUS) {
+      return res.status(409).json({ message: 'Trip is cancelled and cannot accept join requests.' });
+    }
+
+    if (tripStatus === COMPLETED_TRIP_STATUS) {
+      return res.status(409).json({ message: 'Trip is already completed and cannot accept join requests.' });
+    }
+
+    const overlappingTrip = await findTripOverlap({
+      userId: requesterObjectId,
+      startDate: targetTrip.startDate,
+      endDate: targetTrip.endDate,
+      excludeTripId: targetTrip._id,
+    });
+    if (overlappingTrip) {
+      return res.status(400).json({ message: TRIP_OVERLAP_ERROR_MESSAGE });
+    }
+
     const updatedTrip = await Trip.findOneAndUpdate(
       {
         _id: joinRequest.tripId,
         participants: { $ne: requesterObjectId },
+        status: { $ne: CANCELLED_TRIP_STATUS },
         $expr: {
           $lt: [{ $size: { $ifNull: ['$participants', []] } }, '$maxParticipants'],
         },
@@ -121,9 +166,16 @@ router.patch('/:requestId', requireAuth, async (req, res) => {
     let tripSnapshot = updatedTrip;
     const didAddParticipant = Boolean(updatedTrip);
     if (!tripSnapshot) {
-      const existingTrip = await Trip.findById(joinRequest.tripId).select('_id organizerId maxParticipants participants');
+      const existingTrip = await Trip.findById(joinRequest.tripId).select(
+        '_id organizerId maxParticipants participants status',
+      );
       if (!existingTrip) {
         return res.status(404).json({ message: 'Trip not found.' });
+      }
+
+      const existingTripStatus = getTripStatus(existingTrip.status);
+      if (existingTripStatus === CANCELLED_TRIP_STATUS) {
+        return res.status(409).json({ message: 'Trip is cancelled and cannot accept join requests.' });
       }
 
       const participantIds = toParticipantIds(existingTrip.participants);

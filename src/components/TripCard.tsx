@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MessageCircle } from 'lucide-react';
 import ChatRoom from './ChatRoom';
+import FastImage from './FastImage';
 
 import type { Trip } from '../types/trip';
 
@@ -53,11 +54,10 @@ const TripCard: React.FC<TripCardProps> = ({
     <>
       <article className="relative overflow-hidden rounded-card bg-white shadow-sm ring-1 ring-primary/10">
         <div className="relative h-52 w-full overflow-hidden">
-          <img
+          <FastImage
             src={trip.imageUrl}
             alt={trip.title}
             className="h-full w-full object-cover"
-            loading="lazy"
           />
           <span className="absolute right-3 top-3 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-background">
             {trip.matchPercentage}% Match

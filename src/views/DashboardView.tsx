@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchCurrentUser } from '../services/authApi';
 import { fetchDashboardStats, type DashboardStats } from '../services/dashboardApi';
 import { reviewJoinRequest } from '../services/tripRequestApi';
+import FastImage from '../components/FastImage';
 
 
 type DashboardViewProps = {
@@ -305,7 +306,12 @@ function DashboardView({ authToken, onStartFirstJourney, onVerificationStatusSyn
             <>
               <div className="relative h-48 sm:h-56">
                 {destinationImageUrl ? (
-                  <img src={destinationImageUrl} alt={stats.upcomingTrip.location} className="h-full w-full object-cover" />
+                  <FastImage
+                    src={destinationImageUrl}
+                    alt={stats.upcomingTrip.location}
+                    className="h-full w-full object-cover"
+                    fetchPriority="high"
+                  />
                 ) : (
                   <div className="h-full w-full bg-gradient-to-br from-primary/70 via-primary/45 to-accent/45" />
                 )}

@@ -6,8 +6,6 @@ import { Trip } from '../models/Trip.js';
 import { User } from '../models/User.js';
 const router = express.Router();
 const roundCurrency = (value) => Math.round(value * 100) / 100;
-const toCents = (value) => Math.round(Number(value || 0) * 100);
-const fromCents = (value) => Number((value / 100).toFixed(2));
 const buildDisplayName = (user) => {
     const firstName = typeof user?.firstName === 'string' ? user.firstName.trim() : '';
     const lastName = typeof user?.lastName === 'string' ? user.lastName.trim() : '';
@@ -71,42 +69,34 @@ const buildExpenseSummary = async (tripId, requesterId) => {
             userId: member.id,
             name: member.name,
             avatar: member.avatar,
-            totalSpentCents: 0,
-            equalShareCents: 0,
+            totalOwed: 0,
+            totalReceivable: 0,
         },
     ]));
-    let totalExpenseCents = 0;
     const serializedExpenses = expenses.map((expense) => {
         const payerId = String(expense.paidBy);
         const payer = membersById.get(payerId);
-        const expenseAmountCents = toCents(expense.amount);
-        totalExpenseCents += expenseAmountCents;
-        const payerBalance = balancesByUserId.get(payerId);
-        if (payerBalance) {
-            payerBalance.totalSpentCents += expenseAmountCents;
-        }
-        let settlementTotalCents = 0;
         const settlements = (Array.isArray(expense.settlements) ? expense.settlements : []).map((settlement) => {
             const debtorId = String(settlement.userId);
             const creditorId = String(settlement.owesToUserId);
             const debtor = membersById.get(debtorId);
             const creditor = membersById.get(creditorId);
-            const amountCents = toCents(settlement.amount);
-            settlementTotalCents += amountCents;
-            const amount = fromCents(amountCents);
+            const amount = roundCurrency(Number(settlement.amount) || 0);
             const pairKey = `${debtorId}->${creditorId}`;
             settlementByPair.set(pairKey, {
                 fromUserId: debtorId,
                 fromName: debtor?.name ?? 'Traveler',
                 toUserId: creditorId,
                 toName: creditor?.name ?? 'Traveler',
-                fromAvatar: debtor?.avatar ?? null,
-                toAvatar: creditor?.avatar ?? null,
                 amount: roundCurrency((settlementByPair.get(pairKey)?.amount ?? 0) + amount),
             });
             const debtorBalance = balancesByUserId.get(debtorId);
             if (debtorBalance) {
-                debtorBalance.equalShareCents += amountCents;
+                debtorBalance.totalOwed = roundCurrency(debtorBalance.totalOwed + amount);
+            }
+            const creditorBalance = balancesByUserId.get(creditorId);
+            if (creditorBalance) {
+                creditorBalance.totalReceivable = roundCurrency(creditorBalance.totalReceivable + amount);
             }
             return {
                 userId: debtorId,
@@ -117,13 +107,10 @@ const buildExpenseSummary = async (tripId, requesterId) => {
                 amount,
             };
         });
-        if (payerBalance) {
-            payerBalance.equalShareCents += Math.max(0, expenseAmountCents - settlementTotalCents);
-        }
         return {
             id: String(expense._id),
             description: expense.description,
-            amount: fromCents(expenseAmountCents),
+            amount: roundCurrency(expense.amount),
             splitAmount: roundCurrency(expense.splitAmount),
             memberCount: expense.memberCount,
             paidBy: {
@@ -144,23 +131,12 @@ const buildExpenseSummary = async (tripId, requesterId) => {
         },
         members,
         expenses: serializedExpenses,
-        totalExpenses: fromCents(totalExpenseCents),
+        totalExpenses: roundCurrency(serializedExpenses.reduce((total, expense) => total + expense.amount, 0)),
         settlementSummary: Array.from(settlementByPair.values()).sort((left, right) => right.amount - left.amount),
-        balances: Array.from(balancesByUserId.values()).map((balance) => {
-            const totalSpent = fromCents(balance.totalSpentCents);
-            const equalShare = fromCents(balance.equalShareCents);
-            const netBalance = fromCents(balance.totalSpentCents - balance.equalShareCents);
-            return {
-                userId: balance.userId,
-                name: balance.name,
-                avatar: balance.avatar,
-                totalSpent,
-                equalShare,
-                totalOwed: netBalance < 0 ? fromCents(Math.abs(balance.totalSpentCents - balance.equalShareCents)) : 0,
-                totalReceivable: netBalance > 0 ? netBalance : 0,
-                netBalance,
-            };
-        }),
+        balances: Array.from(balancesByUserId.values()).map((balance) => ({
+            ...balance,
+            netBalance: roundCurrency(balance.totalReceivable - balance.totalOwed),
+        })),
     };
 };
 router.get('/trips/:tripId', requireAuth, async (req, res) => {
@@ -204,24 +180,19 @@ router.post('/split', requireAuth, async (req, res) => {
         }
         const totalCents = Math.round(amount * 100);
         const baseShareCents = Math.floor(totalCents / memberCount);
-        const remainderCents = totalCents - (baseShareCents * memberCount);
-        const shareByMemberId = new Map(memberIds.map((memberId, index) => [
-            memberId,
-            baseShareCents + (index < remainderCents ? 1 : 0),
-        ]));
-        const splitAmount = fromCents(Math.round(totalCents / memberCount));
+        const splitAmount = roundCurrency(baseShareCents / 100);
         const settlements = memberIds
             .filter((memberId) => memberId !== requesterId)
             .map((memberId) => ({
             userId: new mongoose.Types.ObjectId(memberId),
             owesToUserId: new mongoose.Types.ObjectId(requesterId),
-            amount: fromCents(shareByMemberId.get(memberId) ?? 0),
+            amount: splitAmount,
         }));
         await Expense.create({
             tripId: new mongoose.Types.ObjectId(tripId),
             paidBy: new mongoose.Types.ObjectId(requesterId),
             description: normalizedDescription,
-            amount: fromCents(totalCents),
+            amount: roundCurrency(amount),
             splitAmount,
             memberCount,
             memberUserIds: memberIds.map((memberId) => new mongoose.Types.ObjectId(memberId)),

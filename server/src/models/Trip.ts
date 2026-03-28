@@ -1,4 +1,5 @@
 import mongoose, { HydratedDocument, Model, Schema, Types } from 'mongoose';
+import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 
 const { model, models } = mongoose;
 
@@ -12,6 +13,7 @@ export interface ITrip {
   category?: 'Adventure' | 'Luxury' | 'Budget' | 'Nature';
   startDate: Date;
   endDate: Date;
+  status: (typeof TRIP_STATUS_VALUES)[number];
   maxParticipants: number;
   participants: Types.ObjectId[];
   createdAt: Date;
@@ -78,6 +80,13 @@ const tripSchema = new Schema<ITrip, TripModelType, {}, {}, ITripVirtuals>(
       type: Date,
       required: true,
     },
+    status: {
+      type: String,
+      enum: TRIP_STATUS_VALUES,
+      required: true,
+      default: ACTIVE_TRIP_STATUS,
+      index: true,
+    },
     maxParticipants: {
       type: Number,
       required: true,
@@ -108,6 +117,7 @@ const tripSchema = new Schema<ITrip, TripModelType, {}, {}, ITripVirtuals>(
 tripSchema.index({ organizerId: 1, startDate: 1 });
 tripSchema.index({ startDate: 1, endDate: 1 });
 tripSchema.index({ participants: 1 });
+tripSchema.index({ status: 1, startDate: 1, endDate: 1 });
 
 tripSchema.virtual('currentParticipantCount', {
   ref: 'Participant',

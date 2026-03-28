@@ -1,5 +1,5 @@
 // Added by Codex: project documentation comment for src\types\feed.ts
-export type FeedPostStatus = 'Active' | 'Completed';
+export type FeedPostStatus = 'Active' | 'Completed' | 'Cancelled';
 
 export type FeedPostAuthor = {
   id: string;

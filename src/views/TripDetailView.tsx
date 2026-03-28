@@ -1,6 +1,7 @@
 // Added by Codex: project documentation comment for src\views\TripDetailView.tsx
 import React from 'react';
 import type { Trip } from '../models/tripModel';
+import FastImage from '../components/FastImage';
 
 type TripDetailViewProps = {
   trip: Trip;
@@ -20,7 +21,7 @@ const TripDetailView: React.FC<TripDetailViewProps> = ({ trip, onBack }) => {
 
       <article className="overflow-hidden rounded-card bg-white/95 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
         <div className="h-72 w-full overflow-hidden">
-          <img src={trip.imageUrl} alt={trip.title} className="h-full w-full object-cover" />
+          <FastImage src={trip.imageUrl} alt={trip.title} className="h-full w-full object-cover" fetchPriority="high" />
         </div>
 
         <div className="grid gap-6 p-6 lg:grid-cols-[1.2fr_0.8fr]">

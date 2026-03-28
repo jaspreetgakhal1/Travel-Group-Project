@@ -6,6 +6,14 @@ import { Post } from '../models/Post.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
+import {
+  ACTIVE_TRIP_STATUS,
+  CANCELLED_TRIP_STATUS,
+  COMPLETED_TRIP_STATUS,
+  TRIP_OVERLAP_ERROR_MESSAGE,
+  findTripOverlap,
+} from '../utils/tripScheduling.js';
+import { markPastTripsCompleted } from '../utils/expireTrips.js';
 import { buildTripSettlement } from '../utils/wallet.js';
 import type { AuthenticatedUser } from '../types/auth.js';
 
@@ -34,19 +42,41 @@ const parseTripDate = (value: unknown, fallbackDate: Date): Date => {
   return parsedDate;
 };
 
+const getTripStatus = (value: unknown): string => {
+  if (value === COMPLETED_TRIP_STATUS) {
+    return COMPLETED_TRIP_STATUS;
+  }
+
+  if (value === CANCELLED_TRIP_STATUS) {
+    return CANCELLED_TRIP_STATUS;
+  }
+
+  return ACTIVE_TRIP_STATUS;
+};
+
 const resolveTripForJoinRequest = async (
   tripId: string,
 ): Promise<{
-  trip: { _id: unknown; organizerId: unknown; maxParticipants: number; participants: unknown[] } | null;
+  trip: {
+    _id: unknown;
+    organizerId: unknown;
+    maxParticipants: number;
+    participants: unknown[];
+    startDate: Date;
+    endDate: Date;
+    status?: string;
+  } | null;
   message?: string;
 }> => {
-  const existingTrip = await Trip.findById(tripId).select('_id organizerId maxParticipants participants').lean();
+  const existingTrip = await Trip.findById(tripId)
+    .select('_id organizerId maxParticipants participants startDate endDate status')
+    .lean();
   if (existingTrip) {
     return { trip: existingTrip };
   }
 
   const post = await Post.findById(tripId)
-    .select('_id title location requiredPeople startDate endDate authorKey hostName')
+    .select('_id title location requiredPeople startDate endDate status authorKey hostName')
     .lean();
 
   if (!post) {
@@ -101,6 +131,7 @@ const resolveTripForJoinRequest = async (
             : 'Custom route',
         startDate,
         endDate,
+        status: getTripStatus(post.status),
         maxParticipants,
         participants: [],
       },
@@ -111,7 +142,7 @@ const resolveTripForJoinRequest = async (
       setDefaultsOnInsert: true,
     },
   )
-    .select('_id organizerId maxParticipants participants')
+    .select('_id organizerId maxParticipants participants startDate endDate status')
     .lean();
 
   return { trip: upsertedTrip };
@@ -126,12 +157,13 @@ router.get('/self', requireAuth, async (req, res) => {
   }
 
   try {
+    await markPastTripsCompleted();
     const hostObjectId = new Types.ObjectId(hostId);
     const trips = await Trip.find({
       organizerId: hostObjectId,
     })
       .sort({ createdAt: -1 })
-      .select('_id organizerId title location startDate endDate maxParticipants participants createdAt updatedAt')
+      .select('_id organizerId title location startDate endDate status maxParticipants participants createdAt updatedAt')
       .lean();
 
     if (trips.length === 0) {
@@ -172,6 +204,7 @@ router.get('/self', requireAuth, async (req, res) => {
           location: trip.location,
           startDate: trip.startDate,
           endDate: trip.endDate,
+          status: getTripStatus(trip.status),
           maxParticipants: trip.maxParticipants,
           spotsFilled,
           spotsFilledPercent: getSpotsFilledPercent(spotsFilled, trip.maxParticipants),
@@ -218,8 +251,9 @@ router.get('/:tripId', async (req, res) => {
   }
 
   try {
+    await markPastTripsCompleted();
     const trip = await Trip.findById(tripId)
-      .select('_id organizerId title location startDate endDate maxParticipants participants createdAt updatedAt')
+      .select('_id organizerId title location startDate endDate status maxParticipants participants createdAt updatedAt')
       .lean();
 
     if (!trip) {
@@ -237,6 +271,7 @@ router.get('/:tripId', async (req, res) => {
         location: trip.location,
         startDate: trip.startDate,
         endDate: trip.endDate,
+        status: getTripStatus(trip.status),
         maxParticipants: trip.maxParticipants,
         spotsFilled,
         spotsFilledPercent: getSpotsFilledPercent(spotsFilled, trip.maxParticipants),
@@ -277,6 +312,7 @@ router.get('/:tripId/requests', requireAuth, async (req, res) => {
   }
 
   try {
+    await markPastTripsCompleted();
     const hostObjectId = new Types.ObjectId(hostId);
     const tripObjectId = new Types.ObjectId(tripId);
 
@@ -333,12 +369,14 @@ router.post('/:tripId/join', requireAuth, async (req, res) => {
   }
 
   try {
+    await markPastTripsCompleted();
     const resolvedTrip = await resolveTripForJoinRequest(tripId);
     if (!resolvedTrip.trip) {
       return res.status(404).json({ message: resolvedTrip.message ?? 'Trip not found.' });
     }
     const trip = resolvedTrip.trip;
     const participantIds = getParticipantIds(trip.participants);
+    const tripStatus = getTripStatus(trip.status);
 
     const requesterObjectId = new Types.ObjectId(requesterId);
     const hostObjectId = new Types.ObjectId(String(trip.organizerId));
@@ -346,8 +384,26 @@ router.post('/:tripId/join', requireAuth, async (req, res) => {
       return res.status(400).json({ message: 'Host cannot send a join request for their own trip.' });
     }
 
+    if (tripStatus === CANCELLED_TRIP_STATUS) {
+      return res.status(409).json({ message: 'Trip is cancelled and can no longer accept join requests.' });
+    }
+
+    if (tripStatus === COMPLETED_TRIP_STATUS) {
+      return res.status(409).json({ message: 'Trip is already completed and can no longer accept join requests.' });
+    }
+
     if (participantIds.includes(requesterId)) {
       return res.status(409).json({ message: 'You are already a participant in this trip.' });
+    }
+
+    const overlappingTrip = await findTripOverlap({
+      userId: requesterObjectId,
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      excludeTripId: trip._id,
+    });
+    if (overlappingTrip) {
+      return res.status(400).json({ message: TRIP_OVERLAP_ERROR_MESSAGE });
     }
 
     if (participantIds.length >= trip.maxParticipants) {
@@ -443,14 +499,55 @@ router.patch('/:requestId/status', requireAuth, async (req, res) => {
       return res.status(403).json({ message: 'Only the host can update request status.' });
     }
 
+    if (status === 'accepted') {
+      const trip = await Trip.findById(request.tripId).select('_id startDate endDate status participants maxParticipants').lean();
+      if (!trip) {
+        return res.status(404).json({ message: 'Trip not found.' });
+      }
+
+      const tripStatus = getTripStatus(trip.status);
+      if (tripStatus === CANCELLED_TRIP_STATUS) {
+        return res.status(409).json({ message: 'Trip is cancelled and cannot accept join requests.' });
+      }
+
+      if (tripStatus === COMPLETED_TRIP_STATUS) {
+        return res.status(409).json({ message: 'Trip is already completed and cannot accept join requests.' });
+      }
+
+      const overlappingTrip = await findTripOverlap({
+        userId: request.requesterId,
+        startDate: trip.startDate,
+        endDate: trip.endDate,
+        excludeTripId: trip._id,
+      });
+      if (overlappingTrip) {
+        return res.status(400).json({ message: TRIP_OVERLAP_ERROR_MESSAGE });
+      }
+
+      const participantIds = getParticipantIds(trip.participants);
+      if (!participantIds.includes(String(request.requesterId)) && participantIds.length >= trip.maxParticipants) {
+        return res.status(409).json({ message: 'Trip has reached the maximum participant limit.' });
+      }
+
+      await Trip.updateOne(
+        { _id: request.tripId },
+        { $addToSet: { participants: request.requesterId } },
+      );
+    }
+
     await TripJoinRequest.findByIdAndUpdate(requestId, { status });
 
     if (status === 'accepted') {
-      await Participant.create({
-        tripId: request.tripId,
-        userId: request.requesterId,
-        role: 'participant',
-      });
+      await Participant.updateOne(
+        {
+          tripId: request.tripId,
+          userId: request.requesterId,
+        },
+        {
+          $setOnInsert: { role: 'participant' },
+        },
+        { upsert: true },
+      );
     }
 
     return res.status(200).json({ message: 'Request status updated.' });
