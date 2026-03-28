@@ -1,5 +1,6 @@
 // Added by Codex: project documentation comment for src\views\CreateTripView.tsx
 import React, { useEffect, useMemo, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 
 type InterestedInOption = 'Male' | 'Female' | 'Unspecified';
 
@@ -10,6 +11,10 @@ export type CreateTripPayload = {
   expectations: string[];
   interestedIn: InterestedInOption;
   onlyVerifiedUsers: boolean;
+  startJourneyDate: string;
+  endJourneyDate: string;
+  location: string;
+  travelerType: string;
 };
 
 type CreateTripViewProps = {
@@ -30,6 +35,21 @@ const DEFAULT_EXPECTATION_OPTIONS = [
   'Flexible itinerary mindset',
   'Active participation in trip plans',
 ];
+const TRAVELER_TYPE_OPTIONS = [
+  'Budget Backpacker',
+  'Luxury Seeker',
+  'Adventure Junkie',
+  'Digital Nomad',
+  'Culture Vulture',
+  'Social Butterfly',
+  'Slow Traveler',
+  'Foodie Explorer',
+  'Photo Enthusiast',
+  'Minimalist',
+] as const;
+const TRAVELER_TYPE_PLACEHOLDER = 'Select your travel style';
+const SELECT_INPUT_CLASS_NAME =
+  'interactive-input w-full appearance-none rounded-card border border-primary/15 bg-white px-4 py-3 pr-11 text-sm text-primary outline-none transition focus:border-[#81B29A] focus:ring-2 focus:ring-[#81B29A]/20';
 
 const readFileAsDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -47,6 +67,25 @@ const readFileAsDataUrl = (file: File): Promise<string> =>
   });
 
 const normalizeExpectation = (value: string): string => value.trim().toLowerCase();
+const formatDateInputValue = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+const buildDefaultJourneyDates = (): Pick<CreateTripPayload, 'startJourneyDate' | 'endJourneyDate'> => {
+  const startDate = new Date();
+  startDate.setHours(0, 0, 0, 0);
+  startDate.setDate(startDate.getDate() + 7);
+
+  const endDate = new Date(startDate);
+  endDate.setDate(endDate.getDate() + 6);
+
+  return {
+    startJourneyDate: formatDateInputValue(startDate),
+    endJourneyDate: formatDateInputValue(endDate),
+  };
+};
 
 const CreateTripView: React.FC<CreateTripViewProps> = ({
   hostName,
@@ -65,6 +104,10 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
   const [expectationDraft, setExpectationDraft] = useState('');
   const [interestedIn, setInterestedIn] = useState<InterestedInOption>('Unspecified');
   const [onlyVerifiedUsers, setOnlyVerifiedUsers] = useState(false);
+  const [startJourneyDate, setStartJourneyDate] = useState('');
+  const [endJourneyDate, setEndJourneyDate] = useState('');
+  const [location, setLocation] = useState('');
+  const [travelerType, setTravelerType] = useState('');
   const [formError, setFormError] = useState('');
   const [isLocalSubmitting, setIsLocalSubmitting] = useState(false);
   const isBusy = isSubmitting || isLocalSubmitting;
@@ -75,6 +118,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
   );
 
   const applyPayloadToForm = (payload?: CreateTripPayload) => {
+    const defaultJourneyDates = buildDefaultJourneyDates();
     const sourcePayload = payload ?? {
       posterImageUrls: [],
       peopleRequired: 4,
@@ -82,6 +126,9 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
       expectations: [],
       interestedIn: 'Unspecified' as InterestedInOption,
       onlyVerifiedUsers: false,
+      ...defaultJourneyDates,
+      location: '',
+      travelerType: '',
     };
     const customFromPayload = sourcePayload.expectations.filter(
       (expectation) =>
@@ -98,6 +145,14 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
     setExpectationDraft('');
     setInterestedIn(sourcePayload.interestedIn);
     setOnlyVerifiedUsers(sourcePayload.onlyVerifiedUsers);
+    setStartJourneyDate(sourcePayload.startJourneyDate || defaultJourneyDates.startJourneyDate);
+    setEndJourneyDate(sourcePayload.endJourneyDate || defaultJourneyDates.endJourneyDate);
+    setLocation(sourcePayload.location ?? '');
+    setTravelerType(
+      TRAVELER_TYPE_OPTIONS.find(
+        (travelerTypeOption) => travelerTypeOption.toLowerCase() === (sourcePayload.travelerType ?? '').toLowerCase(),
+      ) ?? '',
+    );
     setFormError('');
   };
 
@@ -218,6 +273,27 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
       return;
     }
 
+    const normalizedLocation = location.trim();
+    if (!normalizedLocation) {
+      setFormError('Location is required.');
+      return;
+    }
+
+    if (!travelerType) {
+      setFormError('Please select your traveler type.');
+      return;
+    }
+
+    if (!startJourneyDate || !endJourneyDate) {
+      setFormError('Please choose both journey start and end dates.');
+      return;
+    }
+
+    if (new Date(`${endJourneyDate}T23:59:59`).getTime() < new Date(`${startJourneyDate}T00:00:00`).getTime()) {
+      setFormError('End journey date cannot be earlier than start journey date.');
+      return;
+    }
+
     setIsLocalSubmitting(true);
     try {
       await onTripCreated({
@@ -227,6 +303,10 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
         expectations: selectedExpectations,
         interestedIn,
         onlyVerifiedUsers,
+        startJourneyDate,
+        endJourneyDate,
+        location: normalizedLocation,
+        travelerType,
       });
 
       if (!isEditMode) {
@@ -321,6 +401,63 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
               />
             </label>
           </div>
+
+          <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+            <span className="mb-1 block text-sm font-semibold text-primary">Location</span>
+            <input
+              type="text"
+              value={location}
+              disabled={isBusy}
+              onChange={(event) => setLocation(event.target.value)}
+              className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
+              placeholder="Enter trip location"
+            />
+          </label>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+              <span className="mb-1 block text-sm font-semibold text-primary">Start Journey Date</span>
+              <input
+                type="date"
+                value={startJourneyDate}
+                disabled={isBusy}
+                onChange={(event) => setStartJourneyDate(event.target.value)}
+                className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
+              />
+            </label>
+
+            <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+              <span className="mb-1 block text-sm font-semibold text-primary">End Journey Date</span>
+              <input
+                type="date"
+                value={endJourneyDate}
+                disabled={isBusy}
+                min={startJourneyDate || undefined}
+                onChange={(event) => setEndJourneyDate(event.target.value)}
+                className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
+              />
+            </label>
+          </div>
+
+          <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+            <span className="mb-1 block text-sm font-semibold text-primary">Traveler Type</span>
+            <div className="relative">
+              <select
+                value={travelerType}
+                disabled={isBusy}
+                onChange={(event) => setTravelerType(event.target.value)}
+                className={SELECT_INPUT_CLASS_NAME}
+              >
+                <option value="">{TRAVELER_TYPE_PLACEHOLDER}</option>
+                {TRAVELER_TYPE_OPTIONS.map((travelerTypeOption) => (
+                  <option key={travelerTypeOption} value={travelerTypeOption}>
+                    {travelerTypeOption}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-primary/55" />
+            </div>
+          </label>
 
           <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
             <p className="text-sm font-semibold text-primary">Expectation Text box (Checklist)</p>

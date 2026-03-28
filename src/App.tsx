@@ -186,6 +186,7 @@ type PublicProfile = {
 type DNAMatchByPostId = Record<string, TripDNAMatch>;
 type HostTripRequestsByTripId = Record<string, HostTripRequest[]>;
 type HostRequestReviewStatus = Extract<JoinRequestStatus, 'accepted' | 'rejected'>;
+type JoinConflictMessageByPostId = Record<string, string>;
 type WalletPanel = 'payables' | 'release' | null;
 
 type TripRuntime = {
@@ -213,6 +214,139 @@ const EMPTY_POST_STATS: PostStats = {
   activeCount: 0,
   completedCount: 0,
   totalCount: 0,
+};
+const TRIP_OVERLAP_NOTICE =
+  'Logic Error: You are already committed to another trip during these dates. You cannot be in two places at once.';
+const TRIP_OVERLAP_HELPER_TEXT = 'Conflicts with your already booked trip dates.';
+
+const toDayStartTimestamp = (value: string | Date): number | null => {
+  const parsedDate = value instanceof Date ? new Date(value) : new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  parsedDate.setHours(0, 0, 0, 0);
+  return parsedDate.getTime();
+};
+
+const toDayEndTimestamp = (value: string | Date): number | null => {
+  const parsedDate = value instanceof Date ? new Date(value) : new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  parsedDate.setHours(23, 59, 59, 999);
+  return parsedDate.getTime();
+};
+
+const getFeedPostDateRange = (post: Pick<FeedPost, 'startDate' | 'endDate'>): { start: number; end: number } | null => {
+  const start = toDayStartTimestamp(post.startDate);
+  const end = toDayEndTimestamp(post.endDate);
+
+  if (start === null || end === null || end < start) {
+    return null;
+  }
+
+  return { start, end };
+};
+
+const doFeedPostDatesOverlap = (leftPost: Pick<FeedPost, 'startDate' | 'endDate'>, rightPost: Pick<FeedPost, 'startDate' | 'endDate'>): boolean => {
+  const leftDateRange = getFeedPostDateRange(leftPost);
+  const rightDateRange = getFeedPostDateRange(rightPost);
+
+  if (!leftDateRange || !rightDateRange) {
+    return false;
+  }
+
+  return leftDateRange.start <= rightDateRange.end && leftDateRange.end >= rightDateRange.start;
+};
+
+const compareFeedPostsByMostRecentTrip = (
+  leftPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+  rightPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+): number => {
+  const leftStart = toDayStartTimestamp(leftPost.startDate) ?? 0;
+  const rightStart = toDayStartTimestamp(rightPost.startDate) ?? 0;
+
+  if (rightStart !== leftStart) {
+    return rightStart - leftStart;
+  }
+
+  const leftEnd = toDayEndTimestamp(leftPost.endDate) ?? 0;
+  const rightEnd = toDayEndTimestamp(rightPost.endDate) ?? 0;
+  return rightEnd - leftEnd;
+};
+
+const createJourneyDateRange = (
+  startJourneyDate: string,
+  endJourneyDate: string,
+): { startDate: Date; endDate: Date; durationDays: number } | null => {
+  if (!startJourneyDate || !endJourneyDate) {
+    return null;
+  }
+
+  const [startYear, startMonth, startDay] = startJourneyDate.split('-').map(Number);
+  const [endYear, endMonth, endDay] = endJourneyDate.split('-').map(Number);
+
+  if (
+    !Number.isInteger(startYear) ||
+    !Number.isInteger(startMonth) ||
+    !Number.isInteger(startDay) ||
+    !Number.isInteger(endYear) ||
+    !Number.isInteger(endMonth) ||
+    !Number.isInteger(endDay)
+  ) {
+    return null;
+  }
+
+  const startDate = new Date(startYear, startMonth - 1, startDay, 0, 0, 0, 0);
+  const endDate = new Date(endYear, endMonth - 1, endDay, 23, 59, 59, 999);
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate < startDate) {
+    return null;
+  }
+
+  const millisecondsPerDay = 24 * 60 * 60 * 1000;
+  const durationDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / millisecondsPerDay));
+
+  return {
+    startDate,
+    endDate,
+    durationDays,
+  };
+};
+
+const findConflictingBookedTrip = (
+  bookedPosts: FeedPost[],
+  startDateValue: string | Date,
+  endDateValue: string | Date,
+  excludePostId?: string,
+): FeedPost | null => {
+  const candidatePost = {
+    startDate: startDateValue instanceof Date ? startDateValue.toISOString() : startDateValue,
+    endDate: endDateValue instanceof Date ? endDateValue.toISOString() : endDateValue,
+  };
+
+  return (
+    bookedPosts.find(
+      (bookedPost) => bookedPost.id !== excludePostId && doFeedPostDatesOverlap(bookedPost, candidatePost),
+    ) ?? null
+  );
+};
+
+const isFeedPostCurrentActive = (post: FeedPost, referenceDate = new Date()): boolean => {
+  if (post.status !== 'Active') {
+    return false;
+  }
+
+  const today = toDayStartTimestamp(referenceDate);
+  const dateRange = getFeedPostDateRange(post);
+
+  if (today === null || !dateRange) {
+    return false;
+  }
+
+  return dateRange.start <= today && dateRange.end >= today;
 };
 
 const formatMobileNumber = (rawValue: string): string => {
@@ -367,6 +501,10 @@ const toCreateTripPayloadFromFeedPost = (post: FeedPost): CreateTripPayload => (
   expectations: post.expectations,
   interestedIn: 'Unspecified',
   onlyVerifiedUsers: post.onlyVerifiedUsers,
+  startJourneyDate: typeof post.startDate === 'string' ? post.startDate.slice(0, 10) : '',
+  endJourneyDate: typeof post.endDate === 'string' ? post.endDate.slice(0, 10) : '',
+  location: post.location,
+  travelerType: post.travelerType,
 });
 
 const toRuntimeTripFromFeedPost = (post: FeedPost): Trip => ({
@@ -758,16 +896,26 @@ function App() {
   );
   const selfTripIdSet = useMemo(() => new Set(selfTripSummaries.map((trip) => trip.id)), [selfTripSummaries]);
   const mainFeedPosts = useMemo(() => {
-    return feedPosts.filter((post) => {
-      const isOwnPostByAuthor =
-        normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
-      const isOwnPostById = selfTripIdSet.has(post.id);
-      const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
-      return !(isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId);
-    });
+    return feedPosts
+      .filter((post) => {
+        if (post.status !== 'Active') {
+          return false;
+        }
+
+        const isOwnPostByAuthor =
+          normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
+        const isOwnPostById = selfTripIdSet.has(post.id);
+        const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
+        return !(isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId);
+      })
+      .sort(compareFeedPostsByMostRecentTrip);
   }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
   const myFeedPosts = useMemo(() => {
     const filteredPosts = feedPosts.filter((post) => {
+      if (post.status !== 'Active') {
+        return false;
+      }
+
       const isOwnPostByAuthor =
         normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
       const isOwnPostById = selfTripIdSet.has(post.id);
@@ -775,27 +923,92 @@ function App() {
       return isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
     });
 
-    return filteredPosts.map((post) => ({
-      ...post,
-      pendingRequestCount: pendingRequestCountByTripId[post.id] ?? post.pendingRequestCount ?? 0,
-    }));
+    return filteredPosts
+      .map((post) => ({
+        ...post,
+        pendingRequestCount: pendingRequestCountByTripId[post.id] ?? post.pendingRequestCount ?? 0,
+      }))
+      .sort(compareFeedPostsByMostRecentTrip);
   }, [feedPosts, normalizedCurrentUserAuthorKey, pendingRequestCountByTripId, selfTripIdSet, userSession?.id]);
-  const splitEligiblePosts = useMemo(() => {
+  const archivedMyPosts = useMemo(() => {
+    return feedPosts
+      .filter((post) => {
+        if (post.status !== 'Completed') {
+          return false;
+        }
+
+        const isOwnPostByAuthor =
+          normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
+        const isOwnPostById = selfTripIdSet.has(post.id);
+        const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
+        return isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
+      })
+      .sort(compareFeedPostsByMostRecentTrip);
+  }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
+  const bookedTripPosts = useMemo(() => {
     const currentUserId = userSession?.id;
-    if (!currentUserId) {
-      return [];
-    }
+    const currentAuthorKey = normalizedCurrentUserAuthorKey;
 
     return feedPosts.filter((post, index, collection) => {
-      const isHost = Boolean(post.hostId && post.hostId === currentUserId);
-      const isParticipant = post.participantIds.includes(currentUserId);
-      if (!isHost && !isParticipant) {
+      if (post.status !== 'Active') {
+        return false;
+      }
+
+      const isOwnPostByAuthor = currentAuthorKey !== null && normalizeAuthorKey(post.authorKey) === currentAuthorKey;
+      const isOwnPostByHostId = Boolean(currentUserId && post.hostId && post.hostId === currentUserId);
+      const isParticipant = Boolean(currentUserId && post.participantIds.includes(currentUserId));
+
+      if (!isOwnPostByAuthor && !isOwnPostByHostId && !isParticipant) {
         return false;
       }
 
       return collection.findIndex((candidate) => candidate.id === post.id) === index;
     });
-  }, [feedPosts, userSession?.id]);
+  }, [feedPosts, normalizedCurrentUserAuthorKey, userSession?.id]);
+  const joinConflictMessageByPostId = useMemo<JoinConflictMessageByPostId>(() => {
+    const currentUserId = userSession?.id;
+    const currentAuthorKey = normalizedCurrentUserAuthorKey;
+
+    if (!currentUserId && !currentAuthorKey) {
+      return {};
+    }
+
+    return mainFeedPosts.reduce<JoinConflictMessageByPostId>((accumulator, post) => {
+      const isOwnPostByAuthor = currentAuthorKey !== null && normalizeAuthorKey(post.authorKey) === currentAuthorKey;
+      const isOwnPostByHostId = Boolean(currentUserId && post.hostId && post.hostId === currentUserId);
+      const isParticipant = Boolean(currentUserId && post.participantIds.includes(currentUserId));
+
+      if (isOwnPostByAuthor || isOwnPostByHostId || isParticipant) {
+        return accumulator;
+      }
+
+      const conflictingBooking = findConflictingBookedTrip(bookedTripPosts, post.startDate, post.endDate, post.id);
+      if (conflictingBooking) {
+        accumulator[post.id] = TRIP_OVERLAP_HELPER_TEXT;
+      }
+
+      return accumulator;
+    }, {});
+  }, [bookedTripPosts, mainFeedPosts, normalizedCurrentUserAuthorKey, userSession?.id]);
+  const myPostConflictMessageByPostId = useMemo<JoinConflictMessageByPostId>(() => {
+    return myFeedPosts.reduce<JoinConflictMessageByPostId>((accumulator, post) => {
+      const conflictingBooking = findConflictingBookedTrip(bookedTripPosts, post.startDate, post.endDate, post.id);
+      if (conflictingBooking) {
+        accumulator[post.id] = TRIP_OVERLAP_HELPER_TEXT;
+      }
+
+      return accumulator;
+    }, {});
+  }, [bookedTripPosts, myFeedPosts]);
+  const activeMyPostIds = useMemo(
+    () => new Set(myFeedPosts.filter((post) => isFeedPostCurrentActive(post)).map((post) => post.id)),
+    [myFeedPosts],
+  );
+  const splitEligiblePosts = useMemo(() => {
+    return bookedTripPosts
+      .filter((post) => isMongoObjectId(post.id))
+      .sort(compareFeedPostsByMostRecentTrip);
+  }, [bookedTripPosts]);
 
   const loadActiveFeedPosts = async (
     showFallbackNotice = true,
@@ -814,6 +1027,7 @@ function App() {
       const posts = await fetchFeedPosts({
         viewerVerified,
         viewerAuthorKey,
+        status: 'all',
       });
       setFeedPosts(posts);
     } catch (error) {
@@ -1399,8 +1613,8 @@ function App() {
   }, [splitPreviewAmount, tripExpenseSummary, userSession?.id]);
 
   const completedTripsCount = useMemo(
-    () => Object.values(tripRuntimeById).filter((runtime) => runtime.status === 'Completed').length,
-    [tripRuntimeById],
+    () => archivedMyPosts.length,
+    [archivedMyPosts],
   );
 
   const handleNavigation = (screenName: string) => {
@@ -1532,6 +1746,22 @@ function App() {
         });
     const preferredTravelers =
       payload.interestedIn === 'Unspecified' ? 'Unspecified' : `${payload.interestedIn} travelers`;
+    const journeyDateRange = createJourneyDateRange(payload.startJourneyDate, payload.endJourneyDate);
+
+    if (!journeyDateRange) {
+      setSystemNotice('Please choose a valid start and end journey date.');
+      return;
+    }
+
+    const conflictingBooking = findConflictingBookedTrip(
+      bookedTripPosts,
+      journeyDateRange.startDate,
+      journeyDateRange.endDate,
+    );
+    if (conflictingBooking) {
+      setSystemNotice(TRIP_OVERLAP_NOTICE);
+      return;
+    }
 
     const createdTrip: Trip = {
       id: newTripId,
@@ -1542,8 +1772,8 @@ function App() {
       tripDNA: hostDNA,
       imageUrl: payload.posterImageUrls[0],
       isVerified: Boolean(userSession.isVerified),
-      route: 'Custom route',
-      duration: '7 Days',
+      route: payload.location,
+      duration: `${journeyDateRange.durationDays} Days`,
       totalExpectedFromPartner: payload.budget * payload.peopleRequired,
       partnerExpectations: payload.expectations,
       notes: `Preferred travelers: ${preferredTravelers}. ${
@@ -1551,12 +1781,6 @@ function App() {
       }`,
       highlights: payload.expectations.slice(0, 3),
     };
-
-    const startDate = new Date();
-    startDate.setHours(0, 0, 0, 0);
-    startDate.setDate(startDate.getDate() + 7);
-    const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + 6);
     const authorKey = getSessionAuthorKey(userSession);
 
     if (!authorKey) {
@@ -1573,17 +1797,15 @@ function App() {
         hostName: createdTrip.hostName,
         isVerified: Boolean(createdTrip.isVerified),
         imageUrl: createdTrip.imageUrl,
-        location: 'Custom route',
+        location: payload.location,
         cost: payload.budget,
-        durationDays: 7,
+        durationDays: journeyDateRange.durationDays,
         requiredPeople: payload.peopleRequired,
         spotsFilledPercent: 0,
         expectations: payload.expectations,
-        travelerType: payload.onlyVerifiedUsers
-          ? 'Verification-first collaborative travelers'
-          : 'Collaborative group travelers',
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
+        travelerType: payload.travelerType,
+        startDate: journeyDateRange.startDate.toISOString(),
+        endDate: journeyDateRange.endDate.toISOString(),
       });
 
       setFeedPosts((previous) => [createdFeedPost, ...previous]);
@@ -1616,6 +1838,7 @@ function App() {
       });
       setCurrentScreen('discovery');
       setSystemNotice('Trip post created and saved to database.');
+      void loadSelfTripsForHost();
       await loadPostStatsFromDatabase(authorKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to create trip post right now.';
@@ -1724,6 +1947,11 @@ function App() {
 
     if (post.spotsFilled >= post.maxParticipants) {
       setSystemNotice('Trip is full. No additional join requests can be sent.');
+      return;
+    }
+
+    if (joinConflictMessageByPostId[post.id]) {
+      setSystemNotice(TRIP_OVERLAP_NOTICE);
       return;
     }
 
@@ -2017,6 +2245,7 @@ function App() {
         setEditingFeedPost(null);
       }
       await loadPostStatsFromDatabase(currentUserAuthorKey);
+      void loadSelfTripsForHost();
       setCurrentScreen('home');
       setActiveView('feed');
       setSystemNotice('Post deleted successfully.');
@@ -2053,11 +2282,49 @@ function App() {
         setEditingFeedPost(null);
       }
       await loadPostStatsFromDatabase(currentUserAuthorKey);
+      void loadSelfTripsForHost();
       setCurrentScreen('home');
       setActiveView('feed');
       setSystemNotice('Post marked as completed and removed from Main Feed.');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to complete post right now.';
+      setSystemNotice(message);
+    } finally {
+      setIsPostActionInProgress(false);
+    }
+  };
+
+  const handleCancelFeedPost = async (post: FeedPost) => {
+    if (!currentUserAuthorKey) {
+      setSystemNotice('Sign in to cancel your post.');
+      return;
+    }
+
+    if (post.status === 'Cancelled') {
+      setSystemNotice('Post is already cancelled.');
+      return;
+    }
+
+    const shouldCancel = window.confirm('Cancel this post? Its dates will be freed immediately.');
+    if (!shouldCancel) {
+      return;
+    }
+
+    setIsPostActionInProgress(true);
+    try {
+      await updateFeedPostStatus(post.id, 'Cancelled', currentUserAuthorKey);
+      setFeedPosts((previous) => previous.filter((currentPost) => currentPost.id !== post.id));
+      setSentRequestPostIds((previous) => previous.filter((postId) => postId !== post.id));
+      if (editingFeedPost?.id === post.id) {
+        setEditingFeedPost(null);
+      }
+      await loadPostStatsFromDatabase(currentUserAuthorKey);
+      void loadSelfTripsForHost();
+      setCurrentScreen('home');
+      setActiveView('feed');
+      setSystemNotice('Post cancelled. Those trip dates are now available again.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to cancel post right now.';
       setSystemNotice(message);
     } finally {
       setIsPostActionInProgress(false);
@@ -2078,6 +2345,23 @@ function App() {
       return;
     }
 
+    const journeyDateRange = createJourneyDateRange(payload.startJourneyDate, payload.endJourneyDate);
+    if (!journeyDateRange) {
+      setSystemNotice('Please choose a valid start and end journey date.');
+      return;
+    }
+
+    const conflictingBooking = findConflictingBookedTrip(
+      bookedTripPosts,
+      journeyDateRange.startDate,
+      journeyDateRange.endDate,
+      currentPost.id,
+    );
+    if (conflictingBooking) {
+      setSystemNotice(TRIP_OVERLAP_NOTICE);
+      return;
+    }
+
     setIsPostActionInProgress(true);
     try {
       const updatedPost = await updateFeedPost(currentPost.id, {
@@ -2088,17 +2372,15 @@ function App() {
         hostName: currentPost.hostName,
         isVerified: currentPost.isVerified,
         imageUrl: payload.posterImageUrls[0] ?? currentPost.imageUrl,
-        location: currentPost.location,
+        location: payload.location,
         cost: payload.budget,
-        durationDays: currentPost.durationDays,
+        durationDays: journeyDateRange.durationDays,
         requiredPeople: payload.peopleRequired,
         spotsFilledPercent: currentPost.spotsFilledPercent,
         expectations: payload.expectations,
-        travelerType: payload.onlyVerifiedUsers
-          ? 'Verification-first collaborative travelers'
-          : 'Collaborative group travelers',
-        startDate: currentPost.startDate,
-        endDate: currentPost.endDate,
+        travelerType: payload.travelerType,
+        startDate: journeyDateRange.startDate.toISOString(),
+        endDate: journeyDateRange.endDate.toISOString(),
       });
 
       setFeedPosts((previous) =>
@@ -2108,6 +2390,7 @@ function App() {
       setCurrentScreen('home');
       setActiveView('feed');
       setSystemNotice('Post updated successfully.');
+      void loadSelfTripsForHost();
       await loadPostStatsFromDatabase(currentUserAuthorKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to update post right now.';
@@ -3135,29 +3418,32 @@ function App() {
   };
 
   const renderHistoryScreen = () => {
-    const completedTrips = Object.entries(tripRuntimeById)
-      .filter(([, runtime]) => runtime.status === 'Completed')
-      .map(([tripId]) => allTrips.find((trip) => trip.id === tripId))
-      .filter((trip): trip is Trip => trip !== undefined);
-
     return (
       <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
         <article className="rounded-card bg-white/95 p-8 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
-          <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Trip History</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Trip Archive</p>
           <h2 className="mt-1 text-3xl font-black text-primary">Completed Journeys</h2>
-          <p className="mt-2 text-sm text-primary/80">Total completed in this demo profile: {completedTripsCount}</p>
+          <p className="mt-2 text-sm text-primary/80">Archived completed trips: {completedTripsCount}</p>
 
           <div className="mt-6 space-y-3">
-            {completedTrips.length > 0 ? (
-              completedTrips.map((trip) => (
-                <div key={trip.id} className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-                  <p className="text-sm font-semibold text-primary">{trip.title}</p>
-                  <p className="mt-1 text-sm text-primary/80">Host: {trip.hostName}</p>
+            {archivedMyPosts.length > 0 ? (
+              archivedMyPosts.map((post) => (
+                <div key={post.id} className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-primary">{post.title}</p>
+                    <span className="rounded-full bg-success/20 px-3 py-1 text-xs font-semibold text-primary">
+                      Archived
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm text-primary/80">{post.location}</p>
+                  <p className="mt-2 text-xs text-primary/70">
+                    {new Date(post.startDate).toLocaleDateString()} to {new Date(post.endDate).toLocaleDateString()}
+                  </p>
                 </div>
               ))
             ) : (
               <div className="rounded-card bg-background/80 p-4 text-sm text-primary/80 ring-1 ring-primary/10">
-                No completed trips yet. Finish escrow, check-in, and submit reviews.
+                No completed trips in your archive yet.
               </div>
             )}
           </div>
@@ -3916,6 +4202,8 @@ function App() {
               currentUserId={userSession?.id ?? null}
               currentUserIsVerified={Boolean(userSession?.isVerified)}
               pendingRequestCountByPostId={pendingRequestCountByTripId}
+              joinConflictMessageByPostId={activeView === 'myPosts' ? myPostConflictMessageByPostId : joinConflictMessageByPostId}
+              activePostIds={activeMyPostIds}
               isPostActionInProgress={isPostActionInProgress}
               dnaMatchByPostId={dnaMatchByPostId}
               dnaMatchLoadingPostIds={dnaMatchLoadingPostIds}
@@ -3927,6 +4215,7 @@ function App() {
               onEditPost={handleEditFeedPost}
               onDeletePost={handleDeleteFeedPost}
               onCompletePost={handleCompleteFeedPost}
+              onCancelPost={handleCancelFeedPost}
             />
           )}
         </section>

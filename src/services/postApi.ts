@@ -63,11 +63,12 @@ const request = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
 type FetchFeedPostsOptions = {
   viewerVerified: boolean;
   viewerAuthorKey?: string | null;
+  status?: FeedPostStatus | 'all';
 };
 
 export const fetchFeedPosts = async (options: FetchFeedPostsOptions): Promise<FeedPost[]> => {
   const query = new URLSearchParams({
-    status: 'Active',
+    status: options.status ?? 'Active',
     viewerVerified: options.viewerVerified ? 'true' : 'false',
   });
 

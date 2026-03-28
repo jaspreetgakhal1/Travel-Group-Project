@@ -1,8 +1,19 @@
 // Added by Codex: project documentation comment for server\src\routes\postRoutes.js
 import express from 'express';
+import { Participant } from '../models/Participant.js';
 import { Post } from '../models/Post.js';
 import { Trip } from '../models/Trip.js';
+import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
+import {
+  ACTIVE_TRIP_STATUS,
+  CANCELLED_TRIP_STATUS,
+  COMPLETED_TRIP_STATUS,
+  TRIP_OVERLAP_ERROR_MESSAGE,
+  findTripOverlap,
+  normalizeTripDateRange,
+} from '../utils/tripScheduling.js';
+import { markPastTripsCompleted } from '../utils/expireTrips.js';
 
 const router = express.Router();
 
@@ -49,7 +60,13 @@ const toIsoDateString = (value) => {
   return parsedDate.toISOString();
 };
 
-const getPostStatus = (value) => (value === 'Completed' ? 'Completed' : 'Active');
+const getPostStatus = (value) => {
+  if (value === COMPLETED_TRIP_STATUS || value === CANCELLED_TRIP_STATUS) {
+    return value;
+  }
+
+  return ACTIVE_TRIP_STATUS;
+};
 
 const getPostAuthorKey = (post) => {
   const rawValue =
@@ -156,6 +173,55 @@ const getSpotsFilledPercent = (spotsFilled, maxParticipants) => {
   }
 
   return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
+};
+
+const syncTripWithPost = async (post, organizerId) => {
+  const normalizedDateRange = normalizeTripDateRange(post.startDate, post.endDate);
+  if (!normalizedDateRange) {
+    throw new Error('Trip dates are invalid.');
+  }
+
+  return Trip.findOneAndUpdate(
+    { _id: post._id },
+    {
+      $set: {
+        organizerId,
+        title: post.title,
+        location: post.location,
+        imageUrl: post.imageUrl,
+        price: post.cost,
+        startDate: normalizedDateRange.startDate,
+        endDate: normalizedDateRange.endDate,
+        status: getPostStatus(post.status),
+        maxParticipants: post.requiredPeople,
+      },
+      $setOnInsert: {
+        participants: [],
+      },
+    },
+    {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+    },
+  )
+    .select('_id organizerId maxParticipants participants')
+    .lean();
+};
+
+const validateHostAvailability = async ({ organizerId, startDate, endDate, excludeTripId, nextStatus }) => {
+  if (getPostStatus(nextStatus) === CANCELLED_TRIP_STATUS) {
+    return null;
+  }
+
+  const overlappingTrip = await findTripOverlap({
+    userId: organizerId,
+    startDate,
+    endDate,
+    excludeTripId,
+  });
+
+  return overlappingTrip ?? null;
 };
 
 const findUsersByLookupKeys = async (lookupKeys) => {
@@ -308,8 +374,8 @@ const validatePostPayload = (body) => {
     return { isValid: false, message: 'Post author is required.' };
   }
 
-  if (typeof status !== 'undefined' && status !== 'Active' && status !== 'Completed') {
-    return { isValid: false, message: 'Post status must be Active or Completed.' };
+  if (typeof status !== 'undefined' && ![ACTIVE_TRIP_STATUS, COMPLETED_TRIP_STATUS, CANCELLED_TRIP_STATUS].includes(status)) {
+    return { isValid: false, message: 'Post status must be Active, Completed, or Cancelled.' };
   }
 
   if (typeof onlyVerifiedUsers !== 'undefined' && typeof onlyVerifiedUsers !== 'boolean') {
@@ -397,6 +463,7 @@ router.get('/stats', async (request, response) => {
     : {};
 
   try {
+    await markPastTripsCompleted();
     const [activeCount, completedCount, totalCount] = await Promise.all([
       Post.countDocuments({ ...filterByAuthor, ...ACTIVE_STATUS_FILTER }),
       Post.countDocuments({ ...filterByAuthor, status: 'Completed' }),
@@ -449,6 +516,7 @@ router.get('/', async (request, response) => {
         };
 
   try {
+    await markPastTripsCompleted();
     const posts = await Post.find(filter).sort({ createdAt: -1 }).populate(AUTHOR_POPULATE_CONFIG);
     const usersByAuthorKey = await findUsersByLookupKeys(posts.flatMap((post) => getPostLookupKeys(post)));
     const postIds = posts.map((post) => post._id);
@@ -478,6 +546,7 @@ router.get('/:postId', async (request, response) => {
   const { postId } = request.params;
 
   try {
+    await markPastTripsCompleted();
     const post = await Post.findById(postId).populate(AUTHOR_POPULATE_CONFIG);
     if (!post) {
       return response.status(404).json({ message: 'Post not found.' });
@@ -496,6 +565,7 @@ router.get('/:postId/author', async (request, response) => {
   const { postId } = request.params;
 
   try {
+    await markPastTripsCompleted();
     const post = await Post.findById(postId).populate(AUTHOR_POPULATE_CONFIG);
     if (!post) {
       return response.status(404).json({ message: 'Post not found.' });
@@ -532,12 +602,27 @@ router.post('/', async (request, response) => {
       status: validationResult.payload.status ?? 'Active',
     });
     const authorUser = await findUserByLookupKeys(getPostLookupKeys(createdPost));
-    if (authorUser?._id) {
-      createdPost.author = authorUser._id;
-      createdPost.isVerified = Boolean(authorUser.isVerified);
-      await createdPost.save();
+    if (!authorUser?._id) {
+      await Post.deleteOne({ _id: createdPost._id });
+      return response.status(400).json({ message: 'Trip host account not found.' });
     }
-    return response.status(201).json(toFeedPost(createdPost, authorUser));
+
+    const overlappingTrip = await validateHostAvailability({
+      organizerId: authorUser._id,
+      startDate: createdPost.startDate,
+      endDate: createdPost.endDate,
+      nextStatus: createdPost.status,
+    });
+    if (overlappingTrip) {
+      await Post.deleteOne({ _id: createdPost._id });
+      return response.status(400).json({ message: TRIP_OVERLAP_ERROR_MESSAGE });
+    }
+
+    createdPost.author = authorUser._id;
+    createdPost.isVerified = Boolean(authorUser.isVerified);
+    await createdPost.save();
+    const syncedTrip = await syncTripWithPost(createdPost, authorUser._id);
+    return response.status(201).json(toFeedPost(createdPost, authorUser, syncedTrip));
   } catch (error) {
     console.error('Create post route failed', error);
     return response.status(500).json({ message: 'Unable to create post right now.' });
@@ -562,8 +647,25 @@ router.put('/:postId', async (request, response) => {
       return response.status(403).json({ message: 'You can only edit your own posts.' });
     }
 
+    const authorUser = await findUserByLookupKeys(getPostLookupKeys(post));
+    if (!authorUser?._id) {
+      return response.status(400).json({ message: 'Trip host account not found.' });
+    }
+
+    const nextStatus = validationResult.payload.status ?? getPostStatus(post.status);
+    const overlappingTrip = await validateHostAvailability({
+      organizerId: authorUser._id,
+      startDate: validationResult.payload.startDate,
+      endDate: validationResult.payload.endDate,
+      excludeTripId: postId,
+      nextStatus,
+    });
+    if (overlappingTrip) {
+      return response.status(400).json({ message: TRIP_OVERLAP_ERROR_MESSAGE });
+    }
+
     post.authorKey = validationResult.payload.authorKey;
-    post.status = validationResult.payload.status ?? getPostStatus(post.status);
+    post.status = nextStatus;
     post.title = validationResult.payload.title;
     post.hostName = validationResult.payload.hostName;
     post.onlyVerifiedUsers = validationResult.payload.onlyVerifiedUsers;
@@ -577,12 +679,12 @@ router.put('/:postId', async (request, response) => {
     post.travelerType = validationResult.payload.travelerType;
     post.startDate = validationResult.payload.startDate;
     post.endDate = validationResult.payload.endDate;
-    const authorUser = await findUserByLookupKeys(getPostLookupKeys(post));
-    post.author = authorUser?._id ?? null;
-    post.isVerified = authorUser ? Boolean(authorUser.isVerified) : validationResult.payload.isVerified;
+    post.author = authorUser._id;
+    post.isVerified = Boolean(authorUser.isVerified);
 
     await post.save();
-    return response.status(200).json(toFeedPost(post, authorUser));
+    const syncedTrip = await syncTripWithPost(post, authorUser._id);
+    return response.status(200).json(toFeedPost(post, authorUser, syncedTrip));
   } catch (error) {
     console.error('Update post route failed', error);
     return response.status(500).json({ message: 'Unable to update post right now.' });
@@ -597,8 +699,8 @@ router.patch('/:postId/status', async (request, response) => {
     return response.status(400).json({ message: 'Post author is required.' });
   }
 
-  if (status !== 'Active' && status !== 'Completed') {
-    return response.status(400).json({ message: 'Status must be Active or Completed.' });
+  if (![ACTIVE_TRIP_STATUS, COMPLETED_TRIP_STATUS, CANCELLED_TRIP_STATUS].includes(status)) {
+    return response.status(400).json({ message: 'Status must be Active, Completed, or Cancelled.' });
   }
 
   try {
@@ -617,7 +719,32 @@ router.patch('/:postId/status', async (request, response) => {
     post.author = authorUser?._id ?? null;
     post.isVerified = authorUser ? Boolean(authorUser.isVerified) : Boolean(post.isVerified);
     await post.save();
-    return response.status(200).json(toFeedPost(post, authorUser));
+
+    const tripUpdate = await Trip.findByIdAndUpdate(
+      postId,
+      {
+        $set: {
+          status: getPostStatus(status),
+        },
+      },
+      { new: true },
+    )
+      .select('_id organizerId maxParticipants participants')
+      .lean();
+
+    if (status === CANCELLED_TRIP_STATUS) {
+      await TripJoinRequest.updateMany(
+        {
+          tripId: post._id,
+          status: 'pending',
+        },
+        {
+          $set: { status: 'rejected' },
+        },
+      );
+    }
+
+    return response.status(200).json(toFeedPost(post, authorUser, tripUpdate ?? null));
   } catch (error) {
     console.error('Update post status route failed', error);
     return response.status(500).json({ message: 'Unable to update post status right now.' });
@@ -642,7 +769,12 @@ router.delete('/:postId', async (request, response) => {
       return response.status(403).json({ message: 'You can only delete your own posts.' });
     }
 
-    await Post.deleteOne({ _id: postId });
+    await Promise.all([
+      Post.deleteOne({ _id: postId }),
+      Trip.deleteOne({ _id: postId }),
+      Participant.deleteMany({ tripId: postId }),
+      TripJoinRequest.deleteMany({ tripId: postId }),
+    ]);
     return response.status(200).json({ message: 'Post deleted successfully.' });
   } catch (error) {
     console.error('Delete post route failed', error);

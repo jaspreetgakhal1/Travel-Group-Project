@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
+import { CANCELLED_TRIP_STATUS, isTripCurrentActive } from '../utils/tripStatus.js';
 import type { AuthenticatedUser } from '../types/auth.js';
 
 const router = express.Router();
@@ -14,6 +15,7 @@ type DashboardTrip = {
   location: string;
   startDate: Date;
   endDate: Date;
+  status?: string;
   participants: unknown;
 };
 
@@ -116,7 +118,7 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
     const [trips, pendingRequestCount, pendingJoinRequests] = await Promise.all([
       Trip.find({ organizerId: hostObjectId })
         .sort({ startDate: 1 })
-        .select('_id title location startDate endDate participants')
+        .select('_id title location startDate endDate status participants')
         .lean<DashboardTrip[]>(),
       TripJoinRequest.countDocuments({
         hostId: hostObjectId,
@@ -138,12 +140,19 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
     });
 
     const activeTrips = trips.filter((trip) => {
-      const endDate = toDate(trip.endDate);
-      return endDate ? endDate > now : false;
+      if (trip.status === CANCELLED_TRIP_STATUS) {
+        return false;
+      }
+
+      return isTripCurrentActive(trip, now);
     });
 
     const futureTrips = trips
       .map((trip) => {
+        if (trip.status === CANCELLED_TRIP_STATUS) {
+          return null;
+        }
+
         const startDate = toDate(trip.startDate);
         return startDate ? { trip, startDate } : null;
       })
@@ -154,6 +163,10 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
     const nearestFutureTrip = futureTrips[0]?.trip ?? null;
     const totalParticipants = trips.reduce((count, trip) => count + getParticipantIds(trip.participants).length, 0);
     const completedTripsCount = trips.filter((trip) => {
+      if (trip.status === CANCELLED_TRIP_STATUS) {
+        return false;
+      }
+
       const endDate = toDate(trip.endDate);
       return endDate ? endDate <= now : false;
     }).length;

@@ -1,5 +1,6 @@
 // Added by Codex: project documentation comment for server\src\models\Post.js
 import mongoose from 'mongoose';
+import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 
 const postSchema = new mongoose.Schema(
   {
@@ -18,8 +19,8 @@ const postSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['Active', 'Completed'],
-      default: 'Active',
+      enum: TRIP_STATUS_VALUES,
+      default: ACTIVE_TRIP_STATUS,
       required: true,
     },
     title: {
