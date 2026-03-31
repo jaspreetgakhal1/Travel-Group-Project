@@ -6,7 +6,7 @@ import { Post } from '../models/Post.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
-import { ACTIVE_TRIP_STATUS, CANCELLED_TRIP_STATUS, COMPLETED_TRIP_STATUS, TRIP_OVERLAP_ERROR_MESSAGE, findTripOverlap, } from '../utils/tripScheduling.js';
+import { ACTIVE_TRIP_STATUS, CANCELLED_TRIP_STATUS, COMPLETED_TRIP_STATUS, TRIP_OVERLAP_ERROR_MESSAGE, findTripOverlap, toDayEnd, toDayStart, } from '../utils/tripScheduling.js';
 import { markPastTripsCompleted } from '../utils/expireTrips.js';
 import { buildTripSettlement } from '../utils/wallet.js';
 const router = express.Router();
@@ -35,6 +35,24 @@ const getTripStatus = (value) => {
         return CANCELLED_TRIP_STATUS;
     }
     return ACTIVE_TRIP_STATUS;
+};
+const findCurrentActiveTripIdForUser = async (userId) => {
+    const currentDayStart = toDayStart(new Date());
+    const currentDayEnd = toDayEnd(new Date());
+    if (!currentDayStart || !currentDayEnd) {
+        return null;
+    }
+    const userObjectId = new Types.ObjectId(userId);
+    const activeTrip = await Trip.findOne({
+        status: { $ne: CANCELLED_TRIP_STATUS },
+        $or: [{ organizerId: userObjectId }, { participants: userObjectId }],
+        startDate: { $lte: currentDayEnd },
+        endDate: { $gte: currentDayStart },
+    })
+        .sort({ startDate: -1, createdAt: -1 })
+        .select('_id')
+        .lean();
+    return activeTrip ? String(activeTrip._id) : null;
 };
 const resolveTripForJoinRequest = async (tripId) => {
     const existingTrip = await Trip.findById(tripId)
@@ -166,6 +184,28 @@ router.get('/self', requireAuth, async (req, res) => {
     catch (error) {
         console.error('GET /api/trips/self failed', error);
         return res.status(500).json({ message: 'Unable to load your trips right now.' });
+    }
+});
+router.get('/active/settlement', requireAuth, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    try {
+        const activeTripId = await findCurrentActiveTripIdForUser(requesterId);
+        if (!activeTripId) {
+            return res.status(404).json({ message: 'No active trip is available for expense splitting right now.' });
+        }
+        const settlement = await buildTripSettlement(activeTripId, requesterId);
+        if ('error' in settlement) {
+            return res.status(settlement.error.status).json({ message: settlement.error.message });
+        }
+        return res.status(200).json(settlement);
+    }
+    catch (error) {
+        console.error('GET /api/trips/active/settlement failed', error);
+        return res.status(500).json({ message: 'Unable to load your active trip settlement right now.' });
     }
 });
 router.get('/:tripId/settlement', requireAuth, async (req, res) => {

@@ -12,6 +12,8 @@ import {
   COMPLETED_TRIP_STATUS,
   TRIP_OVERLAP_ERROR_MESSAGE,
   findTripOverlap,
+  toDayEnd,
+  toDayStart,
 } from '../utils/tripScheduling.js';
 import { markPastTripsCompleted } from '../utils/expireTrips.js';
 import { buildTripSettlement } from '../utils/wallet.js';
@@ -52,6 +54,28 @@ const getTripStatus = (value: unknown): string => {
   }
 
   return ACTIVE_TRIP_STATUS;
+};
+
+const findCurrentActiveTripIdForUser = async (userId: string): Promise<string | null> => {
+  const currentDayStart = toDayStart(new Date());
+  const currentDayEnd = toDayEnd(new Date());
+
+  if (!currentDayStart || !currentDayEnd) {
+    return null;
+  }
+
+  const userObjectId = new Types.ObjectId(userId);
+  const activeTrip = await Trip.findOne({
+    status: { $ne: CANCELLED_TRIP_STATUS },
+    $or: [{ organizerId: userObjectId }, { participants: userObjectId }],
+    startDate: { $lte: currentDayEnd },
+    endDate: { $gte: currentDayStart },
+  })
+    .sort({ startDate: -1, createdAt: -1 })
+    .select('_id')
+    .lean();
+
+  return activeTrip ? String(activeTrip._id) : null;
 };
 
 const resolveTripForJoinRequest = async (
@@ -218,6 +242,32 @@ router.get('/self', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('GET /api/trips/self failed', error);
     return res.status(500).json({ message: 'Unable to load your trips right now.' });
+  }
+});
+
+router.get('/active/settlement', requireAuth, async (req, res) => {
+  const authRequest = req as typeof req & { user?: AuthenticatedUser };
+  const requesterId = authRequest.user?.id;
+
+  if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+    return res.status(401).json({ message: 'Unauthorized request.' });
+  }
+
+  try {
+    const activeTripId = await findCurrentActiveTripIdForUser(requesterId);
+    if (!activeTripId) {
+      return res.status(404).json({ message: 'No active trip is available for expense splitting right now.' });
+    }
+
+    const settlement = await buildTripSettlement(activeTripId, requesterId);
+    if ('error' in settlement) {
+      return res.status(settlement.error.status).json({ message: settlement.error.message });
+    }
+
+    return res.status(200).json(settlement);
+  } catch (error) {
+    console.error('GET /api/trips/active/settlement failed', error);
+    return res.status(500).json({ message: 'Unable to load your active trip settlement right now.' });
   }
 });
 
