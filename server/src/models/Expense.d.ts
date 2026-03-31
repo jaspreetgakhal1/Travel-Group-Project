@@ -7,11 +7,14 @@ export interface IExpenseSettlement {
 export interface IExpense {
     tripId: Types.ObjectId;
     paidBy: Types.ObjectId;
+    createdBy: Types.ObjectId;
+    lastUpdatedBy?: Types.ObjectId | null;
     description: string;
     amount: number;
     splitAmount: number;
     memberCount: number;
     memberUserIds: Types.ObjectId[];
+    debtorUserIds: Types.ObjectId[];
     settlements: IExpenseSettlement[];
     createdAt: Date;
     updatedAt: Date;

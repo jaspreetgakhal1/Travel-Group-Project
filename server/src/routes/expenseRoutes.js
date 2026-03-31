@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { Expense } from '../models/Expense.js';
 import { Trip } from '../models/Trip.js';
 import { User } from '../models/User.js';
+import { buildTripSettlement } from '../utils/wallet.js';
 const router = express.Router();
 const roundCurrency = (value) => Math.round(value * 100) / 100;
 const buildDisplayName = (user) => {
@@ -13,6 +14,29 @@ const buildDisplayName = (user) => {
     return fullName || user?.userId || user?.email || 'Traveler';
 };
 const getAvatar = (user) => typeof user?.profileImageDataUrl === 'string' && user.profileImageDataUrl.trim() ? user.profileImageDataUrl.trim() : null;
+const normalizeDebtorIds = (debtorIds) => {
+    if (!Array.isArray(debtorIds)) {
+        return [];
+    }
+    return Array.from(new Set(debtorIds
+        .filter((value) => typeof value === 'string' && value.trim().length > 0)
+        .map((value) => value.trim())));
+};
+const buildSettlements = (requesterId, debtorMemberIds, amount) => {
+    const memberCount = debtorMemberIds.length + 1;
+    const totalCents = Math.round(amount * 100);
+    const baseShareCents = Math.floor(totalCents / memberCount);
+    const splitAmount = roundCurrency(baseShareCents / 100);
+    return {
+        splitAmount,
+        memberCount,
+        settlements: debtorMemberIds.map((memberId) => ({
+            userId: new mongoose.Types.ObjectId(memberId),
+            owesToUserId: new mongoose.Types.ObjectId(requesterId),
+            amount: splitAmount,
+        })),
+    };
+};
 const loadTripContext = async (tripId, requesterId) => {
     if (!mongoose.isValidObjectId(tripId) || !requesterId || !mongoose.isValidObjectId(requesterId)) {
         return { error: { status: 400, message: 'Trip id is invalid.' } };
@@ -52,98 +76,27 @@ const loadTripContext = async (tripId, requesterId) => {
             .filter((member) => Boolean(member)),
     };
 };
-const buildExpenseSummary = async (tripId, requesterId) => {
-    const context = await loadTripContext(tripId, requesterId);
+const loadExpenseContext = async (expenseId, requesterId) => {
+    if (!mongoose.isValidObjectId(expenseId)) {
+        return { error: { status: 400, message: 'Expense id is invalid.' } };
+    }
+    const expense = await Expense.findById(expenseId)
+        .select('_id tripId paidBy createdBy')
+        .lean();
+    if (!expense) {
+        return { error: { status: 404, message: 'Expense not found.' } };
+    }
+    const context = await loadTripContext(String(expense.tripId), requesterId);
     if ('error' in context) {
         return context;
     }
-    const { trip, members } = context;
-    const membersById = new Map(members.map((member) => [member.id, member]));
-    const expenses = await Expense.find({ tripId })
-        .sort({ createdAt: -1 })
-        .lean();
-    const settlementByPair = new Map();
-    const balancesByUserId = new Map(members.map((member) => [
-        member.id,
-        {
-            userId: member.id,
-            name: member.name,
-            avatar: member.avatar,
-            totalOwed: 0,
-            totalReceivable: 0,
-        },
-    ]));
-    const serializedExpenses = expenses.map((expense) => {
-        const payerId = String(expense.paidBy);
-        const payer = membersById.get(payerId);
-        const settlements = (Array.isArray(expense.settlements) ? expense.settlements : []).map((settlement) => {
-            const debtorId = String(settlement.userId);
-            const creditorId = String(settlement.owesToUserId);
-            const debtor = membersById.get(debtorId);
-            const creditor = membersById.get(creditorId);
-            const amount = roundCurrency(Number(settlement.amount) || 0);
-            const pairKey = `${debtorId}->${creditorId}`;
-            settlementByPair.set(pairKey, {
-                fromUserId: debtorId,
-                fromName: debtor?.name ?? 'Traveler',
-                toUserId: creditorId,
-                toName: creditor?.name ?? 'Traveler',
-                amount: roundCurrency((settlementByPair.get(pairKey)?.amount ?? 0) + amount),
-            });
-            const debtorBalance = balancesByUserId.get(debtorId);
-            if (debtorBalance) {
-                debtorBalance.totalOwed = roundCurrency(debtorBalance.totalOwed + amount);
-            }
-            const creditorBalance = balancesByUserId.get(creditorId);
-            if (creditorBalance) {
-                creditorBalance.totalReceivable = roundCurrency(creditorBalance.totalReceivable + amount);
-            }
-            return {
-                userId: debtorId,
-                name: debtor?.name ?? 'Traveler',
-                avatar: debtor?.avatar ?? null,
-                owesToUserId: creditorId,
-                owesToName: creditor?.name ?? 'Traveler',
-                amount,
-            };
-        });
-        return {
-            id: String(expense._id),
-            description: expense.description,
-            amount: roundCurrency(expense.amount),
-            splitAmount: roundCurrency(expense.splitAmount),
-            memberCount: expense.memberCount,
-            paidBy: {
-                userId: payerId,
-                name: payer?.name ?? 'Traveler',
-                avatar: payer?.avatar ?? null,
-            },
-            settlements,
-            createdAt: expense.createdAt instanceof Date ? expense.createdAt.toISOString() : new Date(expense.createdAt).toISOString(),
-        };
-    });
-    return {
-        trip: {
-            id: String(trip._id),
-            title: trip.title,
-            location: trip.location,
-            imageUrl: typeof trip.imageUrl === 'string' ? trip.imageUrl : '',
-        },
-        members,
-        expenses: serializedExpenses,
-        totalExpenses: roundCurrency(serializedExpenses.reduce((total, expense) => total + expense.amount, 0)),
-        settlementSummary: Array.from(settlementByPair.values()).sort((left, right) => right.amount - left.amount),
-        balances: Array.from(balancesByUserId.values()).map((balance) => ({
-            ...balance,
-            netBalance: roundCurrency(balance.totalReceivable - balance.totalOwed),
-        })),
-    };
+    return { expense, context };
 };
 router.get('/trips/:tripId', requireAuth, async (req, res) => {
     const authRequest = req;
     const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
     try {
-        const summary = await buildExpenseSummary(tripId, authRequest.user?.id);
+        const summary = await buildTripSettlement(tripId, authRequest.user?.id);
         if ('error' in summary) {
             return res.status(summary.error.status).json({ message: summary.error.message });
         }
@@ -157,9 +110,12 @@ router.get('/trips/:tripId', requireAuth, async (req, res) => {
 router.post('/split', requireAuth, async (req, res) => {
     const authRequest = req;
     const requesterId = authRequest.user?.id;
-    const { tripId, description, amount } = req.body;
-    if (typeof tripId !== 'string' || typeof description !== 'string' || typeof amount !== 'number') {
-        return res.status(400).json({ message: 'Trip id, description, and amount are required.' });
+    const { tripId, description, amount, debtorIds } = req.body;
+    if (typeof tripId !== 'string' ||
+        typeof description !== 'string' ||
+        typeof amount !== 'number' ||
+        !Array.isArray(debtorIds)) {
+        return res.status(400).json({ message: 'Trip id, description, amount, and debtor ids are required.' });
     }
     const normalizedDescription = description.trim();
     if (normalizedDescription.length < 2) {
@@ -173,32 +129,33 @@ router.post('/split', requireAuth, async (req, res) => {
         if ('error' in context) {
             return res.status(context.error.status).json({ message: context.error.message });
         }
-        const memberIds = context.members.map((member) => member.id);
-        const memberCount = memberIds.length;
-        if (memberCount === 0 || !requesterId) {
+        if (!requesterId) {
             return res.status(400).json({ message: 'Trip has no members to split with.' });
         }
-        const totalCents = Math.round(amount * 100);
-        const baseShareCents = Math.floor(totalCents / memberCount);
-        const splitAmount = roundCurrency(baseShareCents / 100);
-        const settlements = memberIds
-            .filter((memberId) => memberId !== requesterId)
-            .map((memberId) => ({
-            userId: new mongoose.Types.ObjectId(memberId),
-            owesToUserId: new mongoose.Types.ObjectId(requesterId),
-            amount: splitAmount,
-        }));
+        const memberIds = context.members.map((member) => member.id);
+        const debtorMemberIds = normalizeDebtorIds(debtorIds);
+        const hasInvalidDebtor = debtorMemberIds.some((memberId) => memberId === requesterId || !memberIds.includes(memberId));
+        if (hasInvalidDebtor) {
+            return res.status(400).json({ message: 'Debtor ids must belong to other active trip members.' });
+        }
+        if (debtorMemberIds.length === 0) {
+            return res.status(400).json({ message: 'Select at least one trip member for this expense.' });
+        }
+        const { splitAmount, memberCount, settlements } = buildSettlements(requesterId, debtorMemberIds, amount);
         await Expense.create({
             tripId: new mongoose.Types.ObjectId(tripId),
             paidBy: new mongoose.Types.ObjectId(requesterId),
+            createdBy: new mongoose.Types.ObjectId(requesterId),
+            lastUpdatedBy: null,
             description: normalizedDescription,
             amount: roundCurrency(amount),
             splitAmount,
             memberCount,
-            memberUserIds: memberIds.map((memberId) => new mongoose.Types.ObjectId(memberId)),
+            memberUserIds: [requesterId, ...debtorMemberIds].map((memberId) => new mongoose.Types.ObjectId(memberId)),
+            debtorUserIds: debtorMemberIds.map((memberId) => new mongoose.Types.ObjectId(memberId)),
             settlements,
         });
-        const summary = await buildExpenseSummary(tripId, requesterId);
+        const summary = await buildTripSettlement(tripId, requesterId);
         if ('error' in summary) {
             return res.status(summary.error.status).json({ message: summary.error.message });
         }
@@ -207,6 +164,89 @@ router.post('/split', requireAuth, async (req, res) => {
     catch (error) {
         console.error('POST /api/expenses/split failed', error);
         return res.status(500).json({ message: 'Unable to split this expense right now.' });
+    }
+});
+router.put('/:id', requireAuth, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const expenseId = typeof req.params.id === 'string' ? req.params.id : '';
+    const { description, amount, debtorIds } = req.body;
+    if (typeof description !== 'string' || typeof amount !== 'number' || !Array.isArray(debtorIds)) {
+        return res.status(400).json({ message: 'Description, amount, and debtor ids are required.' });
+    }
+    const normalizedDescription = description.trim();
+    if (normalizedDescription.length < 2) {
+        return res.status(400).json({ message: 'Description must be at least 2 characters.' });
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ message: 'Amount must be greater than 0.' });
+    }
+    try {
+        const expenseContext = await loadExpenseContext(expenseId, requesterId);
+        if (!('expense' in expenseContext)) {
+            return res.status(expenseContext.error.status).json({ message: expenseContext.error.message });
+        }
+        if (!requesterId) {
+            return res.status(401).json({ message: 'Unauthorized request.' });
+        }
+        const memberIds = expenseContext.context.members.map((member) => member.id);
+        const debtorMemberIds = normalizeDebtorIds(debtorIds);
+        const hasInvalidDebtor = debtorMemberIds.some((memberId) => memberId === requesterId || !memberIds.includes(memberId));
+        if (hasInvalidDebtor) {
+            return res.status(400).json({ message: 'Debtor ids must belong to other active trip members.' });
+        }
+        if (debtorMemberIds.length === 0) {
+            return res.status(400).json({ message: 'Select at least one trip member for this expense.' });
+        }
+        const { splitAmount, memberCount, settlements } = buildSettlements(requesterId, debtorMemberIds, amount);
+        await Expense.findByIdAndUpdate(expenseId, {
+            $set: {
+                description: normalizedDescription,
+                amount: roundCurrency(amount),
+                splitAmount,
+                memberCount,
+                memberUserIds: [requesterId, ...debtorMemberIds].map((memberId) => new mongoose.Types.ObjectId(memberId)),
+                debtorUserIds: debtorMemberIds.map((memberId) => new mongoose.Types.ObjectId(memberId)),
+                settlements,
+                lastUpdatedBy: new mongoose.Types.ObjectId(requesterId),
+            },
+        });
+        const summary = await buildTripSettlement(String(expenseContext.expense.tripId), requesterId);
+        if ('error' in summary) {
+            return res.status(summary.error.status).json({ message: summary.error.message });
+        }
+        return res.status(200).json(summary);
+    }
+    catch (error) {
+        console.error('PUT /api/expenses/:id failed', error);
+        return res.status(500).json({ message: 'Unable to update this expense right now.' });
+    }
+});
+router.delete('/:id', requireAuth, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const expenseId = typeof req.params.id === 'string' ? req.params.id : '';
+    try {
+        const expenseContext = await loadExpenseContext(expenseId, requesterId);
+        if (!('expense' in expenseContext)) {
+            return res.status(expenseContext.error.status).json({ message: expenseContext.error.message });
+        }
+        const createdById = expenseContext.expense.createdBy
+            ? String(expenseContext.expense.createdBy)
+            : String(expenseContext.expense.paidBy);
+        if (requesterId !== createdById) {
+            return res.status(403).json({ message: 'Only the creator of this expense can delete it.' });
+        }
+        await Expense.findByIdAndDelete(expenseId);
+        const summary = await buildTripSettlement(String(expenseContext.expense.tripId), requesterId);
+        if ('error' in summary) {
+            return res.status(summary.error.status).json({ message: summary.error.message });
+        }
+        return res.status(200).json(summary);
+    }
+    catch (error) {
+        console.error('DELETE /api/expenses/:id failed', error);
+        return res.status(500).json({ message: 'Unable to delete this expense right now.' });
     }
 });
 export default router;

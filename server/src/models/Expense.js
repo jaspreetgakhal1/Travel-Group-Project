@@ -30,6 +30,18 @@ const expenseSchema = new Schema({
         required: true,
         index: true,
     },
+    createdBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
+        index: true,
+    },
+    lastUpdatedBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+        index: true,
+    },
     description: {
         type: String,
         required: true,
@@ -53,6 +65,15 @@ const expenseSchema = new Schema({
         min: 1,
     },
     memberUserIds: {
+        type: [
+            {
+                type: Schema.Types.ObjectId,
+                ref: 'User',
+            },
+        ],
+        default: [],
+    },
+    debtorUserIds: {
         type: [
             {
                 type: Schema.Types.ObjectId,

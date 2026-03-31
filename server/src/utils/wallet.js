@@ -95,6 +95,8 @@ export const buildTripSettlement = async (tripId, requesterId) => {
   const serializedExpenses = expenses.map((expense) => {
     const payerId = String(expense.paidBy);
     const payer = membersById.get(payerId);
+    const createdById = expense.createdBy ? String(expense.createdBy) : payerId;
+    const lastUpdatedById = expense.lastUpdatedBy ? String(expense.lastUpdatedBy) : null;
     const expenseAmountCents = toCents(expense.amount);
     totalExpenseCents += expenseAmountCents;
 
@@ -149,6 +151,9 @@ export const buildTripSettlement = async (tripId, requesterId) => {
       amount: fromCents(expenseAmountCents),
       splitAmount: fromCents(toCents(expense.splitAmount)),
       memberCount: expense.memberCount,
+      createdBy: createdById,
+      lastUpdatedBy: lastUpdatedById,
+      lastUpdatedByName: lastUpdatedById ? membersById.get(lastUpdatedById)?.name ?? 'Traveler' : null,
       paidBy: {
         userId: payerId,
         name: payer?.name ?? 'Traveler',
@@ -156,6 +161,7 @@ export const buildTripSettlement = async (tripId, requesterId) => {
       },
       settlements,
       createdAt: expense.createdAt instanceof Date ? expense.createdAt.toISOString() : new Date(expense.createdAt).toISOString(),
+      updatedAt: expense.updatedAt instanceof Date ? expense.updatedAt.toISOString() : new Date(expense.updatedAt).toISOString(),
     };
   });
 

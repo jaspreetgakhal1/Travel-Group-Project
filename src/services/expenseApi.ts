@@ -30,6 +30,9 @@ export type TripExpenseSummary = {
     amount: number;
     splitAmount: number;
     memberCount: number;
+    createdBy: string;
+    lastUpdatedBy: string | null;
+    lastUpdatedByName: string | null;
     paidBy: {
       userId: string;
       name: string;
@@ -37,6 +40,7 @@ export type TripExpenseSummary = {
     };
     settlements: ExpenseSettlement[];
     createdAt: string;
+    updatedAt: string;
   }>;
   totalExpenses: number;
   settlementSummary: Array<{
@@ -114,11 +118,14 @@ const request = async <T>(path: string, init: RequestInit, authToken: string): P
   return (await response.json()) as T;
 };
 
+export const fetchActiveTripExpenseSummary = async (authToken: string): Promise<TripExpenseSummary> =>
+  request<TripExpenseSummary>('/api/trips/active/settlement', { method: 'GET' }, authToken);
+
 export const fetchTripExpenseSummary = async (tripId: string, authToken: string): Promise<TripExpenseSummary> =>
   request<TripExpenseSummary>(`/api/trips/${encodeURIComponent(tripId)}/settlement`, { method: 'GET' }, authToken);
 
 export const splitTripExpense = async (
-  payload: { tripId: string; description: string; amount: number },
+  payload: { tripId: string; description: string; amount: number; debtorIds: string[] },
   authToken: string,
 ): Promise<TripExpenseSummary> =>
   request<TripExpenseSummary>(
@@ -126,6 +133,29 @@ export const splitTripExpense = async (
     {
       method: 'POST',
       body: JSON.stringify(payload),
+    },
+    authToken,
+  );
+
+export const updateTripExpense = async (
+  expenseId: string,
+  payload: { description: string; amount: number; debtorIds: string[] },
+  authToken: string,
+): Promise<TripExpenseSummary> =>
+  request<TripExpenseSummary>(
+    `/api/expenses/${encodeURIComponent(expenseId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+    authToken,
+  );
+
+export const deleteTripExpense = async (expenseId: string, authToken: string): Promise<TripExpenseSummary> =>
+  request<TripExpenseSummary>(
+    `/api/expenses/${encodeURIComponent(expenseId)}`,
+    {
+      method: 'DELETE',
     },
     authToken,
   );

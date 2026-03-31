@@ -11,11 +11,14 @@ export interface IExpenseSettlement {
 export interface IExpense {
   tripId: Types.ObjectId;
   paidBy: Types.ObjectId;
+  createdBy: Types.ObjectId;
+  lastUpdatedBy?: Types.ObjectId | null;
   description: string;
   amount: number;
   splitAmount: number;
   memberCount: number;
   memberUserIds: Types.ObjectId[];
+  debtorUserIds: Types.ObjectId[];
   settlements: IExpenseSettlement[];
   createdAt: Date;
   updatedAt: Date;
@@ -59,6 +62,18 @@ const expenseSchema = new Schema<IExpense, ExpenseModelType>(
       required: true,
       index: true,
     },
+    createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
+    lastUpdatedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
     description: {
       type: String,
       required: true,
@@ -82,6 +97,15 @@ const expenseSchema = new Schema<IExpense, ExpenseModelType>(
       min: 1,
     },
     memberUserIds: {
+      type: [
+        {
+          type: Schema.Types.ObjectId,
+          ref: 'User',
+        },
+      ],
+      default: [],
+    },
+    debtorUserIds: {
       type: [
         {
           type: Schema.Types.ObjectId,
