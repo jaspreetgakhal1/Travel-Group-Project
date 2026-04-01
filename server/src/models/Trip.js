@@ -1,5 +1,15 @@
 import mongoose, { Schema } from 'mongoose';
+import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 const { model, models } = mongoose;
+const calculateExpectedBudgetDefault = (startDate, endDate, participantCount) => {
+    const normalizedStartDate = startDate instanceof Date ? startDate : new Date(startDate ?? Date.now());
+    const normalizedEndDate = endDate instanceof Date ? endDate : new Date(endDate ?? normalizedStartDate);
+    const durationMs = Math.max(normalizedEndDate.getTime() - normalizedStartDate.getTime(), 0);
+    const durationDays = Math.max(1, Math.ceil(durationMs / (24 * 60 * 60 * 1000)) + 1);
+    const safeParticipantCount = Number.isInteger(participantCount) && participantCount > 0 ? participantCount : 1;
+    return durationDays * safeParticipantCount * 100;
+};
+export const getTripExpectedBudgetDefault = (tripValue) => calculateExpectedBudgetDefault(tripValue?.startDate, tripValue?.endDate, tripValue?.maxParticipants ?? 1);
 const tripSchema = new Schema({
     organizerId: {
         type: Schema.Types.ObjectId,
@@ -38,6 +48,14 @@ const tripSchema = new Schema({
         min: 0,
         default: 0,
     },
+    expectedBudget: {
+        type: Number,
+        required: true,
+        min: 0,
+        default() {
+            return getTripExpectedBudgetDefault(this);
+        },
+    },
     category: {
         type: String,
         enum: ['Adventure', 'Luxury', 'Budget', 'Nature'],
@@ -50,6 +68,13 @@ const tripSchema = new Schema({
     endDate: {
         type: Date,
         required: true,
+    },
+    status: {
+        type: String,
+        enum: TRIP_STATUS_VALUES,
+        required: true,
+        default: ACTIVE_TRIP_STATUS,
+        index: true,
     },
     maxParticipants: {
         type: Number,
@@ -78,6 +103,7 @@ const tripSchema = new Schema({
 tripSchema.index({ organizerId: 1, startDate: 1 });
 tripSchema.index({ startDate: 1, endDate: 1 });
 tripSchema.index({ participants: 1 });
+tripSchema.index({ status: 1, startDate: 1, endDate: 1 });
 tripSchema.virtual('currentParticipantCount', {
     ref: 'Participant',
     localField: '_id',

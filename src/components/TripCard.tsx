@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MessageCircle } from 'lucide-react';
 import ChatRoom from './ChatRoom';
+import FastImage from './FastImage';
 
 import type { Trip } from '../types/trip';
 
@@ -13,6 +14,12 @@ type TripCardProps = {
   onJoin?: (trip: Trip) => void;
   onManageRequests?: (trip: Trip) => void;
 };
+
+const tripDateFormatter = new Intl.DateTimeFormat('en-US', {
+  day: '2-digit',
+  month: 'long',
+  year: 'numeric',
+});
 
 const TripCard: React.FC<TripCardProps> = ({
   trip,
@@ -31,6 +38,13 @@ const TripCard: React.FC<TripCardProps> = ({
   const pendingRequestCount = trip.pendingRequestCount ?? 0;
   const [isChatOpen, setIsChatOpen] = useState(false);
   const canOpenChat = isHostView || isParticipant;
+  const formattedStartDate =
+    typeof trip.startDate === 'string' && trip.startDate.trim()
+      ? (() => {
+          const parsedDate = new Date(trip.startDate);
+          return Number.isNaN(parsedDate.getTime()) ? '' : tripDateFormatter.format(parsedDate);
+        })()
+      : '';
 
   const openWhatsAppIfAvailable = (): boolean => {
     if (typeof window === 'undefined') {
@@ -53,11 +67,10 @@ const TripCard: React.FC<TripCardProps> = ({
     <>
       <article className="relative overflow-hidden rounded-card bg-white shadow-sm ring-1 ring-primary/10">
         <div className="relative h-52 w-full overflow-hidden">
-          <img
+          <FastImage
             src={trip.imageUrl}
             alt={trip.title}
             className="h-full w-full object-cover"
-            loading="lazy"
           />
           <span className="absolute right-3 top-3 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-background">
             {trip.matchPercentage}% Match
@@ -66,6 +79,9 @@ const TripCard: React.FC<TripCardProps> = ({
 
         <div className="space-y-3 p-5 text-primary">
           <h3 className="text-lg font-semibold leading-snug">{trip.title}</h3>
+          {formattedStartDate ? (
+            <p className="text-sm font-medium text-primary/75">Starts {formattedStartDate}</p>
+          ) : null}
 
           <div className="flex items-center gap-2 text-sm">
             <span className="font-medium">Host: {trip.hostName}</span>

@@ -34,5 +34,7 @@ export const env = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
   // CORS allowlist derived from CLIENT_ORIGIN.
   allowedOrigins: getAllowedOrigins(),
+  geminiApiKey: process.env.GEMINI_API_KEY ?? '',
+  geminiModel: process.env.GEMINI_MODEL ?? '',
 };
 

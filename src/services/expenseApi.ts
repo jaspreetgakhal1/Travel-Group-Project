@@ -22,6 +22,8 @@ export type TripExpenseSummary = {
     title: string;
     location: string;
     imageUrl: string;
+    expectedBudget: number;
+    durationDays: number;
   };
   members: ExpenseMember[];
   expenses: Array<{
@@ -30,6 +32,9 @@ export type TripExpenseSummary = {
     amount: number;
     splitAmount: number;
     memberCount: number;
+    createdBy: string;
+    lastUpdatedBy: string | null;
+    lastUpdatedByName: string | null;
     paidBy: {
       userId: string;
       name: string;
@@ -37,8 +42,35 @@ export type TripExpenseSummary = {
     };
     settlements: ExpenseSettlement[];
     createdAt: string;
+    updatedAt: string;
   }>;
   totalExpenses: number;
+  budgetSummary: {
+    expectedBudget: number;
+    totalExpenses: number;
+    remainingBudget: number;
+    overBudgetAmount: number;
+    budgetUtilizationPercent: number;
+    budgetUtilizationDisplayPercent: number;
+    budgetStatus: 'healthy' | 'at_risk' | 'over_budget';
+  };
+  liquidationSummary: {
+    participantCount: number;
+    individualResponsibility: number;
+    remainingBudget: number;
+    statuses: Array<{
+      userId: string;
+      name: string;
+      avatar: string | null;
+      totalSpent: number;
+      individualResponsibility: number;
+      varianceFromResponsibility: number;
+      amountToContribute: number;
+      aheadBy: number;
+      status: 'needs_to_contribute' | 'ahead_of_target' | 'paid_in_full';
+      label: string;
+    }>;
+  };
   settlementSummary: Array<{
     fromUserId: string;
     fromName: string;
@@ -114,11 +146,14 @@ const request = async <T>(path: string, init: RequestInit, authToken: string): P
   return (await response.json()) as T;
 };
 
+export const fetchActiveTripExpenseSummary = async (authToken: string): Promise<TripExpenseSummary> =>
+  request<TripExpenseSummary>('/api/trips/active/settlement', { method: 'GET' }, authToken);
+
 export const fetchTripExpenseSummary = async (tripId: string, authToken: string): Promise<TripExpenseSummary> =>
   request<TripExpenseSummary>(`/api/trips/${encodeURIComponent(tripId)}/settlement`, { method: 'GET' }, authToken);
 
 export const splitTripExpense = async (
-  payload: { tripId: string; description: string; amount: number },
+  payload: { tripId: string; description: string; amount: number; debtorIds: string[] },
   authToken: string,
 ): Promise<TripExpenseSummary> =>
   request<TripExpenseSummary>(
@@ -126,6 +161,29 @@ export const splitTripExpense = async (
     {
       method: 'POST',
       body: JSON.stringify(payload),
+    },
+    authToken,
+  );
+
+export const updateTripExpense = async (
+  expenseId: string,
+  payload: { description: string; amount: number; debtorIds: string[] },
+  authToken: string,
+): Promise<TripExpenseSummary> =>
+  request<TripExpenseSummary>(
+    `/api/expenses/${encodeURIComponent(expenseId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+    authToken,
+  );
+
+export const deleteTripExpense = async (expenseId: string, authToken: string): Promise<TripExpenseSummary> =>
+  request<TripExpenseSummary>(
+    `/api/expenses/${encodeURIComponent(expenseId)}`,
+    {
+      method: 'DELETE',
     },
     authToken,
   );

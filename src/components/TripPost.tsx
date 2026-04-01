@@ -4,6 +4,7 @@ import { fetchPostAuthor } from '../services/postApi';
 import type { TripDNAMatch } from '../services/matchApi';
 import type { FeedPost, FeedPostAuthor } from '../types/feed';
 import DNAOverlayChart from './travel-dna/DNAOverlayChart';
+import FastImage from './FastImage';
 
 type TripPostProps = {
   post: FeedPost;
@@ -12,6 +13,8 @@ type TripPostProps = {
   currentUserIsVerified?: boolean;
   canManagePost: boolean;
   pendingRequestCount: number;
+  joinConflictMessage?: string | null;
+  isCurrentActiveTrip?: boolean;
   isRequestSent: boolean;
   isActionInProgress: boolean;
   dnaMatch?: TripDNAMatch;
@@ -24,12 +27,13 @@ type TripPostProps = {
   onEditPost: (post: FeedPost) => void;
   onDeletePost: (post: FeedPost) => void;
   onCompletePost: (post: FeedPost) => void;
+  onCancelPost: (post: FeedPost) => void;
   showDNACompatibility?: boolean;
 };
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
+  month: 'long',
+  day: '2-digit',
   year: 'numeric',
 });
 
@@ -40,6 +44,8 @@ function TripPost({
   currentUserIsVerified = false,
   canManagePost,
   pendingRequestCount,
+  joinConflictMessage = null,
+  isCurrentActiveTrip = false,
   isRequestSent,
   isActionInProgress,
   dnaMatch,
@@ -52,6 +58,7 @@ function TripPost({
   onEditPost,
   onDeletePost,
   onCompletePost,
+  onCancelPost,
   showDNACompatibility = true,
 }: TripPostProps) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -88,6 +95,7 @@ function TripPost({
   );
   const isOwnPost = isOwnPostByHostId || isOwnPostByAuthorKey || isOwnPostByAuthorId;
   const isAuthorVerified = isOwnPost && currentUserIsVerified ? true : Boolean(post.isVerified || resolvedAuthor?.isVerified);
+  const hasJoinConflict = Boolean(joinConflictMessage && !isOwnPost && !isJoinedTrip);
 
   const formattedDates = useMemo(
     () => ({
@@ -234,9 +242,19 @@ function TripPost({
                 {pendingRequestCount} Pending Requests
               </span>
             ) : null}
+            {isCurrentActiveTrip ? (
+              <span className="rounded-full bg-success/20 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                Current / Active
+              </span>
+            ) : null}
             {isTripFull ? (
               <span className="rounded-full bg-[#E07A5F]/20 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
                 Trip Full
+              </span>
+            ) : null}
+            {hasJoinConflict ? (
+              <span className="rounded-full bg-[#F2CC8F]/30 px-2 py-0.5 text-[11px] font-semibold text-[#8C4633]">
+                Date Conflict
               </span>
             ) : null}
           </div>
@@ -290,7 +308,7 @@ function TripPost({
                 <button
                   type="button"
                   role="menuitem"
-                  disabled={isActionInProgress || post.status === 'Completed'}
+                  disabled={isActionInProgress || post.status === 'Completed' || post.status === 'Cancelled'}
                   onClick={(event) => {
                     event.stopPropagation();
                     setIsOptionsOpen(false);
@@ -298,7 +316,20 @@ function TripPost({
                   }}
                   className="interactive-btn w-full rounded-card px-3 py-2 text-left text-xs font-semibold text-primary hover:bg-background/80 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {post.status === 'Completed' ? 'Already Completed' : 'Complete Post'}
+                  {post.status === 'Completed' ? 'Already Completed' : post.status === 'Cancelled' ? 'Unavailable' : 'Complete Post'}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={isActionInProgress || post.status === 'Cancelled' || post.status === 'Completed'}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setIsOptionsOpen(false);
+                    onCancelPost(post);
+                  }}
+                  className="interactive-btn w-full rounded-card px-3 py-2 text-left text-xs font-semibold text-[#8C4633] hover:bg-[#F4F1DE] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {post.status === 'Cancelled' ? 'Already Cancelled' : post.status === 'Completed' ? 'Unavailable' : 'Cancel Post'}
                 </button>
               </div>
             ) : null}
@@ -306,8 +337,31 @@ function TripPost({
         ) : null}
       </header>
 
-      <div className="mt-4 overflow-hidden rounded-card border border-primary/10">
-        <img src={post.imageUrl} alt={post.title} className="h-56 w-full object-cover sm:h-64" loading="lazy" />
+      <div className="relative mt-4 overflow-hidden rounded-card border border-primary/10">
+        <FastImage src={post.imageUrl} alt={post.title} className="h-56 w-full object-cover sm:h-64" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/60 via-black/20 to-transparent px-3 py-3 sm:px-4">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-white/35 bg-white/88 px-3 py-1.5 text-xs font-bold text-slate-900 shadow-lg shadow-black/20 backdrop-blur-md">
+              <span className="uppercase tracking-[0.16em] text-slate-700">Journey</span>
+              <span className="truncate text-slate-900">
+                {formattedDates.start} to {formattedDates.end}
+              </span>
+            </div>
+
+            {showDNACompatibility ? (
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/35 bg-slate-950/72 px-3 py-1.5 text-xs font-bold text-white shadow-lg shadow-black/30 backdrop-blur-md">
+                <span className="uppercase tracking-[0.16em] text-white/75">DNA</span>
+                <span>
+                  {isDNAMatchLoading
+                    ? 'Syncing...'
+                    : typeof matchPercentage === 'number'
+                      ? `${matchPercentage}% Match`
+                      : 'Unavailable'}
+                </span>
+              </div>
+            ) : null}
+          </div>
+        </div>
       </div>
 
       <section className="mt-4 rounded-card bg-background/80 p-3 ring-1 ring-primary/10">
@@ -470,6 +524,14 @@ function TripPost({
               <span className="rounded-card border border-[#E07A5F]/35 bg-[#F4F1DE] px-3 py-2 text-xs font-semibold text-[#8C4633]">
                 Trip Full
               </span>
+            ) : hasJoinConflict ? (
+              <button
+                type="button"
+                disabled
+                className="rounded-card border border-[#F2CC8F]/40 bg-[#F4F1DE] px-3 py-2 text-xs font-semibold text-[#8C4633] disabled:cursor-not-allowed disabled:opacity-80"
+              >
+                Join Disabled
+              </button>
             ) : (
               <button
                 type="button"
@@ -489,6 +551,9 @@ function TripPost({
             )}
           </>
         )}
+        {hasJoinConflict ? (
+          <span className="text-xs font-semibold text-[#8C4633]">{joinConflictMessage}</span>
+        ) : null}
         <button
           type="button"
           onClick={(event) => {

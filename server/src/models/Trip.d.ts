@@ -1,4 +1,5 @@
 import { HydratedDocument, Model, Types } from 'mongoose';
+import { TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 export interface ITrip {
     organizerId: Types.ObjectId;
     title: string;
@@ -6,9 +7,11 @@ export interface ITrip {
     location: string;
     imageUrl?: string;
     price?: number;
+    expectedBudget: number;
     category?: 'Adventure' | 'Luxury' | 'Budget' | 'Nature';
     startDate: Date;
     endDate: Date;
+    status: (typeof TRIP_STATUS_VALUES)[number];
     maxParticipants: number;
     participants: Types.ObjectId[];
     createdAt: Date;

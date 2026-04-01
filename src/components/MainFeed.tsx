@@ -11,6 +11,8 @@ type MainFeedProps = {
   currentUserId?: string | null;
   currentUserIsVerified?: boolean;
   pendingRequestCountByPostId?: Record<string, number>;
+  joinConflictMessageByPostId?: Record<string, string>;
+  activePostIds?: Set<string>;
   isPostActionInProgress: boolean;
   dnaMatchByPostId: Record<string, TripDNAMatch>;
   dnaMatchLoadingPostIds: string[];
@@ -22,6 +24,8 @@ type MainFeedProps = {
   onEditPost: (post: FeedPost) => void;
   onDeletePost: (post: FeedPost) => void;
   onCompletePost: (post: FeedPost) => void;
+  onCancelPost: (post: FeedPost) => void;
+  onCreateNewTrip?: () => void;
 };
 
 const normalizeName = (value: string): string => value.trim().toLowerCase();
@@ -34,6 +38,8 @@ function MainFeed({
   currentUserId,
   currentUserIsVerified = false,
   pendingRequestCountByPostId = {},
+  joinConflictMessageByPostId = {},
+  activePostIds = new Set<string>(),
   isPostActionInProgress,
   dnaMatchByPostId,
   dnaMatchLoadingPostIds,
@@ -45,6 +51,8 @@ function MainFeed({
   onEditPost,
   onDeletePost,
   onCompletePost,
+  onCancelPost,
+  onCreateNewTrip,
 }: MainFeedProps) {
   const normalizedCurrentUserAuthorKey = currentUserAuthorKey ? normalizeName(currentUserAuthorKey) : null;
   const isMyFeedMode = mode === 'mine';
@@ -53,9 +61,9 @@ function MainFeed({
   const feedDescription = isMyFeedMode
     ? 'Only trip posts you created are shown here.'
     : 'LinkedIn-style trip updates from verified organizers and hosts.';
-  const emptyTitle = isMyFeedMode ? 'No active posts in your feed yet' : 'No active trip posts right now';
+  const emptyTitle = isMyFeedMode ? 'No upcoming trips' : 'No active trip posts right now';
   const emptyDescription = isMyFeedMode
-    ? 'Create a trip post to publish your first host request.'
+    ? 'Your upcoming hosted trips will appear here once they are scheduled.'
     : 'You dismissed all recommendations. Refresh later for new trips.';
 
   if (posts.length === 0) {
@@ -64,6 +72,15 @@ function MainFeed({
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/60">{feedEyebrow}</p>
         <h2 className="mt-2 text-2xl font-black text-primary">{emptyTitle}</h2>
         <p className="mt-2 text-sm text-primary/75">{emptyDescription}</p>
+        {isMyFeedMode && onCreateNewTrip ? (
+          <button
+            type="button"
+            onClick={onCreateNewTrip}
+            className="interactive-btn mt-5 rounded-card bg-accent px-5 py-2.5 text-sm font-semibold text-white"
+          >
+            Create New Trip
+          </button>
+        ) : null}
       </section>
     );
   }
@@ -92,6 +109,8 @@ function MainFeed({
               currentUserIsVerified={currentUserIsVerified}
               canManagePost={canManagePost}
               pendingRequestCount={pendingRequestCountByPostId[post.id] ?? post.pendingRequestCount ?? 0}
+              joinConflictMessage={joinConflictMessageByPostId[post.id] ?? null}
+              isCurrentActiveTrip={activePostIds.has(post.id)}
               isRequestSent={sentRequestPostIds.includes(post.id)}
               isActionInProgress={isPostActionInProgress}
               dnaMatch={dnaMatchByPostId[post.id]}
@@ -105,6 +124,7 @@ function MainFeed({
               onEditPost={onEditPost}
               onDeletePost={onDeletePost}
               onCompletePost={onCompletePost}
+              onCancelPost={onCancelPost}
             />
           );
         })}

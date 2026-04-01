@@ -14,11 +14,18 @@ export type CreateFeedPostPayload = {
   imageUrl: string;
   location: string;
   cost: number;
+  expectedBudget?: number;
   durationDays: number;
   requiredPeople: number;
   spotsFilledPercent: number;
   expectations: string[];
   travelerType: string;
+  currency: string;
+  isPrivate: boolean;
+  emergencyContact: {
+    name: string;
+    phone: string;
+  };
   startDate: string;
   endDate: string;
 };
@@ -63,11 +70,12 @@ const request = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
 type FetchFeedPostsOptions = {
   viewerVerified: boolean;
   viewerAuthorKey?: string | null;
+  status?: FeedPostStatus | 'all';
 };
 
 export const fetchFeedPosts = async (options: FetchFeedPostsOptions): Promise<FeedPost[]> => {
   const query = new URLSearchParams({
-    status: 'Active',
+    status: options.status ?? 'Active',
     viewerVerified: options.viewerVerified ? 'true' : 'false',
   });
 

@@ -1,5 +1,6 @@
 // Added by Codex: project documentation comment for src\App.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   chatMessages,
   expenseCategories,
@@ -19,6 +20,12 @@ import {
 } from './utils/paymentProcessor';
 import ChatInterfaceView from './views/ChatInterfaceView';
 import MainFeed from './components/MainFeed';
+import AnimatedAmount from './components/AnimatedAmount';
+import ExpenseEmptyState from './components/ExpenseEmptyState';
+import ExpenseItem from './components/ExpenseItem';
+import ExpenseParticipantChecklist from './components/ExpenseParticipantChecklist';
+import FloatingLabelField from './components/FloatingLabelField';
+import LiquidSplitMeter from './components/LiquidSplitMeter';
 import RequestModal from './components/RequestModal';
 import Sidebar from './components/Sidebar';
 import DiscoveryFeedView from './views/DiscoveryFeedView';
@@ -30,6 +37,7 @@ import HeroView from './views/HeroView';
 import OnboardingQuizView from './views/OnboardingQuizView';
 import ReviewSystemView from './views/ReviewSystemView';
 import TripDetailView from './views/TripDetailView';
+import AIExplorer from './views/AIExplorer';
 import VerificationGateView from './views/VerificationGateView';
 import CreateTripView, { type CreateTripPayload } from './views/CreateTripView';
 import AboutUsView from './views/AboutUsView';
@@ -55,11 +63,14 @@ import {
   type PostStats,
 } from './services/postApi';
 import {
+  deleteTripExpense,
+  fetchActiveTripExpenseSummary,
   fetchTripExpenseSummary,
   fetchWalletSummary,
   releaseWalletPayment,
   splitTripExpense,
   type TripExpenseSummary,
+  updateTripExpense,
   type WalletSummary,
   type WalletSummaryEntry,
 } from './services/expenseApi';
@@ -73,16 +84,33 @@ import {
   type JoinRequestStatus,
 } from './services/tripRequestApi';
 import {
+  generateTripSuggestions,
+  getSmartSuggestions,
+  subscribeToTripSuggestions,
+  voteForTripSuggestion,
+  type TripSuggestionPreferences,
+  type TripSuggestionsSummary,
+} from './services/tripSuggestionsApi';
+import {
+  ArrowRight,
   BadgeCheck,
+  CalendarDays,
+  CircleDollarSign,
+  Coins,
   FileText,
   History,
   LayoutDashboard,
   LogOut,
+  MapPin,
   Plus,
+  ReceiptText,
   ShieldCheck,
   Sparkles,
+  TrendingDown,
+  TrendingUp,
   UserCircle2,
   Wallet,
+  WalletCards,
   X,
 } from 'lucide-react';
 
@@ -97,6 +125,8 @@ const AUTH_TOKEN_STORAGE_KEY = 'splitngo_auth_token';
 const USER_SESSION_STORAGE_KEY = 'splitngo_user_session';
 const POST_AUTH_REDIRECT_STORAGE_KEY = 'splitngo_post_auth_redirect';
 const SYSTEM_NOTICE_AUTO_DISMISS_MS = 3000;
+const TRIP_HISTORY_PATH_PATTERN = /^\/trip\/([^/]+)\/history\/?$/;
+const TRIP_EXPLORER_PATH_PATTERN = /^\/trip\/([^/]+)\/explorer\/?$/;
 
 type ScreenName =
   | 'home'
@@ -112,6 +142,7 @@ type ScreenName =
   | 'tripDetails'
   | 'profile'
   | 'history'
+  | 'explorer'
   | 'wallet'
   | 'onboarding'
   | 'verification'
@@ -186,6 +217,7 @@ type PublicProfile = {
 type DNAMatchByPostId = Record<string, TripDNAMatch>;
 type HostTripRequestsByTripId = Record<string, HostTripRequest[]>;
 type HostRequestReviewStatus = Extract<JoinRequestStatus, 'accepted' | 'rejected'>;
+type JoinConflictMessageByPostId = Record<string, string>;
 type WalletPanel = 'payables' | 'release' | null;
 
 type TripRuntime = {
@@ -213,6 +245,182 @@ const EMPTY_POST_STATS: PostStats = {
   activeCount: 0,
   completedCount: 0,
   totalCount: 0,
+};
+const currencyFormatter = new Intl.NumberFormat('en-US', {
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  style: 'currency',
+});
+
+const formatCurrency = (value: number) => currencyFormatter.format(value);
+const TRIP_OVERLAP_NOTICE =
+  'Logic Error: You are already committed to another trip during these dates. You cannot be in two places at once.';
+const TRIP_OVERLAP_HELPER_TEXT = 'Conflicts with your already booked trip dates.';
+
+const toDayStartTimestamp = (value: string | Date): number | null => {
+  const parsedDate = value instanceof Date ? new Date(value) : new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  parsedDate.setHours(0, 0, 0, 0);
+  return parsedDate.getTime();
+};
+
+const toDayEndTimestamp = (value: string | Date): number | null => {
+  const parsedDate = value instanceof Date ? new Date(value) : new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  parsedDate.setHours(23, 59, 59, 999);
+  return parsedDate.getTime();
+};
+
+const getFeedPostDateRange = (post: Pick<FeedPost, 'startDate' | 'endDate'>): { start: number; end: number } | null => {
+  const start = toDayStartTimestamp(post.startDate);
+  const end = toDayEndTimestamp(post.endDate);
+
+  if (start === null || end === null || end < start) {
+    return null;
+  }
+
+  return { start, end };
+};
+
+const doFeedPostDatesOverlap = (leftPost: Pick<FeedPost, 'startDate' | 'endDate'>, rightPost: Pick<FeedPost, 'startDate' | 'endDate'>): boolean => {
+  const leftDateRange = getFeedPostDateRange(leftPost);
+  const rightDateRange = getFeedPostDateRange(rightPost);
+
+  if (!leftDateRange || !rightDateRange) {
+    return false;
+  }
+
+  return leftDateRange.start <= rightDateRange.end && leftDateRange.end >= rightDateRange.start;
+};
+
+const compareFeedPostsByMostRecentTrip = (
+  leftPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+  rightPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+): number => {
+  const leftStart = toDayStartTimestamp(leftPost.startDate) ?? 0;
+  const rightStart = toDayStartTimestamp(rightPost.startDate) ?? 0;
+
+  if (rightStart !== leftStart) {
+    return rightStart - leftStart;
+  }
+
+  const leftEnd = toDayEndTimestamp(leftPost.endDate) ?? 0;
+  const rightEnd = toDayEndTimestamp(rightPost.endDate) ?? 0;
+  return rightEnd - leftEnd;
+};
+
+const compareFeedPostsByUpcomingStartDate = (
+  leftPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+  rightPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+): number => {
+  const leftStart = toDayStartTimestamp(leftPost.startDate) ?? Number.MAX_SAFE_INTEGER;
+  const rightStart = toDayStartTimestamp(rightPost.startDate) ?? Number.MAX_SAFE_INTEGER;
+
+  if (leftStart !== rightStart) {
+    return leftStart - rightStart;
+  }
+
+  const leftEnd = toDayEndTimestamp(leftPost.endDate) ?? Number.MAX_SAFE_INTEGER;
+  const rightEnd = toDayEndTimestamp(rightPost.endDate) ?? Number.MAX_SAFE_INTEGER;
+  return leftEnd - rightEnd;
+};
+
+const isFeedPostUpcomingOrCurrent = (post: Pick<FeedPost, 'endDate'>): boolean => {
+  const tripEndDate = toDayEndTimestamp(post.endDate);
+  const todayStart = toDayStartTimestamp(new Date());
+
+  if (tripEndDate === null || todayStart === null) {
+    return false;
+  }
+
+  return tripEndDate >= todayStart;
+};
+
+const createJourneyDateRange = (
+  startJourneyDate: string,
+  endJourneyDate: string,
+): { startDate: Date; endDate: Date; durationDays: number } | null => {
+  if (!startJourneyDate || !endJourneyDate) {
+    return null;
+  }
+
+  const [startYear, startMonth, startDay] = startJourneyDate.split('-').map(Number);
+  const [endYear, endMonth, endDay] = endJourneyDate.split('-').map(Number);
+
+  if (
+    !Number.isInteger(startYear) ||
+    !Number.isInteger(startMonth) ||
+    !Number.isInteger(startDay) ||
+    !Number.isInteger(endYear) ||
+    !Number.isInteger(endMonth) ||
+    !Number.isInteger(endDay)
+  ) {
+    return null;
+  }
+
+  const startDate = new Date(startYear, startMonth - 1, startDay, 0, 0, 0, 0);
+  const endDate = new Date(endYear, endMonth - 1, endDay, 23, 59, 59, 999);
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate < startDate) {
+    return null;
+  }
+
+  const millisecondsPerDay = 24 * 60 * 60 * 1000;
+  const durationDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / millisecondsPerDay));
+
+  return {
+    startDate,
+    endDate,
+    durationDays,
+  };
+};
+
+const findConflictingBookedTrip = (
+  bookedPosts: FeedPost[],
+  startDateValue: string | Date,
+  endDateValue: string | Date,
+  excludePostId?: string,
+): FeedPost | null => {
+  const candidatePost = {
+    startDate: startDateValue instanceof Date ? startDateValue.toISOString() : startDateValue,
+    endDate: endDateValue instanceof Date ? endDateValue.toISOString() : endDateValue,
+  };
+
+  return (
+    bookedPosts.find(
+      (bookedPost) => bookedPost.id !== excludePostId && doFeedPostDatesOverlap(bookedPost, candidatePost),
+    ) ?? null
+  );
+};
+
+const isFeedPostCurrentActive = (post: FeedPost, referenceDate = new Date()): boolean => {
+  if (post.status !== 'Active') {
+    return false;
+  }
+
+  const today = toDayStartTimestamp(referenceDate);
+  const dateRange = getFeedPostDateRange(post);
+
+  if (today === null || !dateRange) {
+    return false;
+  }
+
+  return dateRange.start <= today && dateRange.end >= today;
+};
+
+const getEqualSplitShareAmount = (amount: number, participantCount: number): number => {
+  if (!Number.isFinite(amount) || amount <= 0 || participantCount <= 0) {
+    return 0;
+  }
+
+  const totalCents = Math.round(amount * 100);
+  return Number((Math.floor(totalCents / participantCount) / 100).toFixed(2));
 };
 
 const formatMobileNumber = (rawValue: string): string => {
@@ -361,12 +569,23 @@ const getLocalConflictHint = (viewerDNA: UserDNA, organizerDNA: UserDNA): string
 };
 
 const toCreateTripPayloadFromFeedPost = (post: FeedPost): CreateTripPayload => ({
+  title: post.title,
   posterImageUrls: post.imageUrl ? [post.imageUrl] : [],
   peopleRequired: post.requiredPeople,
-  budget: post.cost,
+  expectedBudget: post.expectedBudget,
   expectations: post.expectations,
   interestedIn: 'Unspecified',
   onlyVerifiedUsers: post.onlyVerifiedUsers,
+  startJourneyDate: typeof post.startDate === 'string' ? post.startDate.slice(0, 10) : '',
+  endJourneyDate: typeof post.endDate === 'string' ? post.endDate.slice(0, 10) : '',
+  location: post.location,
+  travelerType: post.travelerType,
+  currency: (post.currency || 'USD') as CreateTripPayload['currency'],
+  isPrivate: Boolean(post.isPrivate),
+  emergencyContact: {
+    name: post.emergencyContact?.name ?? '',
+    phone: post.emergencyContact?.phone ?? '',
+  },
 });
 
 const toRuntimeTripFromFeedPost = (post: FeedPost): Trip => ({
@@ -377,6 +596,11 @@ const toRuntimeTripFromFeedPost = (post: FeedPost): Trip => ({
   hostCountryCode: post.hostCountryCode,
   hostMobileNumber: post.hostMobileNumber,
   priceShare: post.cost,
+  expectedBudget: post.expectedBudget,
+  currency: post.currency,
+  isPrivate: post.isPrivate,
+  emergencyContact: post.emergencyContact,
+  travelerType: post.travelerType,
   matchPercentage: 100,
   tripDNA: normalizeTravelDNA(defaultUserDNA),
   imageUrl: post.imageUrl,
@@ -416,6 +640,13 @@ const createInitialFeedPosts = (): FeedPost[] => {
       imageUrl: trip.imageUrl,
       location: getRouteLabel(trip.route),
       cost: trip.priceShare,
+      expectedBudget: trip.expectedBudget ?? trip.totalExpectedFromPartner,
+      currency: trip.currency ?? 'USD',
+      isPrivate: Boolean(trip.isPrivate),
+      emergencyContact: trip.emergencyContact ?? {
+        name: '',
+        phone: '',
+      },
       durationDays,
       requiredPeople: requiredPeopleTargets[index % requiredPeopleTargets.length],
       maxParticipants: requiredPeopleTargets[index % requiredPeopleTargets.length],
@@ -622,6 +853,25 @@ const updateAverageRating = (
   return { nextAverage, nextCount };
 };
 
+const formatTripDateRangeLabel = (startDate?: string, endDate?: string): string => {
+  if (!startDate || !endDate) {
+    return 'Dates coming soon';
+  }
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return 'Dates coming soon';
+  }
+
+  return `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })}`;
+};
+
 const renderSidebarIcon = (icon: NavIcon): React.ReactNode => {
   if (icon === 'trips') {
     return (
@@ -647,6 +897,14 @@ const renderSidebarIcon = (icon: NavIcon): React.ReactNode => {
       <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
         <rect x="3" y="6" width="18" height="12" rx="2" />
         <path d="M16 12h3" />
+      </svg>
+    );
+  }
+
+  if (icon === 'explorer') {
+    return (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M12 3l2.6 5.4L20 11l-5.4 2.6L12 19l-2.6-5.4L4 11l5.4-2.6L12 3z" />
       </svg>
     );
   }
@@ -680,13 +938,25 @@ function App() {
   const [userCreatedTrips, setUserCreatedTrips] = useState<Trip[]>([]);
   const [postStats, setPostStats] = useState<PostStats>(EMPTY_POST_STATS);
   const [isPostActionInProgress, setIsPostActionInProgress] = useState(false);
-  const [splitTripId, setSplitTripId] = useState('');
   const [splitExpenseDescription, setSplitExpenseDescription] = useState('');
   const [splitExpenseAmount, setSplitExpenseAmount] = useState('');
+  const [selectedSplitDebtorIds, setSelectedSplitDebtorIds] = useState<string[]>([]);
   const [tripExpenseSummary, setTripExpenseSummary] = useState<TripExpenseSummary | null>(null);
+  const [tripSuggestionsSummary, setTripSuggestionsSummary] = useState<TripSuggestionsSummary | null>(null);
+  const [tripSuggestionsError, setTripSuggestionsError] = useState('');
+  const [isTripSuggestionsLoading, setIsTripSuggestionsLoading] = useState(false);
+  const [isTripSuggestionsGenerating, setIsTripSuggestionsGenerating] = useState(false);
+  const [activeSuggestionVoteId, setActiveSuggestionVoteId] = useState<string | null>(null);
   const [tripExpenseError, setTripExpenseError] = useState('');
   const [isTripExpenseLoading, setIsTripExpenseLoading] = useState(false);
   const [isTripExpenseSubmitting, setIsTripExpenseSubmitting] = useState(false);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [editingExpenseDescription, setEditingExpenseDescription] = useState('');
+  const [editingExpenseAmount, setEditingExpenseAmount] = useState('');
+  const [editingExpenseDebtorIds, setEditingExpenseDebtorIds] = useState<string[]>([]);
+  const [isExpenseUpdateSubmitting, setIsExpenseUpdateSubmitting] = useState(false);
+  const [deletingExpenseId, setDeletingExpenseId] = useState<string | null>(null);
+  const [isSplitExpenseSuccessVisible, setIsSplitExpenseSuccessVisible] = useState(false);
   const [walletSummary, setWalletSummary] = useState<WalletSummary | null>(null);
   const [isWalletLoading, setIsWalletLoading] = useState(false);
   const [walletError, setWalletError] = useState('');
@@ -694,6 +964,13 @@ function App() {
   const [walletReleaseKey, setWalletReleaseKey] = useState<string | null>(null);
   const [walletReleaseEntry, setWalletReleaseEntry] = useState<WalletSummaryEntry | null>(null);
   const [walletReleaseAmount, setWalletReleaseAmount] = useState('');
+  const [activeTripHistoryTripId, setActiveTripHistoryTripId] = useState<string | null>(null);
+  const [activeTripExplorerTripId, setActiveTripExplorerTripId] = useState<string | null>(null);
+  const [pendingExplorerExpensePrefill, setPendingExplorerExpensePrefill] = useState<{
+    description: string;
+    amount: string;
+  } | null>(null);
+  const addExpenseComposerRef = useRef<HTMLElement | null>(null);
 
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authForm, setAuthForm] = useState<AuthForm>({ userId: '', password: '', confirmPassword: '' });
@@ -758,16 +1035,26 @@ function App() {
   );
   const selfTripIdSet = useMemo(() => new Set(selfTripSummaries.map((trip) => trip.id)), [selfTripSummaries]);
   const mainFeedPosts = useMemo(() => {
-    return feedPosts.filter((post) => {
-      const isOwnPostByAuthor =
-        normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
-      const isOwnPostById = selfTripIdSet.has(post.id);
-      const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
-      return !(isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId);
-    });
+    return feedPosts
+      .filter((post) => {
+        if (post.status !== 'Active' || !isFeedPostUpcomingOrCurrent(post)) {
+          return false;
+        }
+
+        const isOwnPostByAuthor =
+          normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
+        const isOwnPostById = selfTripIdSet.has(post.id);
+        const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
+        return !(isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId);
+      })
+      .sort(compareFeedPostsByMostRecentTrip);
   }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
   const myFeedPosts = useMemo(() => {
     const filteredPosts = feedPosts.filter((post) => {
+      if (post.status !== 'Active' || !isFeedPostUpcomingOrCurrent(post)) {
+        return false;
+      }
+
       const isOwnPostByAuthor =
         normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
       const isOwnPostById = selfTripIdSet.has(post.id);
@@ -775,28 +1062,114 @@ function App() {
       return isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
     });
 
-    return filteredPosts.map((post) => ({
-      ...post,
-      pendingRequestCount: pendingRequestCountByTripId[post.id] ?? post.pendingRequestCount ?? 0,
-    }));
+    return filteredPosts
+      .map((post) => ({
+        ...post,
+        pendingRequestCount: pendingRequestCountByTripId[post.id] ?? post.pendingRequestCount ?? 0,
+      }))
+      .sort(compareFeedPostsByUpcomingStartDate);
   }, [feedPosts, normalizedCurrentUserAuthorKey, pendingRequestCountByTripId, selfTripIdSet, userSession?.id]);
-  const splitEligiblePosts = useMemo(() => {
+  const archivedMyPosts = useMemo(() => {
+    return feedPosts
+      .filter((post) => {
+        const isOwnPostByAuthor =
+          normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
+        const isOwnPostById = selfTripIdSet.has(post.id);
+        const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
+        const isOwnPost = isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
+        const isPastTrip = !isFeedPostUpcomingOrCurrent(post);
+        return isOwnPost && (post.status === 'Completed' || isPastTrip);
+      })
+      .sort(compareFeedPostsByMostRecentTrip);
+  }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
+  const bookedTripPosts = useMemo(() => {
     const currentUserId = userSession?.id;
-    if (!currentUserId) {
-      return [];
-    }
+    const currentAuthorKey = normalizedCurrentUserAuthorKey;
 
     return feedPosts.filter((post, index, collection) => {
-      const isHost = Boolean(post.hostId && post.hostId === currentUserId);
-      const isParticipant = post.participantIds.includes(currentUserId);
-      if (!isHost && !isParticipant) {
+      if (post.status !== 'Active') {
+        return false;
+      }
+
+      const isOwnPostByAuthor = currentAuthorKey !== null && normalizeAuthorKey(post.authorKey) === currentAuthorKey;
+      const isOwnPostByHostId = Boolean(currentUserId && post.hostId && post.hostId === currentUserId);
+      const isParticipant = Boolean(currentUserId && post.participantIds.includes(currentUserId));
+
+      if (!isOwnPostByAuthor && !isOwnPostByHostId && !isParticipant) {
         return false;
       }
 
       return collection.findIndex((candidate) => candidate.id === post.id) === index;
     });
-  }, [feedPosts, userSession?.id]);
+  }, [feedPosts, normalizedCurrentUserAuthorKey, userSession?.id]);
+  const activeTripFeedPost = useMemo(() => {
+    if (!tripExpenseSummary?.trip.id) {
+      return null;
+    }
 
+    return (
+      feedPosts.find((post) => post.id === tripExpenseSummary.trip.id) ??
+      bookedTripPosts.find((post) => post.id === tripExpenseSummary.trip.id) ??
+      null
+    );
+  }, [bookedTripPosts, feedPosts, tripExpenseSummary?.trip.id]);
+  const activeTripDateRangeLabel = useMemo(() => {
+    if (activeTripFeedPost) {
+      return formatTripDateRangeLabel(activeTripFeedPost.startDate, activeTripFeedPost.endDate);
+    }
+
+    if (!tripExpenseSummary) {
+      return 'Dates coming soon';
+    }
+
+    return `${tripExpenseSummary.trip.durationDays} day${tripExpenseSummary.trip.durationDays === 1 ? '' : 's'}`;
+  }, [activeTripFeedPost, tripExpenseSummary]);
+  const activeTripHostLabel = useMemo(() => {
+    if (activeTripFeedPost?.hostName) {
+      return activeTripFeedPost.hostName;
+    }
+
+    return tripExpenseSummary?.members.find((member) => member.isHost)?.name ?? 'Trip host';
+  }, [activeTripFeedPost?.hostName, tripExpenseSummary]);
+  const joinConflictMessageByPostId = useMemo<JoinConflictMessageByPostId>(() => {
+    const currentUserId = userSession?.id;
+    const currentAuthorKey = normalizedCurrentUserAuthorKey;
+
+    if (!currentUserId && !currentAuthorKey) {
+      return {};
+    }
+
+    return mainFeedPosts.reduce<JoinConflictMessageByPostId>((accumulator, post) => {
+      const isOwnPostByAuthor = currentAuthorKey !== null && normalizeAuthorKey(post.authorKey) === currentAuthorKey;
+      const isOwnPostByHostId = Boolean(currentUserId && post.hostId && post.hostId === currentUserId);
+      const isParticipant = Boolean(currentUserId && post.participantIds.includes(currentUserId));
+
+      if (isOwnPostByAuthor || isOwnPostByHostId || isParticipant) {
+        return accumulator;
+      }
+
+      const conflictingBooking = findConflictingBookedTrip(bookedTripPosts, post.startDate, post.endDate, post.id);
+      if (conflictingBooking) {
+        accumulator[post.id] = TRIP_OVERLAP_HELPER_TEXT;
+      }
+
+      return accumulator;
+    }, {});
+  }, [bookedTripPosts, mainFeedPosts, normalizedCurrentUserAuthorKey, userSession?.id]);
+  const myPostConflictMessageByPostId = useMemo<JoinConflictMessageByPostId>(() => {
+    return myFeedPosts.reduce<JoinConflictMessageByPostId>((accumulator, post) => {
+      const conflictingBooking = findConflictingBookedTrip(bookedTripPosts, post.startDate, post.endDate, post.id);
+      if (conflictingBooking) {
+        accumulator[post.id] = TRIP_OVERLAP_HELPER_TEXT;
+      }
+
+      return accumulator;
+    }, {});
+  }, [bookedTripPosts, myFeedPosts]);
+  const activeMyPostIds = useMemo(
+    () => new Set(myFeedPosts.filter((post) => isFeedPostCurrentActive(post)).map((post) => post.id)),
+    [myFeedPosts],
+  );
   const loadActiveFeedPosts = async (
     showFallbackNotice = true,
     overrides?: {
@@ -814,6 +1187,7 @@ function App() {
       const posts = await fetchFeedPosts({
         viewerVerified,
         viewerAuthorKey,
+        status: 'all',
       });
       setFeedPosts(posts);
     } catch (error) {
@@ -956,6 +1330,38 @@ function App() {
   }, [postAuthRedirectScreen]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const syncWorkspaceScreenFromPath = () => {
+      const historyMatch = window.location.pathname.match(TRIP_HISTORY_PATH_PATTERN);
+      const explorerMatch = window.location.pathname.match(TRIP_EXPLORER_PATH_PATTERN);
+      const nextHistoryTripId = historyMatch ? decodeURIComponent(historyMatch[1]) : null;
+      const nextExplorerTripId = explorerMatch ? decodeURIComponent(explorerMatch[1]) : null;
+
+      setActiveTripHistoryTripId(nextHistoryTripId);
+      setActiveTripExplorerTripId(nextExplorerTripId);
+      setCurrentScreen((current) => {
+        if (nextHistoryTripId) {
+          return 'history';
+        }
+
+        if (nextExplorerTripId) {
+          return 'explorer';
+        }
+
+        return current === 'history' || current === 'explorer' ? 'wallet' : current;
+      });
+    };
+
+    syncWorkspaceScreenFromPath();
+    window.addEventListener('popstate', syncWorkspaceScreenFromPath);
+
+    return () => window.removeEventListener('popstate', syncWorkspaceScreenFromPath);
+  }, []);
+
+  useEffect(() => {
     if (!systemNotice) {
       return;
     }
@@ -1058,6 +1464,16 @@ function App() {
       setWalletReleaseKey(null);
       setWalletReleaseEntry(null);
       setWalletReleaseAmount('');
+      setTripExpenseSummary(null);
+      setTripExpenseError('');
+      setSelectedSplitDebtorIds([]);
+      setEditingExpenseId(null);
+      setEditingExpenseDescription('');
+      setEditingExpenseAmount('');
+      setEditingExpenseDebtorIds([]);
+      setIsExpenseUpdateSubmitting(false);
+      setDeletingExpenseId(null);
+      setIsSplitExpenseSuccessVisible(false);
       return;
     }
 
@@ -1082,29 +1498,18 @@ function App() {
 
     void loadSelfTripsForHost();
   }, [activeView, userSession?.id, userSession?.email, userSession?.name]);
-  useEffect(() => {
-    if (currentScreen !== 'wallet') {
-      return;
-    }
 
-    if (splitTripId) {
-      return;
-    }
-
-    if (activeGroupTripId) {
-      setSplitTripId(activeGroupTripId);
-      return;
-    }
-
-    if (splitEligiblePosts.length > 0) {
-      setSplitTripId(splitEligiblePosts[0].id);
-    }
-  }, [activeGroupTripId, currentScreen, splitEligiblePosts, splitTripId]);
   useEffect(() => {
     const currentAuthToken =
       typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const shouldLoadActiveTripSummary =
+      currentScreen === 'wallet' ||
+      currentScreen === 'explorer' ||
+      currentScreen === 'dashboard' ||
+      currentScreen === 'expenses' ||
+      currentScreen === 'chat';
 
-    if (currentScreen !== 'wallet' || !splitTripId || !currentAuthToken) {
+    if (!shouldLoadActiveTripSummary || !currentAuthToken) {
       return;
     }
 
@@ -1112,7 +1517,7 @@ function App() {
     setIsTripExpenseLoading(true);
     setTripExpenseError('');
 
-    void fetchTripExpenseSummary(splitTripId, currentAuthToken)
+    void fetchActiveTripExpenseSummary(currentAuthToken)
       .then((summary) => {
         if (isActive) {
           setTripExpenseSummary(summary);
@@ -1130,7 +1535,13 @@ function App() {
           }
 
           setTripExpenseSummary(null);
-          setTripExpenseError(error instanceof Error ? error.message : 'Unable to load split expenses for this trip.');
+          const message = error instanceof Error ? error.message : 'Unable to load split expenses for your active trip.';
+          if (message === 'No active trip is available for expense splitting right now.') {
+            setTripExpenseError('');
+            return;
+          }
+
+          setTripExpenseError(message);
         }
       })
       .finally(() => {
@@ -1142,7 +1553,179 @@ function App() {
     return () => {
       isActive = false;
     };
-  }, [authToken, currentScreen, splitTripId]);
+  }, [authToken, currentScreen]);
+
+  useEffect(() => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const activeTripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? null;
+
+    if (currentScreen !== 'explorer' || !currentAuthToken || !activeTripId) {
+      setTripSuggestionsSummary(null);
+      setTripSuggestionsError('');
+      setIsTripSuggestionsLoading(false);
+      setIsTripSuggestionsGenerating(false);
+      setActiveSuggestionVoteId(null);
+      return;
+    }
+
+    let isActive = true;
+    setIsTripSuggestionsLoading(true);
+    setTripSuggestionsError('');
+
+    void getSmartSuggestions(activeTripId, currentAuthToken)
+      .then((summary) => {
+        if (isActive) {
+          setTripSuggestionsSummary(summary);
+          setTripSuggestionsError('');
+        }
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+
+        const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+        if (isUnauthorized) {
+          clearStoredAuthState();
+          setHydratedProfileToken(null);
+          setUserSession(null);
+          setCurrentScreen('auth');
+          setSystemNotice('Your session expired. Please sign in again.');
+          return;
+        }
+
+        setTripSuggestionsSummary(null);
+        setTripSuggestionsError(error instanceof Error ? error.message : 'Unable to load AI Explorer right now.');
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsTripSuggestionsLoading(false);
+        }
+      });
+
+    const unsubscribe = subscribeToTripSuggestions(
+      activeTripId,
+      currentAuthToken,
+      (summary) => {
+        if (!isActive) {
+          return;
+        }
+
+        setTripSuggestionsSummary(summary);
+        setTripSuggestionsError('');
+        setIsTripSuggestionsLoading(false);
+      },
+      (error) => {
+        if (!isActive || error.message === 'Unauthorized request.') {
+          return;
+        }
+
+        setTripSuggestionsError((currentValue) => currentValue || 'Live voting updates are reconnecting...');
+      },
+    );
+
+    return () => {
+      isActive = false;
+      unsubscribe();
+    };
+  }, [activeTripExplorerTripId, authToken, currentScreen, tripExpenseSummary?.trip.id]);
+
+  useEffect(() => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (currentScreen !== 'history' || !activeTripHistoryTripId || !currentAuthToken) {
+      return;
+    }
+
+    if (tripExpenseSummary?.trip.id === activeTripHistoryTripId) {
+      return;
+    }
+
+    let isActive = true;
+    setIsTripExpenseLoading(true);
+    setTripExpenseError('');
+
+    void fetchTripExpenseSummary(activeTripHistoryTripId, currentAuthToken)
+      .then((summary) => {
+        if (isActive) {
+          setTripExpenseSummary(summary);
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setTripExpenseError(error instanceof Error ? error.message : 'Unable to load split history right now.');
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsTripExpenseLoading(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [activeTripHistoryTripId, authToken, currentScreen, tripExpenseSummary?.trip.id]);
+
+  useEffect(() => {
+    if (!tripExpenseSummary || !userSession?.id) {
+      setSelectedSplitDebtorIds([]);
+      return;
+    }
+
+    setSelectedSplitDebtorIds(
+      tripExpenseSummary.members
+        .filter((member) => member.id !== userSession.id)
+        .map((member) => member.id),
+    );
+  }, [tripExpenseSummary?.trip.id, tripExpenseSummary?.members, userSession?.id]);
+
+  useEffect(() => {
+    if (!pendingExplorerExpensePrefill || currentScreen !== 'wallet' || !tripExpenseSummary) {
+      return;
+    }
+
+    setSplitExpenseDescription(pendingExplorerExpensePrefill.description);
+    setSplitExpenseAmount(pendingExplorerExpensePrefill.amount);
+    setSelectedSplitDebtorIds(
+      tripExpenseSummary.members.filter((member) => member.id !== userSession?.id).map((member) => member.id),
+    );
+    setPendingExplorerExpensePrefill(null);
+
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => {
+        addExpenseComposerRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+        });
+      }, 40);
+    }
+  }, [currentScreen, pendingExplorerExpensePrefill, tripExpenseSummary, userSession?.id]);
+
+  useEffect(() => {
+    if (!isSplitExpenseSuccessVisible) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setIsSplitExpenseSuccessVisible(false);
+    }, 1600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isSplitExpenseSuccessVisible]);
+
+  useEffect(() => {
+    if (!editingExpenseId || !tripExpenseSummary) {
+      return;
+    }
+
+    const matchingExpense = tripExpenseSummary.expenses.find((expense) => expense.id === editingExpenseId);
+    if (!matchingExpense) {
+      handleCloseExpenseEdit();
+    }
+  }, [editingExpenseId, tripExpenseSummary]);
 
   useEffect(() => {
     const currentAuthToken =
@@ -1297,17 +1880,18 @@ function App() {
     }),
     [walletSummary],
   );
+  const activeTripExpenseId = tripExpenseSummary?.trip.id ?? '';
   const selectedTripPaidEntries = useMemo(() => {
     if (!walletSummary?.paidEntries?.length) {
       return [];
     }
 
-    if (!splitTripId) {
+    if (!activeTripExpenseId) {
       return walletSummary.paidEntries;
     }
 
-    return walletSummary.paidEntries.filter((entry) => entry.tripId === splitTripId);
-  }, [splitTripId, walletSummary?.paidEntries]);
+    return walletSummary.paidEntries.filter((entry) => entry.tripId === activeTripExpenseId);
+  }, [activeTripExpenseId, walletSummary?.paidEntries]);
   const selectedTripParticipantEntries = useMemo(() => {
     if (!tripExpenseSummary || !userSession?.id) {
       return [];
@@ -1377,30 +1961,178 @@ function App() {
     const parsedAmount = Number.parseFloat(splitExpenseAmount);
     return Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : 0;
   }, [splitExpenseAmount]);
-  const splitPreviewMembers = useMemo(() => {
-    if (!tripExpenseSummary || !userSession?.id || splitPreviewAmount <= 0) {
+  const splitSelectedMemberCount = useMemo(() => {
+    if (!tripExpenseSummary || !userSession?.id) {
+      return 0;
+    }
+
+    return selectedSplitDebtorIds.length + 1;
+  }, [selectedSplitDebtorIds.length, tripExpenseSummary, userSession?.id]);
+  const splitPreviewShareAmount = useMemo(
+    () => getEqualSplitShareAmount(splitPreviewAmount, splitSelectedMemberCount),
+    [splitPreviewAmount, splitSelectedMemberCount],
+  );
+  const splitParticipantChips = useMemo(() => {
+    if (!tripExpenseSummary || !userSession?.id) {
       return [];
     }
 
-    const memberCount = tripExpenseSummary.members.length;
-    if (memberCount <= 1) {
-      return [];
-    }
+    const selectedDebtorIdSet = new Set(selectedSplitDebtorIds);
 
-    const totalCents = Math.round(splitPreviewAmount * 100);
-    const baseShareCents = Math.floor(totalCents / memberCount);
-    const remainderCents = totalCents - baseShareCents * memberCount;
-    return tripExpenseSummary.members
-      .map((member, index) => ({
+    return tripExpenseSummary.members.map((member) => {
+      const isCurrentUser = member.id === userSession.id;
+      const isSelected = isCurrentUser || selectedDebtorIdSet.has(member.id);
+      let detail = 'Excluded from this expense';
+
+      if (isCurrentUser) {
+        detail =
+          splitPreviewAmount > 0 && splitSelectedMemberCount > 0
+            ? `Your share stays at $${splitPreviewShareAmount.toFixed(2)}`
+            : 'You paid for this bill';
+      } else if (isSelected) {
+        detail =
+          splitPreviewAmount > 0 && splitSelectedMemberCount > 0
+            ? `Owes you $${splitPreviewShareAmount.toFixed(2)}`
+            : 'Included in the equal split';
+      }
+
+      return {
         ...member,
-        owesAmount: Number(((baseShareCents + (index < remainderCents ? 1 : 0)) / 100).toFixed(2)),
-      }))
-      .filter((member) => member.id !== userSession.id);
-  }, [splitPreviewAmount, tripExpenseSummary, userSession?.id]);
+        detail,
+        isCurrentUser,
+        isSelected,
+      };
+    });
+  }, [selectedSplitDebtorIds, splitPreviewAmount, splitPreviewShareAmount, splitSelectedMemberCount, tripExpenseSummary, userSession?.id]);
+  const editingExpensePreviewAmount = useMemo(() => {
+    const parsedAmount = Number.parseFloat(editingExpenseAmount);
+    return Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : 0;
+  }, [editingExpenseAmount]);
+  const editingExpenseSelectedMemberCount = useMemo(() => {
+    if (!tripExpenseSummary || !userSession?.id || !editingExpenseId) {
+      return 0;
+    }
 
+    return editingExpenseDebtorIds.length + 1;
+  }, [editingExpenseDebtorIds.length, editingExpenseId, tripExpenseSummary, userSession?.id]);
+  const editingExpenseShareAmount = useMemo(
+    () => getEqualSplitShareAmount(editingExpensePreviewAmount, editingExpenseSelectedMemberCount),
+    [editingExpensePreviewAmount, editingExpenseSelectedMemberCount],
+  );
+  const editingExpenseParticipantChips = useMemo(() => {
+    if (!tripExpenseSummary || !userSession?.id || !editingExpenseId) {
+      return [];
+    }
+
+    const selectedDebtorIdSet = new Set(editingExpenseDebtorIds);
+
+    return tripExpenseSummary.members.map((member) => {
+      const isCurrentUser = member.id === userSession.id;
+      const isSelected = isCurrentUser || selectedDebtorIdSet.has(member.id);
+      let detail = 'Excluded from this expense';
+
+      if (isCurrentUser) {
+        detail =
+          editingExpensePreviewAmount > 0 && editingExpenseSelectedMemberCount > 0
+            ? `Your share stays at $${editingExpenseShareAmount.toFixed(2)}`
+            : 'You paid for this bill';
+      } else if (isSelected) {
+        detail =
+          editingExpensePreviewAmount > 0 && editingExpenseSelectedMemberCount > 0
+            ? `Owes you $${editingExpenseShareAmount.toFixed(2)}`
+            : 'Included in the equal split';
+      }
+
+      return {
+        ...member,
+        detail,
+        isCurrentUser,
+        isSelected,
+      };
+    });
+  }, [
+    editingExpenseDebtorIds,
+    editingExpenseId,
+    editingExpensePreviewAmount,
+    editingExpenseSelectedMemberCount,
+    editingExpenseShareAmount,
+    tripExpenseSummary,
+    userSession?.id,
+  ]);
+  const splitHeroLiquidRatio = useMemo(() => {
+    if (!tripExpenseSummary?.budgetSummary.expectedBudget || tripExpenseSummary.budgetSummary.expectedBudget <= 0) {
+      return 0;
+    }
+
+    return tripExpenseSummary.budgetSummary.totalExpenses / tripExpenseSummary.budgetSummary.expectedBudget;
+  }, [tripExpenseSummary?.budgetSummary.expectedBudget, tripExpenseSummary?.budgetSummary.totalExpenses]);
+  const splitHeroLiquidPercent = useMemo(() => {
+    if (!tripExpenseSummary?.budgetSummary.expectedBudget || tripExpenseSummary.budgetSummary.expectedBudget <= 0) {
+      return 0;
+    }
+
+    return Math.round(splitHeroLiquidRatio * 100);
+  }, [splitHeroLiquidRatio, tripExpenseSummary?.budgetSummary.expectedBudget]);
+  const isSplitHeroOverBudget = splitHeroLiquidRatio > 1;
+  const maxTripBalanceMagnitude = useMemo(() => {
+    if (!tripExpenseSummary?.balances.length) {
+      return 1;
+    }
+
+    return tripExpenseSummary.balances.reduce((largestMagnitude, balance) => {
+      return Math.max(largestMagnitude, Math.abs(balance.netBalance), balance.totalOwed, balance.totalReceivable, 1);
+    }, 1);
+  }, [tripExpenseSummary]);
+  const budgetProgressTone = useMemo(() => {
+    const status = tripExpenseSummary?.budgetSummary.budgetStatus ?? 'healthy';
+
+    if (status === 'over_budget') {
+      return {
+        badgeClassName: 'bg-red-50 text-red-600',
+        barClassName: 'bg-[linear-gradient(90deg,rgba(224,122,95,0.96),rgba(239,160,136,0.92))]',
+        surfaceClassName: 'bg-red-50/80 text-red-700',
+        title: 'Over budget',
+      };
+    }
+
+    if (status === 'at_risk') {
+      return {
+        badgeClassName: 'bg-amber-100/85 text-amber-700',
+        barClassName: 'bg-[linear-gradient(90deg,rgba(233,196,106,0.96),rgba(244,210,132,0.92))]',
+        surfaceClassName: 'bg-amber-100/70 text-amber-800',
+        title: 'Near budget cap',
+      };
+    }
+
+    return {
+      badgeClassName: 'bg-success/12 text-green-700',
+      barClassName: 'bg-[linear-gradient(90deg,rgba(129,178,154,0.96),rgba(172,214,195,0.92))]',
+      surfaceClassName: 'bg-success/10 text-green-700',
+      title: 'Healthy pace',
+    };
+  }, [tripExpenseSummary?.budgetSummary.budgetStatus]);
+  const budgetProgressSummary = useMemo(() => {
+    if (!tripExpenseSummary) {
+      return {
+        expectedBudget: 0,
+        totalExpenses: 0,
+        remainingBudget: 0,
+        overBudgetAmount: 0,
+        utilizationLabel: '0%',
+      };
+    }
+
+    return {
+      expectedBudget: tripExpenseSummary.budgetSummary.expectedBudget,
+      totalExpenses: tripExpenseSummary.budgetSummary.totalExpenses,
+      remainingBudget: tripExpenseSummary.budgetSummary.remainingBudget,
+      overBudgetAmount: tripExpenseSummary.budgetSummary.overBudgetAmount,
+      utilizationLabel: `${tripExpenseSummary.budgetSummary.budgetUtilizationPercent.toFixed(2)}%`,
+    };
+  }, [tripExpenseSummary]);
   const completedTripsCount = useMemo(
-    () => Object.values(tripRuntimeById).filter((runtime) => runtime.status === 'Completed').length,
-    [tripRuntimeById],
+    () => archivedMyPosts.length,
+    [archivedMyPosts],
   );
 
   const handleNavigation = (screenName: string) => {
@@ -1418,6 +2150,7 @@ function App() {
       'tripDetails',
       'profile',
       'history',
+      'explorer',
       'wallet',
       'onboarding',
       'verification',
@@ -1437,6 +2170,23 @@ function App() {
       setPostAuthRedirectScreen(null);
     }
 
+    if (
+      typeof window !== 'undefined' &&
+      targetScreen !== 'history' &&
+      targetScreen !== 'explorer' &&
+      (TRIP_HISTORY_PATH_PATTERN.test(window.location.pathname) || TRIP_EXPLORER_PATH_PATTERN.test(window.location.pathname))
+    ) {
+      window.history.replaceState({}, document.title, '/');
+    }
+
+    if (targetScreen !== 'history') {
+      setActiveTripHistoryTripId(null);
+    }
+
+    if (targetScreen !== 'explorer') {
+      setActiveTripExplorerTripId(null);
+    }
+
     const requiresSession: ScreenName[] = [
       'createTrip',
       'editPost',
@@ -1445,6 +2195,7 @@ function App() {
       'chat',
       'profile',
       'history',
+      'explorer',
       'wallet',
       'onboarding',
       'verification',
@@ -1481,6 +2232,116 @@ function App() {
     setIsAccountPanelOpen(false);
   };
 
+  const handleOpenTripHistory = () => {
+    const tripId = tripExpenseSummary?.trip.id;
+    if (!tripId) {
+      return;
+    }
+
+    setActiveTripHistoryTripId(tripId);
+    setCurrentScreen('history');
+    setIsAccountPanelOpen(false);
+
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, document.title, `/trip/${encodeURIComponent(tripId)}/history`);
+    }
+  };
+
+  const handleOpenAIExplorer = () => {
+    const tripId = tripExpenseSummary?.trip.id;
+    if (!tripId) {
+      return;
+    }
+
+    setActiveTripExplorerTripId(tripId);
+    setCurrentScreen('explorer');
+    setIsAccountPanelOpen(false);
+
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, document.title, `/trip/${encodeURIComponent(tripId)}/explorer`);
+    }
+  };
+
+  const handleGenerateTripSuggestions = async (userPreferences: TripSuggestionPreferences) => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id;
+
+    if (!currentAuthToken || !tripId) {
+      setTripSuggestionsError('Open an active trip to generate AI suggestions.');
+      return;
+    }
+
+    setIsTripSuggestionsGenerating(true);
+    setTripSuggestionsError('');
+
+    try {
+      const summary = await generateTripSuggestions(tripId, userPreferences, currentAuthToken);
+      setTripSuggestionsSummary(summary);
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        return;
+      }
+
+      setTripSuggestionsError(error instanceof Error ? error.message : 'Unable to generate AI suggestions right now.');
+    } finally {
+      setIsTripSuggestionsGenerating(false);
+    }
+  };
+
+  const handleVoteForTripSuggestion = async (suggestionId: string) => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id;
+
+    if (!currentAuthToken || !tripId) {
+      setTripSuggestionsError('Open an active trip to vote on group suggestions.');
+      return;
+    }
+
+    setActiveSuggestionVoteId(suggestionId);
+    setTripSuggestionsError('');
+
+    try {
+      const summary = await voteForTripSuggestion(tripId, suggestionId, currentAuthToken);
+      setTripSuggestionsSummary(summary);
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        return;
+      }
+
+      setTripSuggestionsError(error instanceof Error ? error.message : 'Unable to update this group vote right now.');
+    } finally {
+      setActiveSuggestionVoteId(null);
+    }
+  };
+
+  const handleAddSuggestionToExpenses = (suggestionName: string, estimatedCost: number) => {
+    setPendingExplorerExpensePrefill({
+      description: `${suggestionName} group outing`,
+      amount: estimatedCost.toFixed(2),
+    });
+    setCurrentScreen('wallet');
+    setActiveTripExplorerTripId(null);
+    setSystemNotice(`Sent ${suggestionName} back to Split Expenses with the estimated cost prefilled.`);
+
+    if (typeof window !== 'undefined' && TRIP_EXPLORER_PATH_PATTERN.test(window.location.pathname)) {
+      window.history.pushState({}, document.title, '/wallet');
+    }
+  };
+
   const handleCostChange = (category: ExpenseCategory, value: string) => {
     const parsed = Number(value);
     const numericValue = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -1489,6 +2350,42 @@ function App() {
       ...previous,
       [category]: numericValue,
     }));
+  };
+
+  const handleSplitParticipantToggle = (memberId: string) => {
+    if (!userSession?.id || memberId === userSession.id) {
+      return;
+    }
+
+    setSelectedSplitDebtorIds((previous) =>
+      previous.includes(memberId) ? previous.filter((currentId) => currentId !== memberId) : [...previous, memberId],
+    );
+  };
+
+  const handleEditExpenseParticipantToggle = (memberId: string) => {
+    if (!userSession?.id || memberId === userSession.id) {
+      return;
+    }
+
+    setEditingExpenseDebtorIds((previous) =>
+      previous.includes(memberId) ? previous.filter((currentId) => currentId !== memberId) : [...previous, memberId],
+    );
+  };
+
+  const handleCloseExpenseEdit = () => {
+    setEditingExpenseId(null);
+    setEditingExpenseDescription('');
+    setEditingExpenseAmount('');
+    setEditingExpenseDebtorIds([]);
+    setIsExpenseUpdateSubmitting(false);
+  };
+
+  const handleOpenExpenseEdit = (expense: TripExpenseSummary['expenses'][number]) => {
+    setEditingExpenseId(expense.id);
+    setEditingExpenseDescription(expense.description);
+    setEditingExpenseAmount(expense.amount.toFixed(2));
+    setEditingExpenseDebtorIds(expense.settlements.map((settlement) => settlement.userId));
+    setTripExpenseError('');
   };
 
   const handleOpenTrip = (tripId: string) => {
@@ -1519,11 +2416,12 @@ function App() {
     if (!userSession) {
       setCurrentScreen('auth');
       setSystemNotice('Please sign in to continue.');
-      return;
+      return false;
     }
 
     const newTripId = `trip-user-${Date.now()}`;
-    const inferredBudgetFlexibility = Math.max(1, Math.min(10, Math.round(payload.budget / 250)));
+    const estimatedCostPerTraveler = Number((payload.expectedBudget / Math.max(payload.peopleRequired, 1)).toFixed(2));
+    const inferredBudgetFlexibility = Math.max(1, Math.min(10, Math.round(estimatedCostPerTraveler / 250)));
     const hostDNA = userSession.dna
       ? normalizeTravelDNA(userSession.dna)
       : normalizeTravelDNA({
@@ -1532,36 +2430,47 @@ function App() {
         });
     const preferredTravelers =
       payload.interestedIn === 'Unspecified' ? 'Unspecified' : `${payload.interestedIn} travelers`;
+    const journeyDateRange = createJourneyDateRange(payload.startJourneyDate, payload.endJourneyDate);
+
+    if (!journeyDateRange) {
+      setSystemNotice('Please choose a valid start and end journey date.');
+      return false;
+    }
+
+    const conflictingBooking = findConflictingBookedTrip(
+      bookedTripPosts,
+      journeyDateRange.startDate,
+      journeyDateRange.endDate,
+    );
+    if (conflictingBooking) {
+      setSystemNotice(TRIP_OVERLAP_NOTICE);
+      return false;
+    }
 
     const createdTrip: Trip = {
       id: newTripId,
-      title: `${userSession.firstName || userSession.name} Hosted Trip`,
+      title: payload.title,
       hostName: userSession.name,
-      priceShare: payload.budget,
+      priceShare: estimatedCostPerTraveler,
+      expectedBudget: payload.expectedBudget,
       matchPercentage: 82,
       tripDNA: hostDNA,
       imageUrl: payload.posterImageUrls[0],
       isVerified: Boolean(userSession.isVerified),
-      route: 'Custom route',
-      duration: '7 Days',
-      totalExpectedFromPartner: payload.budget * payload.peopleRequired,
+      route: payload.location,
+      duration: `${journeyDateRange.durationDays} Days`,
+      totalExpectedFromPartner: payload.expectedBudget,
       partnerExpectations: payload.expectations,
       notes: `Preferred travelers: ${preferredTravelers}. ${
         payload.onlyVerifiedUsers ? 'Verified users only.' : 'Open to all users.'
       }`,
       highlights: payload.expectations.slice(0, 3),
     };
-
-    const startDate = new Date();
-    startDate.setHours(0, 0, 0, 0);
-    startDate.setDate(startDate.getDate() + 7);
-    const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + 6);
     const authorKey = getSessionAuthorKey(userSession);
 
     if (!authorKey) {
       setSystemNotice('Unable to identify post author. Update your profile and try again.');
-      return;
+      return false;
     }
 
     try {
@@ -1569,21 +2478,23 @@ function App() {
         authorKey,
         status: 'Active',
         onlyVerifiedUsers: payload.onlyVerifiedUsers,
-        title: createdTrip.title,
+        title: payload.title,
         hostName: createdTrip.hostName,
         isVerified: Boolean(createdTrip.isVerified),
         imageUrl: createdTrip.imageUrl,
-        location: 'Custom route',
-        cost: payload.budget,
-        durationDays: 7,
+        location: payload.location,
+        cost: estimatedCostPerTraveler,
+        expectedBudget: payload.expectedBudget,
+        durationDays: journeyDateRange.durationDays,
         requiredPeople: payload.peopleRequired,
         spotsFilledPercent: 0,
         expectations: payload.expectations,
-        travelerType: payload.onlyVerifiedUsers
-          ? 'Verification-first collaborative travelers'
-          : 'Collaborative group travelers',
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
+        travelerType: payload.travelerType,
+        currency: payload.currency,
+        isPrivate: payload.isPrivate,
+        emergencyContact: payload.emergencyContact,
+        startDate: journeyDateRange.startDate.toISOString(),
+        endDate: journeyDateRange.endDate.toISOString(),
       });
 
       setFeedPosts((previous) => [createdFeedPost, ...previous]);
@@ -1616,10 +2527,13 @@ function App() {
       });
       setCurrentScreen('discovery');
       setSystemNotice('Trip post created and saved to database.');
+      void loadSelfTripsForHost();
       await loadPostStatsFromDatabase(authorKey);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to create trip post right now.';
       setSystemNotice(message);
+      return false;
     }
   };
 
@@ -1724,6 +2638,11 @@ function App() {
 
     if (post.spotsFilled >= post.maxParticipants) {
       setSystemNotice('Trip is full. No additional join requests can be sent.');
+      return;
+    }
+
+    if (joinConflictMessageByPostId[post.id]) {
+      setSystemNotice(TRIP_OVERLAP_NOTICE);
       return;
     }
 
@@ -2017,6 +2936,7 @@ function App() {
         setEditingFeedPost(null);
       }
       await loadPostStatsFromDatabase(currentUserAuthorKey);
+      void loadSelfTripsForHost();
       setCurrentScreen('home');
       setActiveView('feed');
       setSystemNotice('Post deleted successfully.');
@@ -2053,6 +2973,7 @@ function App() {
         setEditingFeedPost(null);
       }
       await loadPostStatsFromDatabase(currentUserAuthorKey);
+      void loadSelfTripsForHost();
       setCurrentScreen('home');
       setActiveView('feed');
       setSystemNotice('Post marked as completed and removed from Main Feed.');
@@ -2064,10 +2985,47 @@ function App() {
     }
   };
 
+  const handleCancelFeedPost = async (post: FeedPost) => {
+    if (!currentUserAuthorKey) {
+      setSystemNotice('Sign in to cancel your post.');
+      return;
+    }
+
+    if (post.status === 'Cancelled') {
+      setSystemNotice('Post is already cancelled.');
+      return;
+    }
+
+    const shouldCancel = window.confirm('Cancel this post? Its dates will be freed immediately.');
+    if (!shouldCancel) {
+      return;
+    }
+
+    setIsPostActionInProgress(true);
+    try {
+      await updateFeedPostStatus(post.id, 'Cancelled', currentUserAuthorKey);
+      setFeedPosts((previous) => previous.filter((currentPost) => currentPost.id !== post.id));
+      setSentRequestPostIds((previous) => previous.filter((postId) => postId !== post.id));
+      if (editingFeedPost?.id === post.id) {
+        setEditingFeedPost(null);
+      }
+      await loadPostStatsFromDatabase(currentUserAuthorKey);
+      void loadSelfTripsForHost();
+      setCurrentScreen('home');
+      setActiveView('feed');
+      setSystemNotice('Post cancelled. Those trip dates are now available again.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to cancel post right now.';
+      setSystemNotice(message);
+    } finally {
+      setIsPostActionInProgress(false);
+    }
+  };
+
   const handleSaveEditedPost = async (payload: CreateTripPayload) => {
     if (!currentUserAuthorKey) {
       setSystemNotice('Sign in to edit your post.');
-      return;
+      return false;
     }
 
     const currentPost = editingFeedPost
@@ -2075,30 +3033,50 @@ function App() {
       : null;
     if (!currentPost) {
       setSystemNotice('Post not found.');
-      return;
+      return false;
+    }
+
+    const journeyDateRange = createJourneyDateRange(payload.startJourneyDate, payload.endJourneyDate);
+    if (!journeyDateRange) {
+      setSystemNotice('Please choose a valid start and end journey date.');
+      return false;
+    }
+
+    const conflictingBooking = findConflictingBookedTrip(
+      bookedTripPosts,
+      journeyDateRange.startDate,
+      journeyDateRange.endDate,
+      currentPost.id,
+    );
+    if (conflictingBooking) {
+      setSystemNotice(TRIP_OVERLAP_NOTICE);
+      return false;
     }
 
     setIsPostActionInProgress(true);
     try {
+      const estimatedCostPerTraveler = Number((payload.expectedBudget / Math.max(payload.peopleRequired, 1)).toFixed(2));
       const updatedPost = await updateFeedPost(currentPost.id, {
         authorKey: currentUserAuthorKey,
         status: currentPost.status,
         onlyVerifiedUsers: payload.onlyVerifiedUsers,
-        title: currentPost.title,
+        title: payload.title,
         hostName: currentPost.hostName,
         isVerified: currentPost.isVerified,
         imageUrl: payload.posterImageUrls[0] ?? currentPost.imageUrl,
-        location: currentPost.location,
-        cost: payload.budget,
-        durationDays: currentPost.durationDays,
+        location: payload.location,
+        cost: estimatedCostPerTraveler,
+        expectedBudget: payload.expectedBudget,
+        durationDays: journeyDateRange.durationDays,
         requiredPeople: payload.peopleRequired,
         spotsFilledPercent: currentPost.spotsFilledPercent,
         expectations: payload.expectations,
-        travelerType: payload.onlyVerifiedUsers
-          ? 'Verification-first collaborative travelers'
-          : 'Collaborative group travelers',
-        startDate: currentPost.startDate,
-        endDate: currentPost.endDate,
+        travelerType: payload.travelerType,
+        currency: payload.currency,
+        isPrivate: payload.isPrivate,
+        emergencyContact: payload.emergencyContact,
+        startDate: journeyDateRange.startDate.toISOString(),
+        endDate: journeyDateRange.endDate.toISOString(),
       });
 
       setFeedPosts((previous) =>
@@ -2108,10 +3086,13 @@ function App() {
       setCurrentScreen('home');
       setActiveView('feed');
       setSystemNotice('Post updated successfully.');
+      void loadSelfTripsForHost();
       await loadPostStatsFromDatabase(currentUserAuthorKey);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to update post right now.';
       setSystemNotice(message);
+      return false;
     } finally {
       setIsPostActionInProgress(false);
     }
@@ -2710,8 +3691,8 @@ function App() {
       return;
     }
 
-    if (!splitTripId.trim()) {
-      setTripExpenseError('Enter a trip id to split this expense.');
+    if (!tripExpenseSummary?.trip.id) {
+      setTripExpenseError('No active trip is available to split an expense right now.');
       return;
     }
 
@@ -2727,15 +3708,22 @@ function App() {
       return;
     }
 
+    if (selectedSplitDebtorIds.length === 0) {
+      setTripExpenseError('Select at least one trip member who owes part of this bill.');
+      return;
+    }
+
     setIsTripExpenseSubmitting(true);
     setTripExpenseError('');
+    setIsSplitExpenseSuccessVisible(false);
 
     try {
       const summary = await splitTripExpense(
         {
-          tripId: splitTripId.trim(),
+          tripId: tripExpenseSummary.trip.id,
           description: normalizedDescription,
           amount: parsedAmount,
+          debtorIds: selectedSplitDebtorIds,
         },
         currentAuthToken,
       );
@@ -2744,7 +3732,11 @@ function App() {
       setWalletSummary(nextWalletSummary);
       setSplitExpenseDescription('');
       setSplitExpenseAmount('');
-      setSystemNotice('Expense added and split equally with trip members.');
+      setSelectedSplitDebtorIds(
+        summary.members.filter((member) => member.id !== userSession?.id).map((member) => member.id),
+      );
+      setIsSplitExpenseSuccessVisible(true);
+      setSystemNotice('Bill Split!');
     } catch (error) {
       const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
       if (isUnauthorized) {
@@ -2760,6 +3752,107 @@ function App() {
       setTripExpenseError(error instanceof Error ? error.message : 'Unable to split this expense right now.');
     } finally {
       setIsTripExpenseSubmitting(false);
+    }
+  };
+
+  const handleExpenseUpdateSubmit = async () => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (!currentAuthToken || !editingExpenseId) {
+      setTripExpenseError('Sign in again to update this expense.');
+      return;
+    }
+
+    const normalizedDescription = editingExpenseDescription.trim();
+    if (normalizedDescription.length < 2) {
+      setTripExpenseError('Enter a short description for the expense.');
+      return;
+    }
+
+    const parsedAmount = Number.parseFloat(editingExpenseAmount);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setTripExpenseError('Enter a valid amount greater than 0.');
+      return;
+    }
+
+    if (editingExpenseDebtorIds.length === 0) {
+      setTripExpenseError('Select at least one trip member who owes part of this bill.');
+      return;
+    }
+
+    setIsExpenseUpdateSubmitting(true);
+    setTripExpenseError('');
+
+    try {
+      const summary = await updateTripExpense(
+        editingExpenseId,
+        {
+          description: normalizedDescription,
+          amount: parsedAmount,
+          debtorIds: editingExpenseDebtorIds,
+        },
+        currentAuthToken,
+      );
+      setTripExpenseSummary(summary);
+      const nextWalletSummary = await fetchWalletSummary(currentAuthToken);
+      setWalletSummary(nextWalletSummary);
+      handleCloseExpenseEdit();
+      setSystemNotice('Expense updated.');
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        setTripExpenseError('Please sign in again to update this expense.');
+        return;
+      }
+
+      setTripExpenseError(error instanceof Error ? error.message : 'Unable to update this expense right now.');
+    } finally {
+      setIsExpenseUpdateSubmitting(false);
+    }
+  };
+
+  const handleExpenseDelete = async (expenseId: string) => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (!currentAuthToken) {
+      setTripExpenseError('Sign in again to delete this expense.');
+      return;
+    }
+
+    setDeletingExpenseId(expenseId);
+    setTripExpenseError('');
+
+    try {
+      const summary = await deleteTripExpense(expenseId, currentAuthToken);
+      setTripExpenseSummary(summary);
+      const nextWalletSummary = await fetchWalletSummary(currentAuthToken);
+      setWalletSummary(nextWalletSummary);
+      if (editingExpenseId === expenseId) {
+        handleCloseExpenseEdit();
+      }
+      setSystemNotice('Expense deleted.');
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        setTripExpenseError('Please sign in again to delete this expense.');
+        return;
+      }
+
+      setTripExpenseError(error instanceof Error ? error.message : 'Unable to delete this expense right now.');
+    } finally {
+      setDeletingExpenseId(null);
     }
   };
 
@@ -2886,10 +3979,13 @@ function App() {
     currentScreen === 'home' || currentScreen === 'discovery' || currentScreen === 'dashboard';
 
   const isWorkspaceScreen =
-    currentScreen === 'dashboard' || currentScreen === 'expenses' || currentScreen === 'chat';
+    currentScreen === 'dashboard' || currentScreen === 'expenses' || currentScreen === 'chat' || currentScreen === 'explorer';
+
+  const activeWorkspaceTripId = tripExpenseSummary?.trip.id ?? activeTripExplorerTripId ?? null;
 
   const sidebarTargetById: Record<string, ScreenName> = {
     'my-trips': 'dashboard',
+    'ai-explorer': 'explorer',
     wallet: 'wallet',
     support: 'chat',
     'safety-center': 'dashboard',
@@ -3135,29 +4231,153 @@ function App() {
   };
 
   const renderHistoryScreen = () => {
-    const completedTrips = Object.entries(tripRuntimeById)
-      .filter(([, runtime]) => runtime.status === 'Completed')
-      .map(([tripId]) => allTrips.find((trip) => trip.id === tripId))
-      .filter((trip): trip is Trip => trip !== undefined);
+    if (activeTripHistoryTripId) {
+      const historySummary = tripExpenseSummary?.trip.id === activeTripHistoryTripId ? tripExpenseSummary : null;
+      const historyFeedPost = feedPosts.find((post) => post.id === activeTripHistoryTripId) ?? null;
+
+      return (
+        <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
+          <article className="rounded-3xl border border-white/20 bg-white/85 p-6 shadow-xl shadow-slate-950/10 backdrop-blur-md sm:p-8">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-primary/55">Trip Ledger</p>
+                <h2 className="mt-2 text-3xl font-black text-primary">Split History</h2>
+                <p className="mt-2 text-sm text-primary/72">
+                  {historySummary?.trip.title ?? historyFeedPost?.title ?? 'Active Trip'} ledger from{' '}
+                  {formatTripDateRangeLabel(historyFeedPost?.startDate, historyFeedPost?.endDate)}.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleNavigation('wallet')}
+                className="interactive-btn inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-primary/20"
+              >
+                Back to Active Trip
+              </button>
+            </div>
+
+            {historySummary ? (
+              <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
+                <div className="space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div className={glassInsetCardClassName}>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Trip Total</p>
+                      <AnimatedAmount className="mt-3 text-primary" value={historySummary.totalExpenses} />
+                    </div>
+                    <div className={glassInsetCardClassName}>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Expenses</p>
+                      <p className="mt-3 text-2xl font-black text-primary">{historySummary.expenses.length}</p>
+                    </div>
+                    <div className={glassInsetCardClassName}>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Travelers</p>
+                      <p className="mt-3 text-2xl font-black text-primary">{historySummary.members.length}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-3xl border border-white/20 bg-white/78 p-5 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Full Ledger</p>
+                        <h3 className="mt-2 text-2xl font-black text-primary">Expense timeline</h3>
+                      </div>
+                      <div className="rounded-full bg-primary/6 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/55">
+                        {historyFeedPost?.location ?? historySummary.trip.location}
+                      </div>
+                    </div>
+
+                    <div className="mt-5 space-y-3">
+                      {historySummary.expenses.map((expense) => (
+                        <div key={expense.id} className="rounded-[26px] border border-white/20 bg-white/82 p-4 shadow-md shadow-slate-950/6">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-primary">{expense.description}</p>
+                              <p className="mt-1 text-xs text-primary/55">
+                                Paid by {expense.paidBy.name} • {new Date(expense.createdAt).toLocaleString()}
+                              </p>
+                            </div>
+                            <div className="rounded-full bg-primary/6 px-3 py-1.5 text-sm font-bold text-primary">
+                              {formatCurrency(expense.amount)}
+                            </div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {expense.settlements.map((settlement) => (
+                              <span
+                                key={`${expense.id}-${settlement.userId}-${settlement.owesToUserId}`}
+                                className="rounded-full bg-background/80 px-3 py-1 text-[11px] font-semibold text-primary/60"
+                              >
+                                {settlement.name} owes {settlement.owesToName} {formatCurrency(settlement.amount)}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="rounded-3xl border border-white/20 bg-white/78 p-5 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Settlement Snapshot</p>
+                    <h3 className="mt-2 text-2xl font-black text-primary">Who pays whom</h3>
+                    <div className="mt-5 space-y-3">
+                      {historySummary.settlementSummary.length > 0 ? (
+                        historySummary.settlementSummary.map((settlement) => (
+                          <div
+                            key={`${settlement.fromUserId}-${settlement.toUserId}`}
+                            className="rounded-[24px] border border-white/20 bg-white/82 px-4 py-3 shadow-md shadow-slate-950/6"
+                          >
+                            <p className="text-sm font-semibold text-primary">{settlement.fromName}</p>
+                            <p className="mt-1 text-xs uppercase tracking-[0.18em] text-primary/45">owes {settlement.toName}</p>
+                            <p className="mt-2 text-sm font-black text-red-600">{formatCurrency(settlement.amount)}</p>
+                          </div>
+                        ))
+                      ) : (
+                        <ExpenseEmptyState
+                          title="No settlement actions pending"
+                          description="Everyone is balanced right now, so the ledger does not need any follow-up payments."
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-8 rounded-3xl border border-white/20 bg-white/78 p-6 text-sm text-primary/70 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                {isTripExpenseLoading ? 'Loading split history...' : 'The trip ledger is not available right now.'}
+              </div>
+            )}
+          </article>
+        </section>
+      );
+    }
 
     return (
       <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
         <article className="rounded-card bg-white/95 p-8 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
-          <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Trip History</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Trip Archive</p>
           <h2 className="mt-1 text-3xl font-black text-primary">Completed Journeys</h2>
-          <p className="mt-2 text-sm text-primary/80">Total completed in this demo profile: {completedTripsCount}</p>
+          <p className="mt-2 text-sm text-primary/80">Archived completed trips: {completedTripsCount}</p>
 
           <div className="mt-6 space-y-3">
-            {completedTrips.length > 0 ? (
-              completedTrips.map((trip) => (
-                <div key={trip.id} className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-                  <p className="text-sm font-semibold text-primary">{trip.title}</p>
-                  <p className="mt-1 text-sm text-primary/80">Host: {trip.hostName}</p>
+            {archivedMyPosts.length > 0 ? (
+              archivedMyPosts.map((post) => (
+                <div key={post.id} className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-primary">{post.title}</p>
+                    <span className="rounded-full bg-success/20 px-3 py-1 text-xs font-semibold text-primary">
+                      Archived
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm text-primary/80">{post.location}</p>
+                  <p className="mt-2 text-xs text-primary/70">
+                    {new Date(post.startDate).toLocaleDateString()} to {new Date(post.endDate).toLocaleDateString()}
+                  </p>
                 </div>
               ))
             ) : (
               <div className="rounded-card bg-background/80 p-4 text-sm text-primary/80 ring-1 ring-primary/10">
-                No completed trips yet. Finish escrow, check-in, and submit reviews.
+                No completed trips in your archive yet.
               </div>
             )}
           </div>
@@ -3166,7 +4386,8 @@ function App() {
     );
   };
 
-  const renderWalletScreenLegacy = () => (
+  const renderWalletScreenLegacy = () => null;
+  /*
     <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
       <article className="rounded-card bg-white/95 p-8 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
         <p className="text-xs font-semibold uppercase tracking-wide text-primary/70">Wallet</p>
@@ -3372,7 +4593,7 @@ function App() {
                         <div>
                           <p className="text-sm font-semibold text-primary">{expense.description}</p>
                           <p className="text-xs text-primary/70">
-                            Paid by {expense.paidBy.name} · Split ${expense.splitAmount.toFixed(2)} each
+                            Paid by {expense.paidBy.name} / Split ${expense.splitAmount.toFixed(2)} each
                           </p>
                         </div>
                         <span className="text-sm font-bold text-primary">${expense.amount.toFixed(2)}</span>
@@ -3391,82 +4612,122 @@ function App() {
       </article>
     </section>
   );
+  */
 
   void renderWalletScreenLegacy;
 
+  const glassDashboardCardClassName =
+    'rounded-3xl border border-white/20 bg-white/70 p-6 shadow-xl shadow-slate-950/10 backdrop-blur-md';
+  const glassInsetCardClassName =
+    'rounded-[28px] border border-white/20 bg-white/70 px-4 py-4 shadow-lg shadow-slate-950/8 backdrop-blur-md';
+
   const renderWalletScreen = () => (
-    <section className="mx-auto w-full max-w-6xl px-6 pb-16 pt-8">
-      <article className="rounded-[32px] bg-white/95 p-6 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm sm:p-8">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+    <section className="mx-auto w-full max-w-7xl px-4 pb-16 pt-8 sm:px-6">
+      <article className="overflow-hidden rounded-[38px] border border-white/20 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(255,251,244,0.9))] p-5 shadow-[0_38px_120px_-58px_rgba(25,33,52,0.75)] backdrop-blur-2xl sm:p-7 lg:p-8">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary/60">Split Bills</p>
-            <h2 className="mt-1 text-3xl font-black text-primary">Split expenses by trip</h2>
-            <p className="mt-2 max-w-2xl text-sm text-primary/70">
-              Pick a trip, add what you paid, and everyone&apos;s share is calculated automatically.
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/78 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-primary/55 shadow-sm shadow-slate-950/5">
+              <Sparkles className="h-3.5 w-3.5" />
+              Split Bills
+            </div>
+            <h2 className="mt-4 max-w-3xl text-3xl font-black tracking-tight text-primary sm:text-4xl">
+              Split expenses with a premium travel ledger.
+            </h2>
+            <p className="mt-3 max-w-2xl text-sm leading-7 text-primary/65 sm:text-[15px]">
+              Your active trip stays loaded automatically, and the split preview updates live as you choose the travelers who were in on it.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
+
+          <div className="grid gap-3 pl-1 pr-3 sm:grid-cols-3 sm:pl-2 sm:pr-4">
             <div className="relative">
-	              <button
-	                type="button"
-	                onClick={() => setActiveWalletPanel((previous) => (previous === 'payables' ? null : 'payables'))}
-	                className="w-full rounded-3xl bg-primary px-4 py-3 text-left text-white"
-	              >
-	                <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Total Payables</p>
-	                <p className="mt-1 text-xl font-black">${tripScopedPayableAmount.toFixed(2)}</p>
-	              </button>
-              {activeWalletPanel === 'payables' ? (
-                <div className="absolute right-0 z-20 mt-2 w-[320px] max-w-[85vw] rounded-3xl border border-primary/10 bg-white p-3 shadow-xl">
-                  <p className="px-2 text-xs font-semibold uppercase tracking-wide text-primary/55">Trip joiners and net balance</p>
-                  <div className="mt-2 space-y-2">
-                    {selectedTripParticipantEntries.length ? (
-                      selectedTripParticipantEntries.map((entry) => (
-                        <div key={entry.id} className="rounded-2xl bg-background/60 px-3 py-3 ring-1 ring-primary/10">
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
-                              {entry.avatar ? (
-                                <img src={entry.avatar} alt={entry.name} className="h-full w-full object-cover" />
-                              ) : (
-                                entry.name.charAt(0).toUpperCase()
-                              )}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-semibold text-primary">{entry.name}</p>
-                              <p className="truncate text-xs text-primary/60">{entry.tripTitle}</p>
-                            </div>
-                            <span className="text-sm font-black text-red-600">${entry.netBalanceAmount.toFixed(2)}</span>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="rounded-2xl bg-background/60 px-3 py-3 text-sm text-primary/65 ring-1 ring-primary/10">
-                        No joiners with payable balances right now.
-                      </p>
-                    )}
-                  </div>
+              <button
+                type="button"
+                onClick={() => setActiveWalletPanel((previous) => (previous === 'payables' ? null : 'payables'))}
+                className="interactive-btn w-full min-w-[210px] rounded-[28px] bg-[linear-gradient(145deg,rgba(61,64,91,0.98),rgba(90,96,136,0.9))] px-4 py-4 text-center text-white shadow-xl shadow-primary/20 sm:text-left"
+              >
+                <div className="flex items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-white/70 sm:justify-start">
+                  <WalletCards className="h-4 w-4" />
+                  Total Due
                 </div>
-              ) : null}
+                <AnimatedAmount className="mt-3 block text-2xl font-black" value={tripScopedPayableAmount} />
+              </button>
+
+              <AnimatePresence>
+                {activeWalletPanel === 'payables' ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: 12, scale: 0.96 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.97 }}
+                    transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                    className="absolute right-0 z-20 mt-3 w-[340px] max-w-[90vw] rounded-[30px] bg-white/94 p-4 shadow-[0_32px_80px_-36px_rgba(17,24,39,0.55)] backdrop-blur-2xl"
+                  >
+                    <p className="px-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">
+                      Trip joiners and balances
+                    </p>
+                    <div className="mt-3 space-y-2.5">
+                      {selectedTripParticipantEntries.length ? (
+                        selectedTripParticipantEntries.map((entry) => (
+                          <div key={entry.id} className="rounded-[24px] bg-background/65 px-3.5 py-3 shadow-sm shadow-slate-950/5">
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
+                                {entry.avatar ? (
+                                  <img src={entry.avatar} alt={entry.name} className="h-full w-full object-cover" />
+                                ) : (
+                                  entry.name.charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-semibold text-primary">{entry.name}</p>
+                                <p className="truncate text-xs text-primary/55">{entry.tripTitle}</p>
+                              </div>
+                              <span className="text-sm font-black text-red-600">{formatCurrency(entry.netBalanceAmount)}</span>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="rounded-[24px] bg-background/65 px-3.5 py-3 text-sm text-primary/65">
+                          No joiners with payable balances right now.
+                        </p>
+                      )}
+                    </div>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
             </div>
+
             <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setActiveWalletPanel((previous) => (previous === 'release' ? null : 'release'))}
-                  className="w-full rounded-3xl bg-success px-4 py-3 text-left text-white"
-                >
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Release Amount</p>
-                  <p className="mt-1 text-xl font-black">${tripScopedPayableAmount.toFixed(2)}</p>
-                </button>
+              <button
+                type="button"
+                onClick={() => setActiveWalletPanel((previous) => (previous === 'release' ? null : 'release'))}
+                className="interactive-btn w-full min-w-[210px] rounded-[28px] bg-[linear-gradient(145deg,rgba(129,178,154,0.98),rgba(98,149,126,0.95))] px-4 py-4 text-center text-white shadow-xl shadow-success/20"
+              >
+                <div className="flex items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-white/70">
+                  <Coins className="h-4 w-4" />
+                  Settle Up
+                </div>
+                <AnimatedAmount className="mt-3 block text-2xl font-black" value={tripScopedPayableAmount} />
+              </button>
+
+              <AnimatePresence>
                 {activeWalletPanel === 'release' ? (
-                  <div className="absolute right-0 z-20 mt-2 w-[320px] max-w-[85vw] rounded-3xl border border-primary/10 bg-white p-3 shadow-xl">
-                    <p className="px-2 text-xs font-semibold uppercase tracking-wide text-primary/55">Trip joiners and net balance</p>
-                    <div className="mt-2 space-y-2">
+                  <motion.div
+                    initial={{ opacity: 0, y: 12, scale: 0.96 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.97 }}
+                    transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                    className="absolute right-0 z-20 mt-3 w-[340px] max-w-[90vw] rounded-[30px] bg-white/94 p-4 shadow-[0_32px_80px_-36px_rgba(17,24,39,0.55)] backdrop-blur-2xl"
+                  >
+                    <p className="px-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">
+                      Choose a traveler to settle
+                    </p>
+                    <div className="mt-3 space-y-2.5">
                       {selectedTripParticipantEntries.length ? (
                         selectedTripParticipantEntries.map((entry) => (
                           <button
                             key={entry.id}
                             type="button"
                             onClick={() => handleWalletParticipantSelect(entry)}
-                            className="interactive-btn w-full rounded-2xl bg-background/60 px-3 py-3 text-left ring-1 ring-primary/10"
+                            className="interactive-btn w-full rounded-[24px] bg-background/65 px-3.5 py-3 text-left shadow-sm shadow-slate-950/5"
                           >
                             <div className="flex items-center gap-3">
                               <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-success/15 text-sm font-bold text-primary">
@@ -3478,299 +4739,538 @@ function App() {
                               </div>
                               <div className="min-w-0 flex-1">
                                 <p className="truncate text-sm font-semibold text-primary">{entry.name}</p>
-                                <p className="truncate text-xs text-primary/60">{entry.tripTitle}</p>
+                                <p className="truncate text-xs text-primary/55">{entry.tripTitle}</p>
                               </div>
-                              <span className="text-sm font-black text-success">${entry.netBalanceAmount.toFixed(2)}</span>
+                              <span className="text-sm font-black text-success">{formatCurrency(entry.netBalanceAmount)}</span>
                             </div>
                           </button>
                         ))
                       ) : (
-                        <p className="rounded-2xl bg-background/60 px-3 py-3 text-sm text-primary/65 ring-1 ring-primary/10">
+                        <p className="rounded-[24px] bg-background/65 px-3.5 py-3 text-sm text-primary/65">
                           No joiners with payable balances right now.
                         </p>
                       )}
                     </div>
-                  </div>
+                  </motion.div>
                 ) : null}
+              </AnimatePresence>
+            </div>
+
+            <div className="min-w-[210px] rounded-[28px] bg-[linear-gradient(145deg,rgba(224,122,95,0.98),rgba(227,154,98,0.92))] px-4 py-4 text-center text-white shadow-xl shadow-accent/20 sm:text-right">
+              <div className="flex items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-white/72 sm:justify-end">
+                <CircleDollarSign className="h-4 w-4" />
+                Escrow
               </div>
-            <div className="rounded-3xl bg-accent px-4 py-3 text-white">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Escrow</p>
-              <p className="mt-1 text-xl font-black">${escrowStats.inEscrow.toFixed(2)}</p>
+              <AnimatedAmount className="mt-3 block text-2xl font-black" value={escrowStats.inEscrow} />
             </div>
           </div>
         </div>
 
         {walletError ? (
-          <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{walletError}</p>
+          <p className="mt-5 rounded-[24px] bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg shadow-red-200/50">{walletError}</p>
         ) : null}
-        {isWalletLoading ? <p className="mt-4 text-sm text-primary/65">Refreshing wallet balances...</p> : null}
+        {isWalletLoading ? <p className="mt-5 text-sm text-primary/60">Refreshing wallet balances...</p> : null}
 
-        <div className="mt-8 grid gap-6 xl:grid-cols-[1.08fr_0.92fr]">
-          <section className="space-y-5">
-            <article className="rounded-[28px] border border-primary/10 bg-background/55 p-5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Step 1</p>
-                  <h3 className="mt-1 text-xl font-bold text-primary">Choose a trip</h3>
-                </div>
-                <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-primary ring-1 ring-primary/10">
-                  {splitEligiblePosts.length} active trips
-                </div>
-              </div>
+        <div className="mt-8 space-y-6">
+          {tripExpenseError ? (
+            <p className="rounded-3xl border border-red-200/70 bg-red-50/90 px-4 py-3 text-sm text-red-700 shadow-lg shadow-red-200/40">
+              {tripExpenseError}
+            </p>
+          ) : null}
 
-              {splitEligiblePosts.length > 0 ? (
-                <label className="mt-4 block">
-                  <span className="mb-2 block text-sm font-semibold text-primary">Trip</span>
-                  <select
-                    value={splitTripId}
-                    onChange={(event) => setSplitTripId(event.target.value)}
-                    className="w-full rounded-2xl border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none ring-accent/30 transition focus:ring-2"
-                  >
-                    <option value="">Select a trip</option>
-                    {splitEligiblePosts.map((post) => (
-                      <option key={post.id} value={post.id}>
-                        {post.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : (
-                <p className="mt-4 rounded-3xl bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
-                  No active hosted or joined trips are available for splitting right now.
-                </p>
-              )}
-            </article>
-
-            <article className="rounded-[28px] border border-primary/10 bg-white p-5 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Step 2</p>
-                  <h3 className="mt-1 text-xl font-bold text-primary">Add an expense</h3>
-                </div>
+          <div className="grid grid-cols-1 gap-8 md:grid-cols-2 md:items-stretch">
+            <section>
+              <article className={`${glassDashboardCardClassName} relative flex min-h-[360px] overflow-hidden p-0`}>
                 {tripExpenseSummary ? (
-                  <div className="rounded-full bg-background px-3 py-1 text-xs font-semibold text-primary/70 ring-1 ring-primary/10">
-                    {tripExpenseSummary.members.length} people in split
-                  </div>
-                ) : null}
-              </div>
+                  <>
+                    {tripExpenseSummary.trip.imageUrl ? (
+                      <img
+                        src={tripExpenseSummary.trip.imageUrl}
+                        alt={tripExpenseSummary.trip.title}
+                        className="absolute inset-0 h-full w-full object-cover"
+                      />
+                    ) : null}
+                    <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(20,29,44,0.15),rgba(20,29,44,0.76)),radial-gradient(circle_at_top,rgba(255,255,255,0.24),transparent_45%)]" />
+                    <div className="relative z-10 flex min-h-[360px] w-full flex-col justify-between p-6">
+                      <div className="flex flex-wrap items-center gap-2 text-white">
+                        <span className="inline-flex items-center gap-2 rounded-full bg-white/18 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] backdrop-blur-md">
+                          <ReceiptText className="h-3.5 w-3.5" />
+                          Active Trip
+                        </span>
+                        <span className="inline-flex items-center gap-2 rounded-full bg-white/18 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] backdrop-blur-md">
+                          Host {activeTripHostLabel}
+                        </span>
+                      </div>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-[1.6fr_1fr_auto]">
-                <label className="block">
-                  <span className="mb-2 block text-sm font-semibold text-primary">Description</span>
-                  <input
-                    type="text"
-                    value={splitExpenseDescription}
-                    onChange={(event) => setSplitExpenseDescription(event.target.value)}
-                    className="w-full rounded-2xl border border-primary/15 bg-background px-4 py-3 text-sm text-primary outline-none ring-accent/30 transition focus:ring-2"
-                    placeholder="Dinner, gas, Airbnb"
-                  />
-                </label>
-                <label className="block">
-                  <span className="mb-2 block text-sm font-semibold text-primary">Amount</span>
-                  <div className="flex rounded-2xl border border-primary/15 bg-background px-4 py-3">
-                    <span className="mr-2 text-sm font-semibold text-primary/70">$</span>
-                    <input
-                      type="number"
+                      <div>
+                        <p className="text-sm font-medium text-white/80">{tripExpenseSummary.trip.location}</p>
+                        <h3 className="mt-3 max-w-xl text-3xl font-black tracking-tight text-white sm:text-4xl">
+                          {tripExpenseSummary.trip.title}
+                        </h3>
+                        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-white/85">
+                          <span className="inline-flex items-center gap-2 rounded-full bg-white/16 px-3 py-1.5 backdrop-blur-md">
+                            <MapPin className="h-4 w-4" />
+                            {tripExpenseSummary.trip.location}
+                          </span>
+                          <span className="inline-flex items-center gap-2 rounded-full bg-white/16 px-3 py-1.5 backdrop-blur-md">
+                            <CalendarDays className="h-4 w-4" />
+                            {activeTripDateRangeLabel}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="rounded-[28px] border border-white/20 bg-white/18 p-4 text-white backdrop-blur-md">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/72">Trip Total</p>
+                          <AnimatedAmount className="mt-3 text-white" value={tripExpenseSummary.totalExpenses} />
+                        </div>
+                        <div className="rounded-[28px] border border-white/20 bg-white/18 p-4 text-white backdrop-blur-md">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/72">Travelers</p>
+                          <p className="mt-3 text-3xl font-black">{tripExpenseSummary.members.length}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex min-h-[360px] w-full items-center justify-center p-6 text-sm text-primary/70">
+                    {isTripExpenseLoading ? 'Loading trip overview...' : 'No active trip is available right now.'}
+                  </div>
+                )}
+              </article>
+            </section>
+
+            <section ref={addExpenseComposerRef}>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Balances</p>
+                    <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Who should pay whom</h3>
+                  </div>
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/6 text-primary">
+                    <Wallet className="h-5 w-5" />
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  {tripExpenseSummary && tripExpenseSummary.settlementSummary.length > 0 ? (
+                    tripExpenseSummary.settlementSummary.map((settlement) => (
+                      <div key={`${settlement.fromUserId}-${settlement.toUserId}`} className={glassInsetCardClassName}>
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-primary">{settlement.fromName}</p>
+                            <p className="mt-1 text-xs uppercase tracking-[0.22em] text-primary/45">owes {settlement.toName}</p>
+                          </div>
+                          <div className="rounded-full bg-red-50 px-3 py-1.5 text-sm font-bold text-red-600">
+                            {formatCurrency(settlement.amount)}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <ExpenseEmptyState
+                      title="Settlements will appear here"
+                      description="As soon as the first shared expense lands, we will show who should pay whom in this clean ledger."
+                    />
+                  )}
+                </div>
+              </article>
+            </section>
+
+            <section>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                <div className="safe-flex-row items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Add Expense</p>
+                    <h3 className="mt-2 truncate-text text-2xl font-black tracking-tight text-primary">Split a new bill</h3>
+                  </div>
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/6 text-primary">
+                    <Plus className="h-5 w-5" />
+                  </div>
+                </div>
+
+              {tripExpenseSummary ? (
+                <div className="mt-5 space-y-5">
+                  <div className="grid gap-4 lg:grid-cols-[1.45fr_0.95fr]">
+                    <FloatingLabelField
+                      label="Description"
+                      value={splitExpenseDescription}
+                      onChange={(event) => setSplitExpenseDescription(event.target.value)}
+                    />
+                    <FloatingLabelField
+                      badge="USD"
+                      inputMode="decimal"
+                      label="Amount"
                       min={0}
                       step="0.01"
+                      type="number"
                       value={splitExpenseAmount}
                       onChange={(event) => setSplitExpenseAmount(event.target.value)}
-                      className="w-full bg-transparent text-sm text-primary outline-none"
-                      placeholder="0.00"
                     />
                   </div>
-                </label>
-                <div className="flex items-end">
+
+                  <ExpenseParticipantChecklist
+                    title="Tap the travelers joining this split"
+                    helperText="Choose the members for this bill, then confirm the split once the preview looks right."
+                    items={splitParticipantChips}
+                    onToggle={handleSplitParticipantToggle}
+                    selectedCountLabel={`${selectedSplitDebtorIds.length + 1} selected`}
+                  />
+
+                  <div className="flex flex-col gap-4 rounded-[28px] border border-white/20 bg-white/70 px-5 py-4 shadow-lg shadow-slate-950/8 backdrop-blur-md sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Split Preview</p>
+                      <p className="mt-2 text-sm text-primary/68">
+                        {splitPreviewAmount > 0 && splitSelectedMemberCount > 0
+                          ? `${splitSelectedMemberCount} travelers are sharing ${formatCurrency(splitPreviewAmount)} and each checked traveler owes ${formatCurrency(splitPreviewShareAmount)}.`
+                          : 'Enter an amount, then tap the travelers who should be included in this shared expense.'}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleSplitExpenseSubmit()}
+                      disabled={isTripExpenseSubmitting || isTripExpenseLoading}
+                      className={`interactive-btn inline-flex items-center justify-center gap-2 rounded-[24px] px-5 py-3 text-sm font-semibold text-white shadow-xl shadow-slate-950/15 transition disabled:cursor-not-allowed disabled:opacity-55 ${
+                        isSplitExpenseSuccessVisible
+                          ? 'bg-[linear-gradient(145deg,rgba(129,178,154,1),rgba(104,154,130,0.96))]'
+                          : 'bg-[linear-gradient(145deg,rgba(61,64,91,1),rgba(73,78,121,0.96))]'
+                      }`}
+                    >
+                      {isTripExpenseSubmitting ? (
+                        'Saving...'
+                      ) : isSplitExpenseSuccessVisible ? (
+                        <>
+                          <BadgeCheck className="h-4 w-4" />
+                          Bill Split!
+                        </>
+                      ) : (
+                        <>
+                          Save expense
+                          <ArrowRight className="h-4 w-4" />
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className={`${glassInsetCardClassName} mt-5 px-5 py-6`}>
+                  <p className="text-sm font-semibold text-primary">Add expenses once the active trip is loaded.</p>
+                  <p className="mt-2 text-sm leading-6 text-primary/60">
+                    This composer will unlock automatically when there is a live split trip available for the current user.
+                  </p>
+                </div>
+              )}
+              </article>
+            </section>
+
+            <section>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                <div className="safe-flex-row items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Budget Liquidation</p>
+                    <h3 className="mt-2 truncate-text text-2xl font-black tracking-tight text-primary">Burn rate</h3>
+                  </div>
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/6 text-primary">
+                    <CircleDollarSign className="h-5 w-5" />
+                  </div>
+                </div>
+
+                {tripExpenseSummary ? (
+                  <div className="mt-5 space-y-4">
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_220px]">
+                      <div className={glassInsetCardClassName}>
+                        <div className="safe-flex-row items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Expected Budget</p>
+                            <AnimatedAmount className="mt-2 text-primary" value={budgetProgressSummary.expectedBudget} />
+                          </div>
+                          <span
+                            className={`inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${budgetProgressTone.badgeClassName}`}
+                          >
+                            {budgetProgressTone.title}
+                          </span>
+                        </div>
+
+                        <div className="mt-4">
+                          <div className="safe-flex-row items-center justify-between gap-3 text-xs font-medium text-primary/56">
+                            <span className="truncate-text">Spent {formatCurrency(budgetProgressSummary.totalExpenses)}</span>
+                            <span>{budgetProgressSummary.utilizationLabel}</span>
+                          </div>
+                          <div className="mt-2 h-3 overflow-hidden rounded-full bg-primary/8">
+                            <motion.div
+                              initial={{ width: 0 }}
+                              animate={{ width: `${tripExpenseSummary.budgetSummary.budgetUtilizationDisplayPercent}%` }}
+                              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+                              className={`h-full rounded-full ${budgetProgressTone.barClassName}`}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                          <div className={`flex h-full flex-col justify-between rounded-[22px] px-3.5 py-3 ${budgetProgressTone.surfaceClassName}`}>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Trip Budget</p>
+                            <p className="mt-2 text-lg font-black">
+                              {formatCurrency(budgetProgressSummary.expectedBudget)}
+                            </p>
+                            <p className="mt-1 text-xs opacity-80">
+                              Planned total budget for this trip
+                            </p>
+                          </div>
+                          <div className="flex h-full flex-col justify-between rounded-[22px] bg-primary/5 px-3.5 py-3 text-primary">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/48">Trip Cost</p>
+                            <p className="mt-2 text-lg font-black leading-tight [overflow-wrap:anywhere]">
+                              {formatCurrency(budgetProgressSummary.totalExpenses)}
+                            </p>
+                            <p className="mt-1 text-xs text-primary/56">Total spent across all members so far.</p>
+                          </div>
+                        </div>
+
+                        {budgetProgressSummary.overBudgetAmount > 0 ? (
+                          <p className="mt-4 rounded-[20px] bg-red-50 px-3.5 py-3 text-xs font-medium text-red-700">
+                            Budget overrun: {formatCurrency(budgetProgressSummary.overBudgetAmount)}
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <div className={`${glassInsetCardClassName} flex items-center justify-center`}>
+                        <LiquidSplitMeter
+                          fillRatio={splitHeroLiquidRatio}
+                          helperText="Tracks current trip spend against the expected budget for all members."
+                          isWarning={isSplitHeroOverBudget}
+                          label={
+                            budgetProgressSummary.expectedBudget > 0
+                              ? `${formatCurrency(budgetProgressSummary.totalExpenses)} of ${formatCurrency(budgetProgressSummary.expectedBudget)} budget`
+                              : 'Budget not available yet'
+                          }
+                          valueLabel={`${splitHeroLiquidPercent}% of budget`}
+                        />
+                      </div>
+                    </div>
+
+                  </div>
+                ) : (
+                  <div className="mt-5">
+                    <ExpenseEmptyState
+                      title="Budget analytics will appear here"
+                      description="Once an active trip is available, we will show burn rate, remaining budget, and the live split meter here."
+                    />
+                  </div>
+                )}
+              </article>
+            </section>
+
+            <section>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Member Summary</p>
+                      <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Net balances</h3>
+                    </div>
+                    <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-success/12 text-success">
+                      <TrendingUp className="h-5 w-5" />
+                    </div>
+                  </div>
+
+                  <div className="mt-5 space-y-3">
+                    {tripExpenseSummary && tripExpenseSummary.balances.length > 0 ? (
+                      tripExpenseSummary.balances.map((balance) => {
+                        const magnitude = Math.max(Math.abs(balance.netBalance), balance.totalOwed, balance.totalReceivable, 0);
+                        const widthPercent = Math.max(12, Math.round((magnitude / maxTripBalanceMagnitude) * 100));
+                        const isPositive = balance.netBalance >= 0;
+
+                        return (
+                          <div key={balance.userId} className={glassInsetCardClassName}>
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex min-w-0 items-center gap-3">
+                                <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
+                                  {balance.avatar ? (
+                                    <img src={balance.avatar} alt={balance.name} className="h-full w-full object-cover" />
+                                  ) : (
+                                    balance.name.charAt(0).toUpperCase()
+                                  )}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold text-primary">{balance.name}</p>
+                                  <p className="text-xs text-primary/55">
+                                    Spent {formatCurrency(balance.totalSpent ?? 0)} / Equal share {formatCurrency(balance.equalShare ?? 0)}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div
+                                className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-bold ${
+                                  isPositive ? 'bg-success/15 text-green-700' : 'bg-red-50 text-red-600'
+                                }`}
+                              >
+                                {isPositive ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
+                                {isPositive ? '+' : '-'}
+                                {formatCurrency(Math.abs(balance.netBalance))}
+                              </div>
+                            </div>
+
+                            <div className="mt-4 h-2 overflow-hidden rounded-full bg-primary/8">
+                              <motion.div
+                                initial={{ width: 0 }}
+                                animate={{ width: `${widthPercent}%` }}
+                                transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+                                className={`h-full rounded-full ${
+                                  isPositive
+                                    ? 'bg-[linear-gradient(90deg,rgba(129,178,154,0.95),rgba(172,214,195,0.95))]'
+                                    : 'bg-[linear-gradient(90deg,rgba(224,122,95,0.92),rgba(246,185,166,0.9))]'
+                                }`}
+                              />
+                            </div>
+
+                            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-primary/52">
+                              <span>{isPositive ? 'Should receive' : 'Still owes'} {formatCurrency(Math.abs(balance.netBalance))}</span>
+                              <span>{balance.totalReceivable > 0 ? `Receivable ${formatCurrency(balance.totalReceivable)}` : `Owes ${formatCurrency(balance.totalOwed)}`}</span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <ExpenseEmptyState
+                        title="No balance data yet"
+                        description="Member balances will animate into view after the first shared expense, complete with visual bars for who owes and who should receive."
+                      />
+                    )}
+                  </div>
+                </article>
+            </section>
+
+            <section>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Recent Expenses</p>
+                    <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Trip activity</h3>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handleOpenTripHistory}
+                      disabled={!tripExpenseSummary}
+                      className="interactive-btn inline-flex items-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-primary/20 disabled:cursor-not-allowed disabled:opacity-55"
+                    >
+                      <History className="h-4 w-4" />
+                      History
+                    </button>
+                    <div className="rounded-[24px] bg-[linear-gradient(145deg,rgba(61,64,91,1),rgba(73,78,121,0.96))] px-4 py-3 text-right text-white shadow-lg shadow-primary/20">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/72">Total</p>
+                      <AnimatedAmount className="mt-2 block text-xl font-black" value={tripExpenseSummary?.totalExpenses ?? 0} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  <AnimatePresence mode="popLayout">
+                    {tripExpenseSummary && tripExpenseSummary.expenses.length > 0
+                      ? tripExpenseSummary.expenses.map((expense) => (
+                          <ExpenseItem
+                            key={expense.id}
+                            expense={expense}
+                            currentUserId={userSession?.id}
+                            canEdit={Boolean(userSession?.id)}
+                            isDeleting={deletingExpenseId === expense.id}
+                            onDelete={(expenseId) => void handleExpenseDelete(expenseId)}
+                            onEdit={handleOpenExpenseEdit}
+                          />
+                        ))
+                      : null}
+                  </AnimatePresence>
+
+                  {tripExpenseSummary && tripExpenseSummary.expenses.length === 0 ? (
+                    <ExpenseEmptyState
+                      title="No expenses recorded yet"
+                      description="Your shared receipts will land here with a soft pop animation, so the ledger stays playful instead of feeling like a spreadsheet."
+                    />
+                  ) : null}
+                </div>
+              </article>
+	            </section>
+	          </div>
+
+	        </div>
+
+	        {editingExpenseId && tripExpenseSummary ? (
+	          <div className="fixed inset-0 z-30 flex items-center justify-center bg-primary/30 px-4 backdrop-blur-sm">
+	            <div className="w-full max-w-2xl overflow-hidden rounded-[34px] bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(255,250,244,0.94))] shadow-[0_40px_120px_-58px_rgba(17,24,39,0.75)] ring-1 ring-white/60">
+              <div className="bg-[linear-gradient(135deg,rgba(61,64,91,0.98),rgba(129,178,154,0.95))] px-6 py-5 text-white">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/70">Edit Expense</p>
+                    <h3 className="mt-2 text-2xl font-black">Adjust the bill details</h3>
+                    <p className="mt-1 text-sm text-white/80">
+                      Any trip participant can edit the split. The last editor is stored in the audit trail.
+                    </p>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => void handleSplitExpenseSubmit()}
-                    disabled={isTripExpenseSubmitting || isTripExpenseLoading}
-                    className="interactive-btn w-full rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-55"
+                    onClick={handleCloseExpenseEdit}
+                    className="rounded-full bg-white/10 p-2 text-white ring-1 ring-white/20 transition hover:bg-white/15"
+                    aria-label="Close expense editor"
                   >
-                    {isTripExpenseSubmitting ? 'Adding...' : 'Add expense'}
+                    <X className="h-4 w-4" />
                   </button>
                 </div>
               </div>
 
-              {tripExpenseError ? (
-                <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {tripExpenseError}
-                </p>
-              ) : null}
+	              <div className="space-y-5 p-6">
+	                <div className="grid gap-4 sm:grid-cols-[1.5fr_1fr]">
+	                  <FloatingLabelField
+	                    autoFocus
+	                    label="Description"
+	                    value={editingExpenseDescription}
+	                    onChange={(event) => setEditingExpenseDescription(event.target.value)}
+	                  />
+	                  <FloatingLabelField
+	                    badge="USD"
+	                    inputMode="decimal"
+	                    label="Amount"
+	                    min={0}
+	                    step="0.01"
+	                    type="number"
+	                    value={editingExpenseAmount}
+	                    onChange={(event) => setEditingExpenseAmount(event.target.value)}
+	                  />
+	                </div>
 
-              {tripExpenseSummary ? (
-                <div className="mt-5 overflow-hidden rounded-[28px] border border-primary/10 bg-background/40">
-                  {tripExpenseSummary.trip.imageUrl ? (
-                    <img
-                      src={tripExpenseSummary.trip.imageUrl}
-                      alt={tripExpenseSummary.trip.title}
-                      className="h-44 w-full object-cover"
-                    />
-                  ) : null}
-                  <div className="space-y-4 p-5">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Selected Trip</p>
-                        <h4 className="mt-1 text-xl font-bold text-primary">{tripExpenseSummary.trip.title}</h4>
-                        <p className="mt-1 text-sm text-primary/70">{tripExpenseSummary.trip.location}</p>
-                      </div>
-                      <div className="rounded-2xl bg-white px-4 py-3 text-right ring-1 ring-primary/10">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-primary/60">Trip Total</p>
-                        <p className="mt-1 text-lg font-black text-primary">${tripExpenseSummary.totalExpenses.toFixed(2)}</p>
-                      </div>
-                    </div>
+	                <ExpenseParticipantChecklist
+	                  title="Adjust who belongs in this split"
+	                  helperText="The chip interactions match the main screen, so you can refine the edit without losing the live split context."
+	                  items={editingExpenseParticipantChips}
+	                  onToggle={handleEditExpenseParticipantToggle}
+	                  selectedCountLabel={`${editingExpenseDebtorIds.length + 1} selected`}
+	                />
 
-                    <div>
-                      <p className="text-sm font-semibold text-primary">Who owes on this new expense</p>
-                      <div className="mt-3 space-y-2">
-                        {splitPreviewMembers.length > 0 ? (
-                          splitPreviewMembers.map((member) => (
-                            <div
-                              key={member.id}
-                              className="flex items-center justify-between rounded-2xl bg-white px-4 py-3 ring-1 ring-primary/10"
-                            >
-                              <div className="flex items-center gap-3">
-                                <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
-                                  {member.avatar ? (
-                                    <img src={member.avatar} alt={member.name} className="h-full w-full object-cover" />
-                                  ) : (
-                                    member.name.charAt(0).toUpperCase()
-                                  )}
-                                </div>
-                                <div>
-                                  <p className="text-sm font-semibold text-primary">{member.name}</p>
-                                  <p className="text-xs text-primary/60">{member.isHost ? 'Host' : 'Member'}</p>
-                                </div>
-                              </div>
-                              <span className="text-sm font-bold text-red-600">${member.owesAmount.toFixed(2)}</span>
-                            </div>
-                          ))
-                        ) : (
-                          <p className="rounded-2xl bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
-                            Enter an amount to preview each person&apos;s share.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : isTripExpenseLoading ? (
-                <p className="mt-4 text-sm text-primary/70">Loading trip split summary...</p>
-              ) : (
-                <p className="mt-4 rounded-2xl bg-background/60 px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
-                  Select a trip to see balances, members, and recent expenses.
-                </p>
-              )}
-            </article>
-          </section>
-
-          <section className="space-y-5">
-            <article className="rounded-[28px] border border-primary/10 bg-background/55 p-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Balances</p>
-              <h3 className="mt-1 text-xl font-bold text-primary">Who should pay whom</h3>
-              <div className="mt-4 space-y-3">
-                {tripExpenseSummary && tripExpenseSummary.settlementSummary.length > 0 ? (
-                  tripExpenseSummary.settlementSummary.map((settlement) => (
-                    <div
-                      key={`${settlement.fromUserId}-${settlement.toUserId}`}
-                      className="rounded-2xl bg-white px-4 py-3 ring-1 ring-primary/10"
-                    >
-                      <div className="flex items-center justify-between gap-4">
-                        <div>
-                          <p className="text-sm font-semibold text-red-600">{settlement.fromName}</p>
-                          <p className="text-xs text-primary/65">owes {settlement.toName}</p>
-                        </div>
-                        <span className="text-sm font-bold text-green-700">${settlement.amount.toFixed(2)}</span>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="rounded-2xl bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
-                    No balances yet. Add an expense to generate settlements.
-                  </p>
-                )}
-              </div>
-            </article>
-
-            <article className="rounded-[28px] border border-primary/10 bg-white p-5 shadow-sm">
-              <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Member Summary</p>
-              <h3 className="mt-1 text-xl font-bold text-primary">Net balances</h3>
-
-              <div className="mt-4 space-y-3">
-                {tripExpenseSummary && tripExpenseSummary.balances.length > 0 ? (
-                  tripExpenseSummary.balances.map((balance) => (
-                    <div
-                      key={balance.userId}
-                      className="flex items-center justify-between rounded-2xl border border-primary/10 bg-background/45 px-4 py-3"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
-                          {balance.avatar ? (
-                            <img src={balance.avatar} alt={balance.name} className="h-full w-full object-cover" />
-                          ) : (
-                            balance.name.charAt(0).toUpperCase()
-                          )}
-                        </div>
-                        <div>
-                          <p className="text-sm font-semibold text-primary">{balance.name}</p>
-                          <p className="text-xs text-primary/60">
-                            Spent ${balance.totalSpent?.toFixed(2) ?? '0.00'} / Equal share ${balance.equalShare?.toFixed(2) ?? '0.00'}
-                          </p>
-                        </div>
-                      </div>
-                      <span
-                        className={`text-sm font-bold ${
-                          balance.netBalance >= 0 ? 'text-green-700' : 'text-red-600'
-                        }`}
-                      >
-                        {balance.netBalance >= 0 ? '+' : '-'}${Math.abs(balance.netBalance).toFixed(2)}
-                      </span>
-                    </div>
-                  ))
-                ) : (
-                  <p className="rounded-2xl bg-background/50 px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
-                    Member balances will appear here after the first shared expense.
-                  </p>
-                )}
-              </div>
-            </article>
-
-            <article className="rounded-[28px] border border-primary/10 bg-background/55 p-5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-primary/60">Recent Expenses</p>
-                  <h3 className="mt-1 text-xl font-bold text-primary">Trip activity</h3>
-                </div>
-                <div className="rounded-2xl bg-primary px-4 py-3 text-right text-white">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-white/75">Total</p>
-                  <p className="mt-1 text-lg font-black">${tripExpenseSummary?.totalExpenses.toFixed(2) ?? '0.00'}</p>
+	                <div className="flex flex-col gap-3 rounded-[28px] bg-white/72 px-5 py-4 shadow-xl shadow-slate-950/8 sm:flex-row sm:items-center sm:justify-between">
+	                  <p className="max-w-xl text-sm text-primary/65">
+	                    {editingExpensePreviewAmount > 0 && editingExpenseSelectedMemberCount > 0
+	                      ? `Each checked traveler owes ${formatCurrency(editingExpenseShareAmount)}.`
+	                      : 'Enter the amount, then tap the travelers who should stay included in this expense.'}
+	                  </p>
+	                  <div className="flex flex-wrap gap-3">
+	                    <button
+	                      type="button"
+	                      onClick={handleCloseExpenseEdit}
+	                      className="interactive-btn rounded-[22px] bg-white px-4 py-3 text-sm font-semibold text-primary shadow-lg shadow-slate-950/8"
+	                    >
+	                      Cancel
+	                    </button>
+	                    <button
+	                      type="button"
+	                      onClick={() => void handleExpenseUpdateSubmit()}
+	                      disabled={isExpenseUpdateSubmitting}
+	                      className="interactive-btn rounded-[22px] bg-[linear-gradient(145deg,rgba(61,64,91,1),rgba(73,78,121,0.96))] px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-primary/20 disabled:cursor-not-allowed disabled:opacity-55"
+	                    >
+	                      {isExpenseUpdateSubmitting ? 'Saving...' : 'Save Changes'}
+	                    </button>
+	                  </div>
                 </div>
               </div>
-
-              <div className="mt-4 space-y-3">
-                {tripExpenseSummary && tripExpenseSummary.expenses.length > 0 ? (
-                  tripExpenseSummary.expenses.map((expense) => (
-                    <div key={expense.id} className="rounded-2xl bg-white px-4 py-3 ring-1 ring-primary/10">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-primary">{expense.description}</p>
-                          <p className="text-xs text-primary/65">
-                            Paid by {expense.paidBy.name} / Split ${expense.splitAmount.toFixed(2)} each
-                          </p>
-                        </div>
-                        <span className="text-sm font-bold text-primary">${expense.amount.toFixed(2)}</span>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="rounded-2xl bg-white px-4 py-3 text-sm text-primary/70 ring-1 ring-primary/10">
-                    No expenses recorded for this trip yet.
-                  </p>
-                )}
-              </div>
-            </article>
-          </section>
-        </div>
+            </div>
+          </div>
+        ) : null}
 
         {walletReleaseEntry ? (
           <div className="fixed inset-0 z-30 flex items-center justify-center bg-primary/30 px-4 backdrop-blur-sm">
@@ -3878,6 +5378,22 @@ function App() {
     </section>
   );
 
+  const renderAIExplorerScreen = () => (
+    <AIExplorer
+      tripSummary={tripExpenseSummary}
+      suggestionsSummary={tripSuggestionsSummary}
+      activeVoteId={activeSuggestionVoteId}
+      dateRangeLabel={activeTripDateRangeLabel}
+      error={tripSuggestionsError}
+      isGenerating={isTripSuggestionsGenerating}
+      isLoading={isTripSuggestionsLoading || isTripExpenseLoading}
+      onBackToSplit={() => handleNavigation('wallet')}
+      onGenerate={(userPreferences) => void handleGenerateTripSuggestions(userPreferences)}
+      onSplitCost={handleAddSuggestionToExpenses}
+      onVote={(suggestionId) => void handleVoteForTripSuggestion(suggestionId)}
+    />
+  );
+
   const renderCreateTripScreen = () =>
     userSession ? (
       <CreateTripView
@@ -3916,6 +5432,8 @@ function App() {
               currentUserId={userSession?.id ?? null}
               currentUserIsVerified={Boolean(userSession?.isVerified)}
               pendingRequestCountByPostId={pendingRequestCountByTripId}
+              joinConflictMessageByPostId={activeView === 'myPosts' ? myPostConflictMessageByPostId : joinConflictMessageByPostId}
+              activePostIds={activeMyPostIds}
               isPostActionInProgress={isPostActionInProgress}
               dnaMatchByPostId={dnaMatchByPostId}
               dnaMatchLoadingPostIds={dnaMatchLoadingPostIds}
@@ -3927,6 +5445,8 @@ function App() {
               onEditPost={handleEditFeedPost}
               onDeletePost={handleDeleteFeedPost}
               onCompletePost={handleCompleteFeedPost}
+              onCancelPost={handleCancelFeedPost}
+              onCreateNewTrip={activeView === 'myPosts' ? handleHostTrip : undefined}
             />
           )}
         </section>
@@ -4237,6 +5757,8 @@ function App() {
         return renderProfileScreen();
       case 'history':
         return renderHistoryScreen();
+      case 'explorer':
+        return renderAIExplorerScreen();
       case 'wallet':
         return renderWalletScreen();
       case 'dashboard':
@@ -4392,13 +5914,22 @@ function App() {
                 <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary/70">Workspace</p>
                 <nav>
                   <ul className="space-y-2">
-                    {navItems.map((item) => {
+                    {navItems
+                      .filter((item) => item.id !== 'ai-explorer' || Boolean(activeWorkspaceTripId))
+                      .map((item) => {
                       const target = sidebarTargetById[item.id] ?? 'dashboard';
                       return (
                         <li key={item.id}>
                           <button
                             type="button"
-                            onClick={() => handleNavigation(target)}
+                            onClick={() => {
+                              if (item.id === 'ai-explorer') {
+                                handleOpenAIExplorer();
+                                return;
+                              }
+
+                              handleNavigation(target);
+                            }}
                             className={getSidebarClass(target)}
                           >
                             {renderSidebarIcon(item.icon)}
@@ -4565,6 +6096,18 @@ function App() {
                   </span>
                   <span>Wallet</span>
                 </button>
+                {activeWorkspaceTripId ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenAIExplorer}
+                    className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                  >
+                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                      <Sparkles className="h-5 w-5" />
+                    </span>
+                    <span>AI Explorer</span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => handleNavigation('onboarding')}
