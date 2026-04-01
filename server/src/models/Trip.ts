@@ -2,6 +2,19 @@ import mongoose, { HydratedDocument, Model, Schema, Types } from 'mongoose';
 import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 
 const { model, models } = mongoose;
+const TRAVELER_TYPE_VALUES = [
+  'Budget Backpacker',
+  'Luxury Seeker',
+  'Adventure Junkie',
+  'Digital Nomad',
+  'Culture Vulture',
+  'Social Butterfly',
+  'Slow Traveler',
+  'Foodie Explorer',
+  'Photo Enthusiast',
+  'Minimalist',
+] as const;
+const CURRENCY_VALUES = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD', 'JPY'] as const;
 
 export interface ITripSuggestion {
   _id: Types.ObjectId;
@@ -22,6 +35,11 @@ export interface ITripSuggestionPreferences {
   crowds: string;
 }
 
+export interface ITripEmergencyContact {
+  name: string;
+  phone: string;
+}
+
 export interface ITrip {
   organizerId: Types.ObjectId;
   title: string;
@@ -31,6 +49,9 @@ export interface ITrip {
   price?: number;
   expectedBudget: number;
   travelerType?: string;
+  currency: (typeof CURRENCY_VALUES)[number];
+  isPrivate: boolean;
+  emergencyContact: ITripEmergencyContact;
   category?: 'Adventure' | 'Luxury' | 'Budget' | 'Nature';
   startDate: Date;
   endDate: Date;
@@ -65,6 +86,9 @@ const calculateExpectedBudgetDefault = (
 
   return durationDays * safeParticipantCount * 100;
 };
+
+export const getTripExpectedBudgetDefault = (tripValue?: Partial<ITrip> | null): number =>
+  calculateExpectedBudgetDefault(tripValue?.startDate, tripValue?.endDate, tripValue?.maxParticipants ?? 1);
 
 const tripSuggestionSchema = new Schema<ITripSuggestion>(
   {
@@ -162,16 +186,50 @@ const tripSchema = new Schema<ITrip, TripModelType, {}, {}, ITripVirtuals>(
     expectedBudget: {
       type: Number,
       required: true,
-      min: 0,
-      default(this: ITrip) {
-        return calculateExpectedBudgetDefault(this.startDate, this.endDate, this.maxParticipants);
+      min: 1,
+      default(this: ITrip | null | undefined) {
+        return getTripExpectedBudgetDefault(this as Partial<ITrip> | null | undefined);
       },
     },
     travelerType: {
       type: String,
       trim: true,
+      enum: TRAVELER_TYPE_VALUES,
       maxlength: 120,
       default: '',
+    },
+    currency: {
+      type: String,
+      required: true,
+      trim: true,
+      uppercase: true,
+      enum: CURRENCY_VALUES,
+      default: 'USD',
+    },
+    isPrivate: {
+      type: Boolean,
+      default: false,
+    },
+    emergencyContact: {
+      type: {
+        name: {
+          type: String,
+          required: true,
+          trim: true,
+          maxlength: 120,
+        },
+        phone: {
+          type: String,
+          required: true,
+          trim: true,
+          maxlength: 40,
+        },
+      },
+      required: true,
+      default: {
+        name: 'Primary Emergency Contact',
+        phone: 'Not provided',
+      },
     },
     category: {
       type: String,

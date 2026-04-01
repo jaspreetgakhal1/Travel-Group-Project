@@ -10,6 +10,13 @@ export interface Trip {
   hostMobileNumber?: string;
   priceShare: number;
   expectedBudget?: number;
+  currency?: string;
+  isPrivate?: boolean;
+  emergencyContact?: {
+    name: string;
+    phone: string;
+  };
+  travelerType?: string;
   matchPercentage: number;
   tripDNA: TripDNA;
   imageUrl: string;

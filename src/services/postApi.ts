@@ -20,6 +20,12 @@ export type CreateFeedPostPayload = {
   spotsFilledPercent: number;
   expectations: string[];
   travelerType: string;
+  currency: string;
+  isPrivate: boolean;
+  emergencyContact: {
+    name: string;
+    phone: string;
+  };
   startDate: string;
   endDate: string;
 };

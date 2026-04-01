@@ -371,7 +371,9 @@ const resolveTripForJoinRequest = async (
   }
 
   const post = await Post.findById(tripId)
-    .select('_id title location imageUrl requiredPeople expectedBudget startDate endDate status authorKey hostName travelerType')
+    .select(
+      '_id title location imageUrl requiredPeople expectedBudget startDate endDate status authorKey hostName travelerType currency isPrivate emergencyContact',
+    )
     .lean();
 
   if (!post) {
@@ -429,13 +431,28 @@ const resolveTripForJoinRequest = async (
             ? post.imageUrl.trim()
             : '',
         expectedBudget:
-          typeof post.expectedBudget === 'number' && Number.isFinite(post.expectedBudget) && post.expectedBudget >= 0
+          typeof post.expectedBudget === 'number' && Number.isFinite(post.expectedBudget) && post.expectedBudget >= 1
             ? Number(post.expectedBudget.toFixed(2))
             : Math.max(1, maxParticipants) * Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)) + 1) * 100,
         travelerType:
           typeof post.travelerType === 'string' && post.travelerType.trim()
             ? post.travelerType.trim()
             : '',
+        currency:
+          typeof post.currency === 'string' && post.currency.trim()
+            ? post.currency.trim().toUpperCase()
+            : 'USD',
+        isPrivate: Boolean(post.isPrivate),
+        emergencyContact: {
+          name:
+            typeof post.emergencyContact?.name === 'string' && post.emergencyContact.name.trim()
+              ? post.emergencyContact.name.trim()
+              : 'Primary Emergency Contact',
+          phone:
+            typeof post.emergencyContact?.phone === 'string' && post.emergencyContact.phone.trim()
+              ? post.emergencyContact.phone.trim()
+              : 'Not provided',
+        },
         startDate,
         endDate,
         status: getTripStatus(post.status),
@@ -466,15 +483,16 @@ router.get('/self', requireAuth, async (req, res) => {
   try {
     await markPastTripsCompleted();
     const hostObjectId = new Types.ObjectId(hostId);
+    const todayStart = toDayStart(new Date()) ?? new Date();
     const trips = await Trip.find({
       organizerId: hostObjectId,
     })
-      .sort({ createdAt: -1 })
+      .sort({ startDate: 1, createdAt: 1 })
       .select('_id organizerId title location expectedBudget startDate endDate status maxParticipants participants createdAt updatedAt')
       .lean();
 
     if (trips.length === 0) {
-      return res.status(200).json({ trips: [] });
+      return res.status(200).json({ trips: [], upcomingTrips: [], pastTrips: [] });
     }
 
     const tripObjectIds = trips.map((trip) => new Types.ObjectId(String(trip._id)));
@@ -499,8 +517,7 @@ router.get('/self', requireAuth, async (req, res) => {
       return accumulator;
     }, {});
 
-    return res.status(200).json({
-      trips: trips.map((trip) => {
+    const tripSummaries = trips.map((trip) => {
         const tripId = String(trip._id);
         const participantIds = getParticipantIds(trip.participants);
         const spotsFilled = participantIds.length;
@@ -521,7 +538,21 @@ router.get('/self', requireAuth, async (req, res) => {
           createdAt: trip.createdAt,
           updatedAt: trip.updatedAt,
         };
-      }),
+      });
+
+    const upcomingTrips = tripSummaries.filter((trip) => {
+      const tripEndDate = trip.endDate instanceof Date ? trip.endDate : new Date(trip.endDate);
+      return !Number.isNaN(tripEndDate.getTime()) && tripEndDate >= todayStart;
+    });
+    const pastTrips = tripSummaries.filter((trip) => {
+      const tripEndDate = trip.endDate instanceof Date ? trip.endDate : new Date(trip.endDate);
+      return Number.isNaN(tripEndDate.getTime()) || tripEndDate < todayStart;
+    });
+
+    return res.status(200).json({
+      trips: upcomingTrips,
+      upcomingTrips,
+      pastTrips,
     });
   } catch (error) {
     console.error('GET /api/trips/self failed', error);
@@ -847,7 +878,7 @@ router.get('/:tripId', async (req, res) => {
   try {
     await markPastTripsCompleted();
     const trip = await Trip.findById(tripId)
-      .select('_id organizerId title location expectedBudget startDate endDate status maxParticipants participants createdAt updatedAt')
+      .select('_id organizerId title location imageUrl expectedBudget travelerType currency isPrivate emergencyContact startDate endDate status maxParticipants participants createdAt updatedAt')
       .lean();
 
     if (!trip) {
@@ -863,7 +894,21 @@ router.get('/:tripId', async (req, res) => {
         hostId: String(trip.organizerId),
         title: trip.title,
         location: trip.location,
+        imageUrl: typeof trip.imageUrl === 'string' ? trip.imageUrl : '',
         expectedBudget: typeof trip.expectedBudget === 'number' ? Number(trip.expectedBudget.toFixed(2)) : 0,
+        travelerType: typeof trip.travelerType === 'string' ? trip.travelerType : '',
+        currency: typeof trip.currency === 'string' ? trip.currency : 'USD',
+        isPrivate: Boolean(trip.isPrivate),
+        emergencyContact: {
+          name:
+            typeof trip.emergencyContact?.name === 'string' && trip.emergencyContact.name.trim()
+              ? trip.emergencyContact.name.trim()
+              : '',
+          phone:
+            typeof trip.emergencyContact?.phone === 'string' && trip.emergencyContact.phone.trim()
+              ? trip.emergencyContact.phone.trim()
+              : '',
+        },
         startDate: trip.startDate,
         endDate: trip.endDate,
         status: getTripStatus(trip.status),

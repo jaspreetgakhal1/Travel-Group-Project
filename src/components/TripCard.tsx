@@ -15,6 +15,12 @@ type TripCardProps = {
   onManageRequests?: (trip: Trip) => void;
 };
 
+const tripDateFormatter = new Intl.DateTimeFormat('en-US', {
+  day: '2-digit',
+  month: 'long',
+  year: 'numeric',
+});
+
 const TripCard: React.FC<TripCardProps> = ({
   trip,
   currentUserId = null,
@@ -32,6 +38,13 @@ const TripCard: React.FC<TripCardProps> = ({
   const pendingRequestCount = trip.pendingRequestCount ?? 0;
   const [isChatOpen, setIsChatOpen] = useState(false);
   const canOpenChat = isHostView || isParticipant;
+  const formattedStartDate =
+    typeof trip.startDate === 'string' && trip.startDate.trim()
+      ? (() => {
+          const parsedDate = new Date(trip.startDate);
+          return Number.isNaN(parsedDate.getTime()) ? '' : tripDateFormatter.format(parsedDate);
+        })()
+      : '';
 
   const openWhatsAppIfAvailable = (): boolean => {
     if (typeof window === 'undefined') {
@@ -66,6 +79,9 @@ const TripCard: React.FC<TripCardProps> = ({
 
         <div className="space-y-3 p-5 text-primary">
           <h3 className="text-lg font-semibold leading-snug">{trip.title}</h3>
+          {formattedStartDate ? (
+            <p className="text-sm font-medium text-primary/75">Starts {formattedStartDate}</p>
+          ) : null}
 
           <div className="flex items-center gap-2 text-sm">
             <span className="font-medium">Host: {trip.hostName}</span>

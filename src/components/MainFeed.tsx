@@ -25,6 +25,7 @@ type MainFeedProps = {
   onDeletePost: (post: FeedPost) => void;
   onCompletePost: (post: FeedPost) => void;
   onCancelPost: (post: FeedPost) => void;
+  onCreateNewTrip?: () => void;
 };
 
 const normalizeName = (value: string): string => value.trim().toLowerCase();
@@ -51,6 +52,7 @@ function MainFeed({
   onDeletePost,
   onCompletePost,
   onCancelPost,
+  onCreateNewTrip,
 }: MainFeedProps) {
   const normalizedCurrentUserAuthorKey = currentUserAuthorKey ? normalizeName(currentUserAuthorKey) : null;
   const isMyFeedMode = mode === 'mine';
@@ -59,9 +61,9 @@ function MainFeed({
   const feedDescription = isMyFeedMode
     ? 'Only trip posts you created are shown here.'
     : 'LinkedIn-style trip updates from verified organizers and hosts.';
-  const emptyTitle = isMyFeedMode ? 'No active posts in your feed yet' : 'No active trip posts right now';
+  const emptyTitle = isMyFeedMode ? 'No upcoming trips' : 'No active trip posts right now';
   const emptyDescription = isMyFeedMode
-    ? 'Create a trip post to publish your first host request.'
+    ? 'Your upcoming hosted trips will appear here once they are scheduled.'
     : 'You dismissed all recommendations. Refresh later for new trips.';
 
   if (posts.length === 0) {
@@ -70,6 +72,15 @@ function MainFeed({
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/60">{feedEyebrow}</p>
         <h2 className="mt-2 text-2xl font-black text-primary">{emptyTitle}</h2>
         <p className="mt-2 text-sm text-primary/75">{emptyDescription}</p>
+        {isMyFeedMode && onCreateNewTrip ? (
+          <button
+            type="button"
+            onClick={onCreateNewTrip}
+            className="interactive-btn mt-5 rounded-card bg-accent px-5 py-2.5 text-sm font-semibold text-white"
+          >
+            Create New Trip
+          </button>
+        ) : null}
       </section>
     );
   }

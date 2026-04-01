@@ -9,6 +9,7 @@ const calculateExpectedBudgetDefault = (startDate, endDate, participantCount) =>
     const safeParticipantCount = Number.isInteger(participantCount) && participantCount > 0 ? participantCount : 1;
     return durationDays * safeParticipantCount * 100;
 };
+export const getTripExpectedBudgetDefault = (tripValue) => calculateExpectedBudgetDefault(tripValue?.startDate, tripValue?.endDate, tripValue?.maxParticipants ?? 1);
 const tripSchema = new Schema({
     organizerId: {
         type: Schema.Types.ObjectId,
@@ -52,7 +53,7 @@ const tripSchema = new Schema({
         required: true,
         min: 0,
         default() {
-            return calculateExpectedBudgetDefault(this.startDate, this.endDate, this.maxParticipants);
+            return getTripExpectedBudgetDefault(this);
         },
     },
     category: {

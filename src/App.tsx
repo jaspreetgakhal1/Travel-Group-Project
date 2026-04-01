@@ -315,6 +315,33 @@ const compareFeedPostsByMostRecentTrip = (
   return rightEnd - leftEnd;
 };
 
+const compareFeedPostsByUpcomingStartDate = (
+  leftPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+  rightPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+): number => {
+  const leftStart = toDayStartTimestamp(leftPost.startDate) ?? Number.MAX_SAFE_INTEGER;
+  const rightStart = toDayStartTimestamp(rightPost.startDate) ?? Number.MAX_SAFE_INTEGER;
+
+  if (leftStart !== rightStart) {
+    return leftStart - rightStart;
+  }
+
+  const leftEnd = toDayEndTimestamp(leftPost.endDate) ?? Number.MAX_SAFE_INTEGER;
+  const rightEnd = toDayEndTimestamp(rightPost.endDate) ?? Number.MAX_SAFE_INTEGER;
+  return leftEnd - rightEnd;
+};
+
+const isFeedPostUpcomingOrCurrent = (post: Pick<FeedPost, 'endDate'>): boolean => {
+  const tripEndDate = toDayEndTimestamp(post.endDate);
+  const todayStart = toDayStartTimestamp(new Date());
+
+  if (tripEndDate === null || todayStart === null) {
+    return false;
+  }
+
+  return tripEndDate >= todayStart;
+};
+
 const createJourneyDateRange = (
   startJourneyDate: string,
   endJourneyDate: string,
@@ -542,9 +569,9 @@ const getLocalConflictHint = (viewerDNA: UserDNA, organizerDNA: UserDNA): string
 };
 
 const toCreateTripPayloadFromFeedPost = (post: FeedPost): CreateTripPayload => ({
+  title: post.title,
   posterImageUrls: post.imageUrl ? [post.imageUrl] : [],
   peopleRequired: post.requiredPeople,
-  budget: post.cost,
   expectedBudget: post.expectedBudget,
   expectations: post.expectations,
   interestedIn: 'Unspecified',
@@ -553,6 +580,12 @@ const toCreateTripPayloadFromFeedPost = (post: FeedPost): CreateTripPayload => (
   endJourneyDate: typeof post.endDate === 'string' ? post.endDate.slice(0, 10) : '',
   location: post.location,
   travelerType: post.travelerType,
+  currency: (post.currency || 'USD') as CreateTripPayload['currency'],
+  isPrivate: Boolean(post.isPrivate),
+  emergencyContact: {
+    name: post.emergencyContact?.name ?? '',
+    phone: post.emergencyContact?.phone ?? '',
+  },
 });
 
 const toRuntimeTripFromFeedPost = (post: FeedPost): Trip => ({
@@ -564,6 +597,10 @@ const toRuntimeTripFromFeedPost = (post: FeedPost): Trip => ({
   hostMobileNumber: post.hostMobileNumber,
   priceShare: post.cost,
   expectedBudget: post.expectedBudget,
+  currency: post.currency,
+  isPrivate: post.isPrivate,
+  emergencyContact: post.emergencyContact,
+  travelerType: post.travelerType,
   matchPercentage: 100,
   tripDNA: normalizeTravelDNA(defaultUserDNA),
   imageUrl: post.imageUrl,
@@ -604,6 +641,12 @@ const createInitialFeedPosts = (): FeedPost[] => {
       location: getRouteLabel(trip.route),
       cost: trip.priceShare,
       expectedBudget: trip.expectedBudget ?? trip.totalExpectedFromPartner,
+      currency: trip.currency ?? 'USD',
+      isPrivate: Boolean(trip.isPrivate),
+      emergencyContact: trip.emergencyContact ?? {
+        name: '',
+        phone: '',
+      },
       durationDays,
       requiredPeople: requiredPeopleTargets[index % requiredPeopleTargets.length],
       maxParticipants: requiredPeopleTargets[index % requiredPeopleTargets.length],
@@ -994,7 +1037,7 @@ function App() {
   const mainFeedPosts = useMemo(() => {
     return feedPosts
       .filter((post) => {
-        if (post.status !== 'Active') {
+        if (post.status !== 'Active' || !isFeedPostUpcomingOrCurrent(post)) {
           return false;
         }
 
@@ -1008,7 +1051,7 @@ function App() {
   }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
   const myFeedPosts = useMemo(() => {
     const filteredPosts = feedPosts.filter((post) => {
-      if (post.status !== 'Active') {
+      if (post.status !== 'Active' || !isFeedPostUpcomingOrCurrent(post)) {
         return false;
       }
 
@@ -1024,20 +1067,18 @@ function App() {
         ...post,
         pendingRequestCount: pendingRequestCountByTripId[post.id] ?? post.pendingRequestCount ?? 0,
       }))
-      .sort(compareFeedPostsByMostRecentTrip);
+      .sort(compareFeedPostsByUpcomingStartDate);
   }, [feedPosts, normalizedCurrentUserAuthorKey, pendingRequestCountByTripId, selfTripIdSet, userSession?.id]);
   const archivedMyPosts = useMemo(() => {
     return feedPosts
       .filter((post) => {
-        if (post.status !== 'Completed') {
-          return false;
-        }
-
         const isOwnPostByAuthor =
           normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
         const isOwnPostById = selfTripIdSet.has(post.id);
         const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
-        return isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
+        const isOwnPost = isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
+        const isPastTrip = !isFeedPostUpcomingOrCurrent(post);
+        return isOwnPost && (post.status === 'Completed' || isPastTrip);
       })
       .sort(compareFeedPostsByMostRecentTrip);
   }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
@@ -2375,11 +2416,12 @@ function App() {
     if (!userSession) {
       setCurrentScreen('auth');
       setSystemNotice('Please sign in to continue.');
-      return;
+      return false;
     }
 
     const newTripId = `trip-user-${Date.now()}`;
-    const inferredBudgetFlexibility = Math.max(1, Math.min(10, Math.round(payload.budget / 250)));
+    const estimatedCostPerTraveler = Number((payload.expectedBudget / Math.max(payload.peopleRequired, 1)).toFixed(2));
+    const inferredBudgetFlexibility = Math.max(1, Math.min(10, Math.round(estimatedCostPerTraveler / 250)));
     const hostDNA = userSession.dna
       ? normalizeTravelDNA(userSession.dna)
       : normalizeTravelDNA({
@@ -2392,7 +2434,7 @@ function App() {
 
     if (!journeyDateRange) {
       setSystemNotice('Please choose a valid start and end journey date.');
-      return;
+      return false;
     }
 
     const conflictingBooking = findConflictingBookedTrip(
@@ -2402,14 +2444,14 @@ function App() {
     );
     if (conflictingBooking) {
       setSystemNotice(TRIP_OVERLAP_NOTICE);
-      return;
+      return false;
     }
 
     const createdTrip: Trip = {
       id: newTripId,
-      title: `${userSession.firstName || userSession.name} Hosted Trip`,
+      title: payload.title,
       hostName: userSession.name,
-      priceShare: payload.budget,
+      priceShare: estimatedCostPerTraveler,
       expectedBudget: payload.expectedBudget,
       matchPercentage: 82,
       tripDNA: hostDNA,
@@ -2417,7 +2459,7 @@ function App() {
       isVerified: Boolean(userSession.isVerified),
       route: payload.location,
       duration: `${journeyDateRange.durationDays} Days`,
-      totalExpectedFromPartner: payload.budget * payload.peopleRequired,
+      totalExpectedFromPartner: payload.expectedBudget,
       partnerExpectations: payload.expectations,
       notes: `Preferred travelers: ${preferredTravelers}. ${
         payload.onlyVerifiedUsers ? 'Verified users only.' : 'Open to all users.'
@@ -2428,7 +2470,7 @@ function App() {
 
     if (!authorKey) {
       setSystemNotice('Unable to identify post author. Update your profile and try again.');
-      return;
+      return false;
     }
 
     try {
@@ -2436,18 +2478,21 @@ function App() {
         authorKey,
         status: 'Active',
         onlyVerifiedUsers: payload.onlyVerifiedUsers,
-        title: createdTrip.title,
+        title: payload.title,
         hostName: createdTrip.hostName,
         isVerified: Boolean(createdTrip.isVerified),
         imageUrl: createdTrip.imageUrl,
         location: payload.location,
-        cost: payload.budget,
+        cost: estimatedCostPerTraveler,
         expectedBudget: payload.expectedBudget,
         durationDays: journeyDateRange.durationDays,
         requiredPeople: payload.peopleRequired,
         spotsFilledPercent: 0,
         expectations: payload.expectations,
         travelerType: payload.travelerType,
+        currency: payload.currency,
+        isPrivate: payload.isPrivate,
+        emergencyContact: payload.emergencyContact,
         startDate: journeyDateRange.startDate.toISOString(),
         endDate: journeyDateRange.endDate.toISOString(),
       });
@@ -2484,9 +2529,11 @@ function App() {
       setSystemNotice('Trip post created and saved to database.');
       void loadSelfTripsForHost();
       await loadPostStatsFromDatabase(authorKey);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to create trip post right now.';
       setSystemNotice(message);
+      return false;
     }
   };
 
@@ -2978,7 +3025,7 @@ function App() {
   const handleSaveEditedPost = async (payload: CreateTripPayload) => {
     if (!currentUserAuthorKey) {
       setSystemNotice('Sign in to edit your post.');
-      return;
+      return false;
     }
 
     const currentPost = editingFeedPost
@@ -2986,13 +3033,13 @@ function App() {
       : null;
     if (!currentPost) {
       setSystemNotice('Post not found.');
-      return;
+      return false;
     }
 
     const journeyDateRange = createJourneyDateRange(payload.startJourneyDate, payload.endJourneyDate);
     if (!journeyDateRange) {
       setSystemNotice('Please choose a valid start and end journey date.');
-      return;
+      return false;
     }
 
     const conflictingBooking = findConflictingBookedTrip(
@@ -3003,27 +3050,31 @@ function App() {
     );
     if (conflictingBooking) {
       setSystemNotice(TRIP_OVERLAP_NOTICE);
-      return;
+      return false;
     }
 
     setIsPostActionInProgress(true);
     try {
+      const estimatedCostPerTraveler = Number((payload.expectedBudget / Math.max(payload.peopleRequired, 1)).toFixed(2));
       const updatedPost = await updateFeedPost(currentPost.id, {
         authorKey: currentUserAuthorKey,
         status: currentPost.status,
         onlyVerifiedUsers: payload.onlyVerifiedUsers,
-        title: currentPost.title,
+        title: payload.title,
         hostName: currentPost.hostName,
         isVerified: currentPost.isVerified,
         imageUrl: payload.posterImageUrls[0] ?? currentPost.imageUrl,
         location: payload.location,
-        cost: payload.budget,
+        cost: estimatedCostPerTraveler,
         expectedBudget: payload.expectedBudget,
         durationDays: journeyDateRange.durationDays,
         requiredPeople: payload.peopleRequired,
         spotsFilledPercent: currentPost.spotsFilledPercent,
         expectations: payload.expectations,
         travelerType: payload.travelerType,
+        currency: payload.currency,
+        isPrivate: payload.isPrivate,
+        emergencyContact: payload.emergencyContact,
         startDate: journeyDateRange.startDate.toISOString(),
         endDate: journeyDateRange.endDate.toISOString(),
       });
@@ -3037,9 +3088,11 @@ function App() {
       setSystemNotice('Post updated successfully.');
       void loadSelfTripsForHost();
       await loadPostStatsFromDatabase(currentUserAuthorKey);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to update post right now.';
       setSystemNotice(message);
+      return false;
     } finally {
       setIsPostActionInProgress(false);
     }
@@ -5393,6 +5446,7 @@ function App() {
               onDeletePost={handleDeleteFeedPost}
               onCompletePost={handleCompleteFeedPost}
               onCancelPost={handleCancelFeedPost}
+              onCreateNewTrip={activeView === 'myPosts' ? handleHostTrip : undefined}
             />
           )}
         </section>
