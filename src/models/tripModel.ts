@@ -9,6 +9,7 @@ export interface Trip {
   hostCountryCode?: string;
   hostMobileNumber?: string;
   priceShare: number;
+  expectedBudget?: number;
   matchPercentage: number;
   tripDNA: TripDNA;
   imageUrl: string;

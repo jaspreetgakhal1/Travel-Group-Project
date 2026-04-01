@@ -7,6 +7,7 @@ export interface ITrip {
     location: string;
     imageUrl?: string;
     price?: number;
+    expectedBudget: number;
     category?: 'Adventure' | 'Luxury' | 'Budget' | 'Nature';
     startDate: Date;
     endDate: Date;

@@ -1,6 +1,14 @@
 import mongoose, { Schema } from 'mongoose';
 import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 const { model, models } = mongoose;
+const calculateExpectedBudgetDefault = (startDate, endDate, participantCount) => {
+    const normalizedStartDate = startDate instanceof Date ? startDate : new Date(startDate ?? Date.now());
+    const normalizedEndDate = endDate instanceof Date ? endDate : new Date(endDate ?? normalizedStartDate);
+    const durationMs = Math.max(normalizedEndDate.getTime() - normalizedStartDate.getTime(), 0);
+    const durationDays = Math.max(1, Math.ceil(durationMs / (24 * 60 * 60 * 1000)) + 1);
+    const safeParticipantCount = Number.isInteger(participantCount) && participantCount > 0 ? participantCount : 1;
+    return durationDays * safeParticipantCount * 100;
+};
 const tripSchema = new Schema({
     organizerId: {
         type: Schema.Types.ObjectId,
@@ -38,6 +46,14 @@ const tripSchema = new Schema({
         type: Number,
         min: 0,
         default: 0,
+    },
+    expectedBudget: {
+        type: Number,
+        required: true,
+        min: 0,
+        default() {
+            return calculateExpectedBudgetDefault(this.startDate, this.endDate, this.maxParticipants);
+        },
     },
     category: {
         type: String,

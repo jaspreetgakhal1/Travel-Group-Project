@@ -8,9 +8,9 @@ type ExpenseEmptyStateProps = {
 
 const ExpenseEmptyState: React.FC<ExpenseEmptyStateProps> = ({ description, title }) => {
   return (
-    <div className="overflow-hidden rounded-[30px] bg-[linear-gradient(145deg,rgba(255,255,255,0.94),rgba(255,248,236,0.96))] px-5 py-6 shadow-xl shadow-slate-950/10">
+    <div className="overflow-hidden rounded-3xl border border-white/20 bg-white/80 px-5 py-6 shadow-xl shadow-slate-950/10 backdrop-blur-2xl">
       <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:text-left">
-        <div className="relative flex h-24 w-24 items-center justify-center rounded-[28px] bg-[#fff6ec]">
+        <div className="relative flex h-24 w-24 items-center justify-center rounded-[28px] bg-[#fff6ec]/90">
           <motion.div
             animate={{ y: [0, -6, 0] }}
             transition={{ duration: 2.6, ease: 'easeInOut', repeat: Number.POSITIVE_INFINITY }}

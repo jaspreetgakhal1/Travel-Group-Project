@@ -7,6 +7,41 @@ import { User } from '../models/User.js';
 export const toCents = (value) => Math.round(Number(value || 0) * 100);
 export const fromCents = (value) => Number((value / 100).toFixed(2));
 
+const getTripDurationDays = (startDate, endDate) => {
+  const normalizedStartDate = startDate instanceof Date ? startDate : new Date(startDate ?? Date.now());
+  const normalizedEndDate = endDate instanceof Date ? endDate : new Date(endDate ?? normalizedStartDate);
+  const durationMs = Math.max(normalizedEndDate.getTime() - normalizedStartDate.getTime(), 0);
+  return Math.max(1, Math.ceil(durationMs / (24 * 60 * 60 * 1000)) + 1);
+};
+
+const calculateExpectedBudgetDefaultCents = (startDate, endDate, participantCount) => {
+  const durationDays = getTripDurationDays(startDate, endDate);
+  const safeParticipantCount = Number.isInteger(participantCount) && participantCount > 0 ? participantCount : 1;
+  return durationDays * safeParticipantCount * 10000;
+};
+
+const resolveExpectedBudgetCents = (trip, participantCount) => {
+  if (Number.isFinite(trip?.expectedBudget) && trip.expectedBudget >= 0) {
+    return toCents(trip.expectedBudget);
+  }
+
+  const safeParticipantCount =
+    Number.isInteger(trip?.maxParticipants) && trip.maxParticipants > 0 ? trip.maxParticipants : participantCount;
+  return calculateExpectedBudgetDefaultCents(trip?.startDate, trip?.endDate, safeParticipantCount);
+};
+
+const getBudgetStatus = (utilizationPercent) => {
+  if (utilizationPercent > 100) {
+    return 'over_budget';
+  }
+
+  if (utilizationPercent >= 80) {
+    return 'at_risk';
+  }
+
+  return 'healthy';
+};
+
 const getParticipantIds = (value) => (Array.isArray(value) ? value.map((participantId) => String(participantId)) : []);
 
 const getDisplayName = (user) => {
@@ -26,7 +61,7 @@ export const loadTripContext = async (tripId, requesterId) => {
     return { error: { status: 400, message: 'Trip id is invalid.' } };
   }
 
-  const trip = await Trip.findById(tripId).select('_id organizerId title location imageUrl participants endDate').lean();
+  const trip = await Trip.findById(tripId).select('_id organizerId title location imageUrl participants startDate endDate maxParticipants expectedBudget').lean();
   if (!trip) {
     return { error: { status: 404, message: 'Trip not found.' } };
   }
@@ -165,16 +200,66 @@ export const buildTripSettlement = async (tripId, requesterId) => {
     };
   });
 
+  const participantCount = Math.max(members.length, 1);
+  const expectedBudgetCents = resolveExpectedBudgetCents(trip, participantCount);
+  const remainingBudgetCents = expectedBudgetCents - totalExpenseCents;
+  const overBudgetCents = Math.max(0, totalExpenseCents - expectedBudgetCents);
+  const budgetUtilizationPercent =
+    expectedBudgetCents > 0 ? Number(((totalExpenseCents / expectedBudgetCents) * 100).toFixed(2)) : totalExpenseCents > 0 ? 100 : 0;
+  const budgetUtilizationDisplayPercent = Number(Math.min(100, budgetUtilizationPercent).toFixed(2));
+  const individualResponsibilityCents = Math.round(totalExpenseCents / participantCount);
+  const budgetStatus = getBudgetStatus(budgetUtilizationPercent);
+  const liquidationStatuses = Array.from(balancesByUserId.values()).map((balance) => {
+    const varianceCents = balance.totalSpentCents - individualResponsibilityCents;
+    const status =
+      varianceCents < 0 ? 'needs_to_contribute' : varianceCents > 0 ? 'ahead_of_target' : 'paid_in_full';
+
+    return {
+      userId: balance.userId,
+      name: balance.name,
+      avatar: balance.avatar,
+      totalSpent: fromCents(balance.totalSpentCents),
+      individualResponsibility: fromCents(individualResponsibilityCents),
+      varianceFromResponsibility: fromCents(varianceCents),
+      amountToContribute: varianceCents < 0 ? fromCents(Math.abs(varianceCents)) : 0,
+      aheadBy: varianceCents > 0 ? fromCents(varianceCents) : 0,
+      status,
+      label:
+        status === 'needs_to_contribute'
+          ? `Needs to add ${fromCents(Math.abs(varianceCents)).toFixed(2)}`
+          : status === 'ahead_of_target'
+            ? `Ahead by ${fromCents(varianceCents).toFixed(2)}`
+            : 'Paid in Full',
+    };
+  });
+
   return {
     trip: {
       id: String(trip._id),
       title: trip.title,
       location: trip.location,
       imageUrl: typeof trip.imageUrl === 'string' ? trip.imageUrl : '',
+      expectedBudget: fromCents(expectedBudgetCents),
+      durationDays: getTripDurationDays(trip.startDate, trip.endDate),
     },
     members,
     expenses: serializedExpenses,
     totalExpenses: fromCents(totalExpenseCents),
+    budgetSummary: {
+      expectedBudget: fromCents(expectedBudgetCents),
+      totalExpenses: fromCents(totalExpenseCents),
+      remainingBudget: fromCents(remainingBudgetCents),
+      overBudgetAmount: fromCents(overBudgetCents),
+      budgetUtilizationPercent,
+      budgetUtilizationDisplayPercent,
+      budgetStatus,
+    },
+    liquidationSummary: {
+      participantCount,
+      individualResponsibility: fromCents(individualResponsibilityCents),
+      remainingBudget: fromCents(remainingBudgetCents),
+      statuses: liquidationStatuses,
+    },
     settlementSummary: Array.from(settlementByPair.values())
       .map(({ amountCents, ...rest }) => ({ ...rest, amount: fromCents(amountCents) }))
       .sort((left, right) => right.amount - left.amount),

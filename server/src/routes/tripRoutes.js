@@ -56,13 +56,13 @@ const findCurrentActiveTripIdForUser = async (userId) => {
 };
 const resolveTripForJoinRequest = async (tripId) => {
     const existingTrip = await Trip.findById(tripId)
-        .select('_id organizerId maxParticipants participants startDate endDate status')
+        .select('_id organizerId maxParticipants participants startDate endDate status expectedBudget')
         .lean();
     if (existingTrip) {
         return { trip: existingTrip };
     }
     const post = await Post.findById(tripId)
-        .select('_id title location requiredPeople startDate endDate status authorKey hostName')
+        .select('_id title location requiredPeople expectedBudget startDate endDate status authorKey hostName')
         .lean();
     if (!post) {
         return { trip: null, message: 'Trip not found.' };
@@ -104,6 +104,9 @@ const resolveTripForJoinRequest = async (tripId) => {
             location: typeof post.location === 'string' && post.location.trim()
                 ? post.location.trim()
                 : 'Custom route',
+            expectedBudget: typeof post.expectedBudget === 'number' && Number.isFinite(post.expectedBudget) && post.expectedBudget >= 0
+                ? Number(post.expectedBudget.toFixed(2))
+                : Math.max(1, maxParticipants) * Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)) + 1) * 100,
             startDate,
             endDate,
             status: getTripStatus(post.status),
@@ -132,7 +135,7 @@ router.get('/self', requireAuth, async (req, res) => {
             organizerId: hostObjectId,
         })
             .sort({ createdAt: -1 })
-            .select('_id organizerId title location startDate endDate status maxParticipants participants createdAt updatedAt')
+            .select('_id organizerId title location expectedBudget startDate endDate status maxParticipants participants createdAt updatedAt')
             .lean();
         if (trips.length === 0) {
             return res.status(200).json({ trips: [] });
@@ -167,6 +170,7 @@ router.get('/self', requireAuth, async (req, res) => {
                     hostId: String(trip.organizerId),
                     title: trip.title,
                     location: trip.location,
+                    expectedBudget: typeof trip.expectedBudget === 'number' ? Number(trip.expectedBudget.toFixed(2)) : 0,
                     startDate: trip.startDate,
                     endDate: trip.endDate,
                     status: getTripStatus(trip.status),
@@ -235,7 +239,7 @@ router.get('/:tripId', async (req, res) => {
     try {
         await markPastTripsCompleted();
         const trip = await Trip.findById(tripId)
-            .select('_id organizerId title location startDate endDate status maxParticipants participants createdAt updatedAt')
+            .select('_id organizerId title location expectedBudget startDate endDate status maxParticipants participants createdAt updatedAt')
             .lean();
         if (!trip) {
             return res.status(404).json({ message: 'Trip not found.' });
@@ -248,6 +252,7 @@ router.get('/:tripId', async (req, res) => {
                 hostId: String(trip.organizerId),
                 title: trip.title,
                 location: trip.location,
+                expectedBudget: typeof trip.expectedBudget === 'number' ? Number(trip.expectedBudget.toFixed(2)) : 0,
                 startDate: trip.startDate,
                 endDate: trip.endDate,
                 status: getTripStatus(trip.status),

@@ -3,6 +3,25 @@ import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 
 const { model, models } = mongoose;
 
+export interface ITripSuggestion {
+  _id: Types.ObjectId;
+  name: string;
+  whyVisit: string;
+  estimatedCostPerPerson: number;
+  vibeMatchPercent: number;
+  imageUrl: string;
+  voteUserIds: Types.ObjectId[];
+  createdAt: Date;
+}
+
+export interface ITripSuggestionPreferences {
+  collectiveMood: string;
+  interest: string;
+  budget: string;
+  food: string;
+  crowds: string;
+}
+
 export interface ITrip {
   organizerId: Types.ObjectId;
   title: string;
@@ -10,12 +29,17 @@ export interface ITrip {
   location: string;
   imageUrl?: string;
   price?: number;
+  expectedBudget: number;
+  travelerType?: string;
   category?: 'Adventure' | 'Luxury' | 'Budget' | 'Nature';
   startDate: Date;
   endDate: Date;
   status: (typeof TRIP_STATUS_VALUES)[number];
   maxParticipants: number;
   participants: Types.ObjectId[];
+  suggestions: ITripSuggestion[];
+  suggestionPreferences?: ITripSuggestionPreferences | null;
+  suggestionsGeneratedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -27,6 +51,74 @@ export interface ITripVirtuals {
 export type TripDocument = HydratedDocument<ITrip, ITripVirtuals>;
 
 type TripModelType = Model<ITrip, {}, {}, ITripVirtuals>;
+
+const calculateExpectedBudgetDefault = (
+  startDate: Date | string | undefined,
+  endDate: Date | string | undefined,
+  participantCount: number,
+): number => {
+  const normalizedStartDate = startDate instanceof Date ? startDate : new Date(startDate ?? Date.now());
+  const normalizedEndDate = endDate instanceof Date ? endDate : new Date(endDate ?? normalizedStartDate);
+  const durationMs = Math.max(normalizedEndDate.getTime() - normalizedStartDate.getTime(), 0);
+  const durationDays = Math.max(1, Math.ceil(durationMs / (24 * 60 * 60 * 1000)) + 1);
+  const safeParticipantCount = Number.isInteger(participantCount) && participantCount > 0 ? participantCount : 1;
+
+  return durationDays * safeParticipantCount * 100;
+};
+
+const tripSuggestionSchema = new Schema<ITripSuggestion>(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 120,
+    },
+    whyVisit: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 280,
+    },
+    estimatedCostPerPerson: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 0,
+    },
+    vibeMatchPercent: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 100,
+      default: 0,
+    },
+    imageUrl: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 2048,
+      default: '',
+    },
+    voteUserIds: {
+      type: [
+        {
+          type: Schema.Types.ObjectId,
+          ref: 'User',
+        },
+      ],
+      default: [],
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  {
+    _id: true,
+    id: true,
+  },
+);
 
 const tripSchema = new Schema<ITrip, TripModelType, {}, {}, ITripVirtuals>(
   {
@@ -67,6 +159,20 @@ const tripSchema = new Schema<ITrip, TripModelType, {}, {}, ITripVirtuals>(
       min: 0,
       default: 0,
     },
+    expectedBudget: {
+      type: Number,
+      required: true,
+      min: 0,
+      default(this: ITrip) {
+        return calculateExpectedBudgetDefault(this.startDate, this.endDate, this.maxParticipants);
+      },
+    },
+    travelerType: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+      default: '',
+    },
     category: {
       type: String,
       enum: ['Adventure', 'Luxury', 'Budget', 'Nature'],
@@ -105,6 +211,49 @@ const tripSchema = new Schema<ITrip, TripModelType, {}, {}, ITripVirtuals>(
         },
       ],
       default: [],
+    },
+    suggestions: {
+      type: [tripSuggestionSchema],
+      default: [],
+    },
+    suggestionPreferences: {
+      type: {
+        collectiveMood: {
+          type: String,
+          trim: true,
+          maxlength: 80,
+          default: '',
+        },
+        interest: {
+          type: String,
+          trim: true,
+          maxlength: 80,
+          default: '',
+        },
+        budget: {
+          type: String,
+          trim: true,
+          maxlength: 80,
+          default: '',
+        },
+        food: {
+          type: String,
+          trim: true,
+          maxlength: 80,
+          default: '',
+        },
+        crowds: {
+          type: String,
+          trim: true,
+          maxlength: 80,
+          default: '',
+        },
+      },
+      default: null,
+    },
+    suggestionsGeneratedAt: {
+      type: Date,
+      default: null,
     },
   },
   {

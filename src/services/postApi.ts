@@ -14,6 +14,7 @@ export type CreateFeedPostPayload = {
   imageUrl: string;
   location: string;
   cost: number;
+  expectedBudget?: number;
   durationDays: number;
   requiredPeople: number;
   spotsFilledPercent: number;

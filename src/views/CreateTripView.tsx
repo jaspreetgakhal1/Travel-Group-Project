@@ -8,6 +8,7 @@ export type CreateTripPayload = {
   posterImageUrls: string[];
   peopleRequired: number;
   budget: number;
+  expectedBudget?: number;
   expectations: string[];
   interestedIn: InterestedInOption;
   onlyVerifiedUsers: boolean;
@@ -99,6 +100,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
   const [posterImageDataUrls, setPosterImageDataUrls] = useState<string[]>([]);
   const [peopleRequired, setPeopleRequired] = useState(4);
   const [budget, setBudget] = useState('');
+  const [expectedBudget, setExpectedBudget] = useState('');
   const [selectedExpectations, setSelectedExpectations] = useState<string[]>([]);
   const [customExpectations, setCustomExpectations] = useState<string[]>([]);
   const [expectationDraft, setExpectationDraft] = useState('');
@@ -123,6 +125,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
       posterImageUrls: [],
       peopleRequired: 4,
       budget: 0,
+      expectedBudget: undefined,
       expectations: [],
       interestedIn: 'Unspecified' as InterestedInOption,
       onlyVerifiedUsers: false,
@@ -140,6 +143,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
     setPosterImageDataUrls(sourcePayload.posterImageUrls);
     setPeopleRequired(sourcePayload.peopleRequired);
     setBudget(sourcePayload.budget > 0 ? sourcePayload.budget.toString() : '');
+    setExpectedBudget(typeof sourcePayload.expectedBudget === 'number' && sourcePayload.expectedBudget > 0 ? sourcePayload.expectedBudget.toString() : '');
     setSelectedExpectations(sourcePayload.expectations);
     setCustomExpectations(customFromPayload);
     setExpectationDraft('');
@@ -268,6 +272,17 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
       return;
     }
 
+    const normalizedExpectedBudget = expectedBudget.trim();
+    const parsedExpectedBudget =
+      normalizedExpectedBudget.length > 0 ? Number(normalizedExpectedBudget) : undefined;
+    if (
+      typeof parsedExpectedBudget !== 'undefined' &&
+      (!Number.isFinite(parsedExpectedBudget) || parsedExpectedBudget < 0)
+    ) {
+      setFormError('Please enter a valid expected total budget amount or leave it blank.');
+      return;
+    }
+
     if (selectedExpectations.length === 0) {
       setFormError('Select at least one expectation from the checklist.');
       return;
@@ -300,6 +315,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
         posterImageUrls: posterImageDataUrls,
         peopleRequired,
         budget: parsedBudget,
+        expectedBudget: parsedExpectedBudget,
         expectations: selectedExpectations,
         interestedIn,
         onlyVerifiedUsers,
@@ -363,7 +379,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
             ) : null}
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 lg:grid-cols-3">
             <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
               <p className="text-sm font-semibold text-primary">Number Of people Required</p>
               <div className="mt-3 inline-flex items-center gap-3 rounded-card border border-primary/15 bg-white px-3 py-2">
@@ -399,6 +415,29 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
                 className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
                 placeholder="Enter total budget"
               />
+            </label>
+
+            <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+              <span className="mb-1 flex items-center gap-2 text-sm font-semibold text-primary">
+                Expected Total Budget
+                <span
+                  title="This is the total estimated cost for the whole group. We will use this to track your spending and calculate the final liquidation."
+                  className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-primary/20 bg-white text-[11px] font-bold text-primary/65"
+                >
+                  ?
+                </span>
+              </span>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={expectedBudget}
+                disabled={isBusy}
+                onChange={(event) => setExpectedBudget(event.target.value)}
+                className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
+                placeholder="Leave blank for auto budget"
+              />
+              <p className="mt-2 text-xs text-primary/65">Defaults to a duration-based group estimate if you leave this empty.</p>
             </label>
           </div>
 

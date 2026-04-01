@@ -24,6 +24,7 @@ export type FeedPost = {
   imageUrl: string;
   location: string;
   cost: number;
+  expectedBudget: number;
   durationDays: number;
   requiredPeople: number;
   maxParticipants: number;

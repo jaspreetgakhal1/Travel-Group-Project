@@ -175,6 +175,12 @@ const getSpotsFilledPercent = (spotsFilled, maxParticipants) => {
   return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
 };
 
+const calculateExpectedBudgetDefault = (durationDays, participantCount) => {
+  const safeDurationDays = Number.isInteger(durationDays) && durationDays > 0 ? durationDays : 1;
+  const safeParticipantCount = Number.isInteger(participantCount) && participantCount > 0 ? participantCount : 1;
+  return safeDurationDays * safeParticipantCount * 100;
+};
+
 const syncTripWithPost = async (post, organizerId) => {
   const normalizedDateRange = normalizeTripDateRange(post.startDate, post.endDate);
   if (!normalizedDateRange) {
@@ -190,6 +196,10 @@ const syncTripWithPost = async (post, organizerId) => {
         location: post.location,
         imageUrl: post.imageUrl,
         price: post.cost,
+        expectedBudget:
+          Number.isFinite(post.expectedBudget) && post.expectedBudget >= 0
+            ? Number(post.expectedBudget.toFixed(2))
+            : calculateExpectedBudgetDefault(post.durationDays, post.requiredPeople),
         startDate: normalizedDateRange.startDate,
         endDate: normalizedDateRange.endDate,
         status: getPostStatus(post.status),
@@ -317,6 +327,10 @@ const toFeedPost = (post, user = null, trip = null) => {
     imageUrl: post.imageUrl,
     location: post.location,
     cost: post.cost,
+    expectedBudget:
+      Number.isFinite(post.expectedBudget) && post.expectedBudget >= 0
+        ? Number(post.expectedBudget.toFixed(2))
+        : calculateExpectedBudgetDefault(post.durationDays, post.requiredPeople),
     durationDays: post.durationDays,
     requiredPeople: post.requiredPeople,
     maxParticipants,
@@ -341,6 +355,7 @@ const validatePostPayload = (body) => {
     imageUrl,
     location,
     cost,
+    expectedBudget,
     durationDays,
     requiredPeople,
     spotsFilledPercent,
@@ -358,6 +373,7 @@ const validatePostPayload = (body) => {
     typeof imageUrl !== 'string' ||
     typeof location !== 'string' ||
     typeof cost !== 'number' ||
+    (typeof expectedBudget !== 'undefined' && expectedBudget !== null && typeof expectedBudget !== 'number') ||
     typeof durationDays !== 'number' ||
     typeof requiredPeople !== 'number' ||
     typeof spotsFilledPercent !== 'number' ||
@@ -394,6 +410,10 @@ const validatePostPayload = (body) => {
 
   if (!Number.isFinite(cost) || cost < 0) {
     return { isValid: false, message: 'Cost must be a non-negative number.' };
+  }
+
+  if (typeof expectedBudget !== 'undefined' && expectedBudget !== null && (!Number.isFinite(expectedBudget) || expectedBudget < 0)) {
+    return { isValid: false, message: 'Expected budget must be a non-negative number.' };
   }
 
   if (!Number.isInteger(durationDays) || durationDays < 1) {
@@ -435,6 +455,10 @@ const validatePostPayload = (body) => {
       imageUrl: normalizedImageUrl,
       location: normalizedLocation,
       cost: Number(cost.toFixed(2)),
+      expectedBudget:
+        typeof expectedBudget === 'number' && Number.isFinite(expectedBudget)
+          ? Number(expectedBudget.toFixed(2))
+          : calculateExpectedBudgetDefault(durationDays, requiredPeople),
       durationDays,
       requiredPeople,
       spotsFilledPercent: Math.round(spotsFilledPercent),
@@ -672,6 +696,7 @@ router.put('/:postId', async (request, response) => {
     post.imageUrl = validationResult.payload.imageUrl;
     post.location = validationResult.payload.location;
     post.cost = validationResult.payload.cost;
+    post.expectedBudget = validationResult.payload.expectedBudget;
     post.durationDays = validationResult.payload.durationDays;
     post.requiredPeople = validationResult.payload.requiredPeople;
     post.spotsFilledPercent = validationResult.payload.spotsFilledPercent;

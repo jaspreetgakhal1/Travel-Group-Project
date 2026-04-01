@@ -61,6 +61,16 @@ const postSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+    expectedBudget: {
+      type: Number,
+      required: true,
+      min: 0,
+      default() {
+        const durationDays = Number.isInteger(this.durationDays) && this.durationDays > 0 ? this.durationDays : 1;
+        const participantCount = Number.isInteger(this.requiredPeople) && this.requiredPeople > 0 ? this.requiredPeople : 1;
+        return durationDays * participantCount * 100;
+      },
+    },
     durationDays: {
       type: Number,
       required: true,
