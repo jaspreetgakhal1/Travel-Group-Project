@@ -7,6 +7,112 @@ import { buildWalletSummary, fromCents, toCents } from '../utils/wallet.js';
 
 const router = express.Router();
 
+const createUpdateOptions = (session) => (session ? { new: true, session } : { new: true });
+
+const buildReleaseTransactionPayload = ({ userId, recipientUserId, tripId, releaseAmountCents }) => ({
+  senderId: userId,
+  receiverId: recipientUserId,
+  tripId,
+  amount: fromCents(releaseAmountCents),
+  status: 'released',
+});
+
+const createReleaseError = (message, statusCode) => Object.assign(new Error(message), { statusCode });
+
+const isTransactionUnsupportedError = (error) => {
+  const message = error instanceof Error ? error.message : '';
+  return (
+    error?.code === 20 &&
+    /transaction numbers are only allowed on a replica set member or mongos/i.test(message)
+  );
+};
+
+const applyWalletRelease = async ({ userId, recipientUserId, tripId, releaseAmountCents, session = null }) => {
+  const sender = await User.findOneAndUpdate(
+    {
+      _id: userId,
+      escrowBalance: { $gte: fromCents(releaseAmountCents) },
+    },
+    {
+      $inc: { escrowBalance: -fromCents(releaseAmountCents) },
+    },
+    createUpdateOptions(session),
+  );
+
+  if (!sender) {
+    throw createReleaseError('Insufficient Escrow Balance.', 400);
+  }
+
+  const receiver = await User.findByIdAndUpdate(
+    recipientUserId,
+    {
+      $inc: { escrowBalance: fromCents(releaseAmountCents) },
+    },
+    createUpdateOptions(session),
+  );
+
+  if (!receiver) {
+    if (!session) {
+      await User.findByIdAndUpdate(userId, {
+        $inc: { escrowBalance: fromCents(releaseAmountCents) },
+      });
+    }
+
+    throw createReleaseError('Recipient user account not found.', 404);
+  }
+
+  const transactionPayload = buildReleaseTransactionPayload({
+    userId,
+    recipientUserId,
+    tripId,
+    releaseAmountCents,
+  });
+
+  try {
+    if (session) {
+      await Transaction.create([transactionPayload], { session });
+      return;
+    }
+
+    await Transaction.create(transactionPayload);
+  } catch (error) {
+    if (!session) {
+      const rollbackResults = await Promise.allSettled([
+        User.findByIdAndUpdate(userId, {
+          $inc: { escrowBalance: fromCents(releaseAmountCents) },
+        }),
+        User.findByIdAndUpdate(recipientUserId, {
+          $inc: { escrowBalance: -fromCents(releaseAmountCents) },
+        }),
+      ]);
+
+      if (rollbackResults.some((result) => result.status === 'rejected')) {
+        console.error('Wallet release rollback failed after transaction record creation error.', rollbackResults);
+      }
+    }
+
+    throw error;
+  }
+};
+
+const applyWalletReleaseWithTransaction = async (payload) => {
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+    await applyWalletRelease({ ...payload, session });
+    await session.commitTransaction();
+  } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+
+    throw error;
+  } finally {
+    await session.endSession();
+  }
+};
+
 router.get('/summary', requireAuth, async (req, res) => {
   const authRequest = req;
   const userId = authRequest.user?.id;
@@ -67,58 +173,27 @@ router.post('/release', requireAuth, async (req, res) => {
     return res.status(400).json({ message: 'Release amount exceeds the outstanding debt.' });
   }
 
-  const session = await mongoose.startSession();
-
   try {
-    session.startTransaction();
+    try {
+      await applyWalletReleaseWithTransaction({
+        userId,
+        recipientUserId,
+        tripId,
+        releaseAmountCents,
+      });
+    } catch (error) {
+      if (!isTransactionUnsupportedError(error)) {
+        throw error;
+      }
 
-    const sender = await User.findOneAndUpdate(
-      {
-        _id: userId,
-        escrowBalance: { $gte: fromCents(releaseAmountCents) },
-      },
-      {
-        $inc: { escrowBalance: -fromCents(releaseAmountCents) },
-      },
-      {
-        new: true,
-        session,
-      },
-    );
-
-    if (!sender) {
-      throw Object.assign(new Error('Insufficient Escrow Balance.'), { statusCode: 400 });
+      console.warn('MongoDB transactions are unavailable. Retrying wallet release without a session.');
+      await applyWalletRelease({
+        userId,
+        recipientUserId,
+        tripId,
+        releaseAmountCents,
+      });
     }
-
-    const receiver = await User.findByIdAndUpdate(
-      recipientUserId,
-      {
-        $inc: { escrowBalance: fromCents(releaseAmountCents) },
-      },
-      {
-        new: true,
-        session,
-      },
-    );
-
-    if (!receiver) {
-      throw Object.assign(new Error('Recipient user account not found.'), { statusCode: 404 });
-    }
-
-    await Transaction.create(
-      [
-        {
-          senderId: userId,
-          receiverId: recipientUserId,
-          tripId,
-          amount: fromCents(releaseAmountCents),
-          status: 'released',
-        },
-      ],
-      { session },
-    );
-
-    await session.commitTransaction();
 
     const nextSummary = await buildWalletSummary(userId);
     if ('error' in nextSummary) {
@@ -127,13 +202,10 @@ router.post('/release', requireAuth, async (req, res) => {
 
     return res.status(200).json(nextSummary);
   } catch (error) {
-    await session.abortTransaction();
     const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : 500;
     const message = error instanceof Error ? error.message : 'Unable to release this payment right now.';
     console.error('POST /api/wallet/release failed', error);
     return res.status(statusCode).json({ message });
-  } finally {
-    await session.endSession();
   }
 });
 

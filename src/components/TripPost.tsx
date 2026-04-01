@@ -32,8 +32,8 @@ type TripPostProps = {
 };
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
+  month: 'long',
+  day: '2-digit',
   year: 'numeric',
 });
 

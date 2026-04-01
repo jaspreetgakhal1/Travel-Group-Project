@@ -22,6 +22,8 @@ export type TripExpenseSummary = {
     title: string;
     location: string;
     imageUrl: string;
+    expectedBudget: number;
+    durationDays: number;
   };
   members: ExpenseMember[];
   expenses: Array<{
@@ -43,6 +45,32 @@ export type TripExpenseSummary = {
     updatedAt: string;
   }>;
   totalExpenses: number;
+  budgetSummary: {
+    expectedBudget: number;
+    totalExpenses: number;
+    remainingBudget: number;
+    overBudgetAmount: number;
+    budgetUtilizationPercent: number;
+    budgetUtilizationDisplayPercent: number;
+    budgetStatus: 'healthy' | 'at_risk' | 'over_budget';
+  };
+  liquidationSummary: {
+    participantCount: number;
+    individualResponsibility: number;
+    remainingBudget: number;
+    statuses: Array<{
+      userId: string;
+      name: string;
+      avatar: string | null;
+      totalSpent: number;
+      individualResponsibility: number;
+      varianceFromResponsibility: number;
+      amountToContribute: number;
+      aheadBy: number;
+      status: 'needs_to_contribute' | 'ahead_of_target' | 'paid_in_full';
+      label: string;
+    }>;
+  };
   settlementSummary: Array<{
     fromUserId: string;
     fromName: string;

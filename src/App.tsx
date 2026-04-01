@@ -1,5 +1,5 @@
 // Added by Codex: project documentation comment for src\App.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   chatMessages,
@@ -37,6 +37,7 @@ import HeroView from './views/HeroView';
 import OnboardingQuizView from './views/OnboardingQuizView';
 import ReviewSystemView from './views/ReviewSystemView';
 import TripDetailView from './views/TripDetailView';
+import AIExplorer from './views/AIExplorer';
 import VerificationGateView from './views/VerificationGateView';
 import CreateTripView, { type CreateTripPayload } from './views/CreateTripView';
 import AboutUsView from './views/AboutUsView';
@@ -64,6 +65,7 @@ import {
 import {
   deleteTripExpense,
   fetchActiveTripExpenseSummary,
+  fetchTripExpenseSummary,
   fetchWalletSummary,
   releaseWalletPayment,
   splitTripExpense,
@@ -82,8 +84,17 @@ import {
   type JoinRequestStatus,
 } from './services/tripRequestApi';
 import {
+  generateTripSuggestions,
+  getSmartSuggestions,
+  subscribeToTripSuggestions,
+  voteForTripSuggestion,
+  type TripSuggestionPreferences,
+  type TripSuggestionsSummary,
+} from './services/tripSuggestionsApi';
+import {
   ArrowRight,
   BadgeCheck,
+  CalendarDays,
   CircleDollarSign,
   Coins,
   FileText,
@@ -98,7 +109,6 @@ import {
   TrendingDown,
   TrendingUp,
   UserCircle2,
-  Users,
   Wallet,
   WalletCards,
   X,
@@ -115,6 +125,8 @@ const AUTH_TOKEN_STORAGE_KEY = 'splitngo_auth_token';
 const USER_SESSION_STORAGE_KEY = 'splitngo_user_session';
 const POST_AUTH_REDIRECT_STORAGE_KEY = 'splitngo_post_auth_redirect';
 const SYSTEM_NOTICE_AUTO_DISMISS_MS = 3000;
+const TRIP_HISTORY_PATH_PATTERN = /^\/trip\/([^/]+)\/history\/?$/;
+const TRIP_EXPLORER_PATH_PATTERN = /^\/trip\/([^/]+)\/explorer\/?$/;
 
 type ScreenName =
   | 'home'
@@ -130,6 +142,7 @@ type ScreenName =
   | 'tripDetails'
   | 'profile'
   | 'history'
+  | 'explorer'
   | 'wallet'
   | 'onboarding'
   | 'verification'
@@ -300,6 +313,33 @@ const compareFeedPostsByMostRecentTrip = (
   const leftEnd = toDayEndTimestamp(leftPost.endDate) ?? 0;
   const rightEnd = toDayEndTimestamp(rightPost.endDate) ?? 0;
   return rightEnd - leftEnd;
+};
+
+const compareFeedPostsByUpcomingStartDate = (
+  leftPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+  rightPost: Pick<FeedPost, 'startDate' | 'endDate'>,
+): number => {
+  const leftStart = toDayStartTimestamp(leftPost.startDate) ?? Number.MAX_SAFE_INTEGER;
+  const rightStart = toDayStartTimestamp(rightPost.startDate) ?? Number.MAX_SAFE_INTEGER;
+
+  if (leftStart !== rightStart) {
+    return leftStart - rightStart;
+  }
+
+  const leftEnd = toDayEndTimestamp(leftPost.endDate) ?? Number.MAX_SAFE_INTEGER;
+  const rightEnd = toDayEndTimestamp(rightPost.endDate) ?? Number.MAX_SAFE_INTEGER;
+  return leftEnd - rightEnd;
+};
+
+const isFeedPostUpcomingOrCurrent = (post: Pick<FeedPost, 'endDate'>): boolean => {
+  const tripEndDate = toDayEndTimestamp(post.endDate);
+  const todayStart = toDayStartTimestamp(new Date());
+
+  if (tripEndDate === null || todayStart === null) {
+    return false;
+  }
+
+  return tripEndDate >= todayStart;
 };
 
 const createJourneyDateRange = (
@@ -529,9 +569,10 @@ const getLocalConflictHint = (viewerDNA: UserDNA, organizerDNA: UserDNA): string
 };
 
 const toCreateTripPayloadFromFeedPost = (post: FeedPost): CreateTripPayload => ({
+  title: post.title,
   posterImageUrls: post.imageUrl ? [post.imageUrl] : [],
   peopleRequired: post.requiredPeople,
-  budget: post.cost,
+  expectedBudget: post.expectedBudget,
   expectations: post.expectations,
   interestedIn: 'Unspecified',
   onlyVerifiedUsers: post.onlyVerifiedUsers,
@@ -539,6 +580,12 @@ const toCreateTripPayloadFromFeedPost = (post: FeedPost): CreateTripPayload => (
   endJourneyDate: typeof post.endDate === 'string' ? post.endDate.slice(0, 10) : '',
   location: post.location,
   travelerType: post.travelerType,
+  currency: (post.currency || 'USD') as CreateTripPayload['currency'],
+  isPrivate: Boolean(post.isPrivate),
+  emergencyContact: {
+    name: post.emergencyContact?.name ?? '',
+    phone: post.emergencyContact?.phone ?? '',
+  },
 });
 
 const toRuntimeTripFromFeedPost = (post: FeedPost): Trip => ({
@@ -549,6 +596,11 @@ const toRuntimeTripFromFeedPost = (post: FeedPost): Trip => ({
   hostCountryCode: post.hostCountryCode,
   hostMobileNumber: post.hostMobileNumber,
   priceShare: post.cost,
+  expectedBudget: post.expectedBudget,
+  currency: post.currency,
+  isPrivate: post.isPrivate,
+  emergencyContact: post.emergencyContact,
+  travelerType: post.travelerType,
   matchPercentage: 100,
   tripDNA: normalizeTravelDNA(defaultUserDNA),
   imageUrl: post.imageUrl,
@@ -588,6 +640,13 @@ const createInitialFeedPosts = (): FeedPost[] => {
       imageUrl: trip.imageUrl,
       location: getRouteLabel(trip.route),
       cost: trip.priceShare,
+      expectedBudget: trip.expectedBudget ?? trip.totalExpectedFromPartner,
+      currency: trip.currency ?? 'USD',
+      isPrivate: Boolean(trip.isPrivate),
+      emergencyContact: trip.emergencyContact ?? {
+        name: '',
+        phone: '',
+      },
       durationDays,
       requiredPeople: requiredPeopleTargets[index % requiredPeopleTargets.length],
       maxParticipants: requiredPeopleTargets[index % requiredPeopleTargets.length],
@@ -794,6 +853,25 @@ const updateAverageRating = (
   return { nextAverage, nextCount };
 };
 
+const formatTripDateRangeLabel = (startDate?: string, endDate?: string): string => {
+  if (!startDate || !endDate) {
+    return 'Dates coming soon';
+  }
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return 'Dates coming soon';
+  }
+
+  return `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })}`;
+};
+
 const renderSidebarIcon = (icon: NavIcon): React.ReactNode => {
   if (icon === 'trips') {
     return (
@@ -819,6 +897,14 @@ const renderSidebarIcon = (icon: NavIcon): React.ReactNode => {
       <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
         <rect x="3" y="6" width="18" height="12" rx="2" />
         <path d="M16 12h3" />
+      </svg>
+    );
+  }
+
+  if (icon === 'explorer') {
+    return (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M12 3l2.6 5.4L20 11l-5.4 2.6L12 19l-2.6-5.4L4 11l5.4-2.6L12 3z" />
       </svg>
     );
   }
@@ -856,6 +942,11 @@ function App() {
   const [splitExpenseAmount, setSplitExpenseAmount] = useState('');
   const [selectedSplitDebtorIds, setSelectedSplitDebtorIds] = useState<string[]>([]);
   const [tripExpenseSummary, setTripExpenseSummary] = useState<TripExpenseSummary | null>(null);
+  const [tripSuggestionsSummary, setTripSuggestionsSummary] = useState<TripSuggestionsSummary | null>(null);
+  const [tripSuggestionsError, setTripSuggestionsError] = useState('');
+  const [isTripSuggestionsLoading, setIsTripSuggestionsLoading] = useState(false);
+  const [isTripSuggestionsGenerating, setIsTripSuggestionsGenerating] = useState(false);
+  const [activeSuggestionVoteId, setActiveSuggestionVoteId] = useState<string | null>(null);
   const [tripExpenseError, setTripExpenseError] = useState('');
   const [isTripExpenseLoading, setIsTripExpenseLoading] = useState(false);
   const [isTripExpenseSubmitting, setIsTripExpenseSubmitting] = useState(false);
@@ -873,6 +964,13 @@ function App() {
   const [walletReleaseKey, setWalletReleaseKey] = useState<string | null>(null);
   const [walletReleaseEntry, setWalletReleaseEntry] = useState<WalletSummaryEntry | null>(null);
   const [walletReleaseAmount, setWalletReleaseAmount] = useState('');
+  const [activeTripHistoryTripId, setActiveTripHistoryTripId] = useState<string | null>(null);
+  const [activeTripExplorerTripId, setActiveTripExplorerTripId] = useState<string | null>(null);
+  const [pendingExplorerExpensePrefill, setPendingExplorerExpensePrefill] = useState<{
+    description: string;
+    amount: string;
+  } | null>(null);
+  const addExpenseComposerRef = useRef<HTMLElement | null>(null);
 
   const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authForm, setAuthForm] = useState<AuthForm>({ userId: '', password: '', confirmPassword: '' });
@@ -939,7 +1037,7 @@ function App() {
   const mainFeedPosts = useMemo(() => {
     return feedPosts
       .filter((post) => {
-        if (post.status !== 'Active') {
+        if (post.status !== 'Active' || !isFeedPostUpcomingOrCurrent(post)) {
           return false;
         }
 
@@ -953,7 +1051,7 @@ function App() {
   }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
   const myFeedPosts = useMemo(() => {
     const filteredPosts = feedPosts.filter((post) => {
-      if (post.status !== 'Active') {
+      if (post.status !== 'Active' || !isFeedPostUpcomingOrCurrent(post)) {
         return false;
       }
 
@@ -969,20 +1067,18 @@ function App() {
         ...post,
         pendingRequestCount: pendingRequestCountByTripId[post.id] ?? post.pendingRequestCount ?? 0,
       }))
-      .sort(compareFeedPostsByMostRecentTrip);
+      .sort(compareFeedPostsByUpcomingStartDate);
   }, [feedPosts, normalizedCurrentUserAuthorKey, pendingRequestCountByTripId, selfTripIdSet, userSession?.id]);
   const archivedMyPosts = useMemo(() => {
     return feedPosts
       .filter((post) => {
-        if (post.status !== 'Completed') {
-          return false;
-        }
-
         const isOwnPostByAuthor =
           normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
         const isOwnPostById = selfTripIdSet.has(post.id);
         const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
-        return isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
+        const isOwnPost = isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
+        const isPastTrip = !isFeedPostUpcomingOrCurrent(post);
+        return isOwnPost && (post.status === 'Completed' || isPastTrip);
       })
       .sort(compareFeedPostsByMostRecentTrip);
   }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
@@ -1006,6 +1102,35 @@ function App() {
       return collection.findIndex((candidate) => candidate.id === post.id) === index;
     });
   }, [feedPosts, normalizedCurrentUserAuthorKey, userSession?.id]);
+  const activeTripFeedPost = useMemo(() => {
+    if (!tripExpenseSummary?.trip.id) {
+      return null;
+    }
+
+    return (
+      feedPosts.find((post) => post.id === tripExpenseSummary.trip.id) ??
+      bookedTripPosts.find((post) => post.id === tripExpenseSummary.trip.id) ??
+      null
+    );
+  }, [bookedTripPosts, feedPosts, tripExpenseSummary?.trip.id]);
+  const activeTripDateRangeLabel = useMemo(() => {
+    if (activeTripFeedPost) {
+      return formatTripDateRangeLabel(activeTripFeedPost.startDate, activeTripFeedPost.endDate);
+    }
+
+    if (!tripExpenseSummary) {
+      return 'Dates coming soon';
+    }
+
+    return `${tripExpenseSummary.trip.durationDays} day${tripExpenseSummary.trip.durationDays === 1 ? '' : 's'}`;
+  }, [activeTripFeedPost, tripExpenseSummary]);
+  const activeTripHostLabel = useMemo(() => {
+    if (activeTripFeedPost?.hostName) {
+      return activeTripFeedPost.hostName;
+    }
+
+    return tripExpenseSummary?.members.find((member) => member.isHost)?.name ?? 'Trip host';
+  }, [activeTripFeedPost?.hostName, tripExpenseSummary]);
   const joinConflictMessageByPostId = useMemo<JoinConflictMessageByPostId>(() => {
     const currentUserId = userSession?.id;
     const currentAuthorKey = normalizedCurrentUserAuthorKey;
@@ -1205,6 +1330,38 @@ function App() {
   }, [postAuthRedirectScreen]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const syncWorkspaceScreenFromPath = () => {
+      const historyMatch = window.location.pathname.match(TRIP_HISTORY_PATH_PATTERN);
+      const explorerMatch = window.location.pathname.match(TRIP_EXPLORER_PATH_PATTERN);
+      const nextHistoryTripId = historyMatch ? decodeURIComponent(historyMatch[1]) : null;
+      const nextExplorerTripId = explorerMatch ? decodeURIComponent(explorerMatch[1]) : null;
+
+      setActiveTripHistoryTripId(nextHistoryTripId);
+      setActiveTripExplorerTripId(nextExplorerTripId);
+      setCurrentScreen((current) => {
+        if (nextHistoryTripId) {
+          return 'history';
+        }
+
+        if (nextExplorerTripId) {
+          return 'explorer';
+        }
+
+        return current === 'history' || current === 'explorer' ? 'wallet' : current;
+      });
+    };
+
+    syncWorkspaceScreenFromPath();
+    window.addEventListener('popstate', syncWorkspaceScreenFromPath);
+
+    return () => window.removeEventListener('popstate', syncWorkspaceScreenFromPath);
+  }, []);
+
+  useEffect(() => {
     if (!systemNotice) {
       return;
     }
@@ -1345,8 +1502,14 @@ function App() {
   useEffect(() => {
     const currentAuthToken =
       typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const shouldLoadActiveTripSummary =
+      currentScreen === 'wallet' ||
+      currentScreen === 'explorer' ||
+      currentScreen === 'dashboard' ||
+      currentScreen === 'expenses' ||
+      currentScreen === 'chat';
 
-    if (currentScreen !== 'wallet' || !currentAuthToken) {
+    if (!shouldLoadActiveTripSummary || !currentAuthToken) {
       return;
     }
 
@@ -1393,6 +1556,120 @@ function App() {
   }, [authToken, currentScreen]);
 
   useEffect(() => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const activeTripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? null;
+
+    if (currentScreen !== 'explorer' || !currentAuthToken || !activeTripId) {
+      setTripSuggestionsSummary(null);
+      setTripSuggestionsError('');
+      setIsTripSuggestionsLoading(false);
+      setIsTripSuggestionsGenerating(false);
+      setActiveSuggestionVoteId(null);
+      return;
+    }
+
+    let isActive = true;
+    setIsTripSuggestionsLoading(true);
+    setTripSuggestionsError('');
+
+    void getSmartSuggestions(activeTripId, currentAuthToken)
+      .then((summary) => {
+        if (isActive) {
+          setTripSuggestionsSummary(summary);
+          setTripSuggestionsError('');
+        }
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+
+        const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+        if (isUnauthorized) {
+          clearStoredAuthState();
+          setHydratedProfileToken(null);
+          setUserSession(null);
+          setCurrentScreen('auth');
+          setSystemNotice('Your session expired. Please sign in again.');
+          return;
+        }
+
+        setTripSuggestionsSummary(null);
+        setTripSuggestionsError(error instanceof Error ? error.message : 'Unable to load AI Explorer right now.');
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsTripSuggestionsLoading(false);
+        }
+      });
+
+    const unsubscribe = subscribeToTripSuggestions(
+      activeTripId,
+      currentAuthToken,
+      (summary) => {
+        if (!isActive) {
+          return;
+        }
+
+        setTripSuggestionsSummary(summary);
+        setTripSuggestionsError('');
+        setIsTripSuggestionsLoading(false);
+      },
+      (error) => {
+        if (!isActive || error.message === 'Unauthorized request.') {
+          return;
+        }
+
+        setTripSuggestionsError((currentValue) => currentValue || 'Live voting updates are reconnecting...');
+      },
+    );
+
+    return () => {
+      isActive = false;
+      unsubscribe();
+    };
+  }, [activeTripExplorerTripId, authToken, currentScreen, tripExpenseSummary?.trip.id]);
+
+  useEffect(() => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (currentScreen !== 'history' || !activeTripHistoryTripId || !currentAuthToken) {
+      return;
+    }
+
+    if (tripExpenseSummary?.trip.id === activeTripHistoryTripId) {
+      return;
+    }
+
+    let isActive = true;
+    setIsTripExpenseLoading(true);
+    setTripExpenseError('');
+
+    void fetchTripExpenseSummary(activeTripHistoryTripId, currentAuthToken)
+      .then((summary) => {
+        if (isActive) {
+          setTripExpenseSummary(summary);
+        }
+      })
+      .catch((error) => {
+        if (isActive) {
+          setTripExpenseError(error instanceof Error ? error.message : 'Unable to load split history right now.');
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsTripExpenseLoading(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [activeTripHistoryTripId, authToken, currentScreen, tripExpenseSummary?.trip.id]);
+
+  useEffect(() => {
     if (!tripExpenseSummary || !userSession?.id) {
       setSelectedSplitDebtorIds([]);
       return;
@@ -1404,6 +1681,28 @@ function App() {
         .map((member) => member.id),
     );
   }, [tripExpenseSummary?.trip.id, tripExpenseSummary?.members, userSession?.id]);
+
+  useEffect(() => {
+    if (!pendingExplorerExpensePrefill || currentScreen !== 'wallet' || !tripExpenseSummary) {
+      return;
+    }
+
+    setSplitExpenseDescription(pendingExplorerExpensePrefill.description);
+    setSplitExpenseAmount(pendingExplorerExpensePrefill.amount);
+    setSelectedSplitDebtorIds(
+      tripExpenseSummary.members.filter((member) => member.id !== userSession?.id).map((member) => member.id),
+    );
+    setPendingExplorerExpensePrefill(null);
+
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => {
+        addExpenseComposerRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+        });
+      }, 40);
+    }
+  }, [currentScreen, pendingExplorerExpensePrefill, tripExpenseSummary, userSession?.id]);
 
   useEffect(() => {
     if (!isSplitExpenseSuccessVisible) {
@@ -1761,19 +2060,20 @@ function App() {
     userSession?.id,
   ]);
   const splitHeroLiquidRatio = useMemo(() => {
-    if (splitPreviewAmount > 0) {
-      const referenceAmount =
-        tripExpenseSummary && tripExpenseSummary.totalExpenses > 0 ? tripExpenseSummary.totalExpenses : splitPreviewAmount;
-
-      return Math.max(0.14, Math.min(0.94, splitPreviewShareAmount / Math.max(referenceAmount, splitPreviewShareAmount, 1)));
+    if (!tripExpenseSummary?.budgetSummary.expectedBudget || tripExpenseSummary.budgetSummary.expectedBudget <= 0) {
+      return 0;
     }
 
-    if (tripExpenseSummary?.totalExpenses) {
-      return Math.max(0.12, Math.min(0.4, splitPreviewShareAmount / Math.max(tripExpenseSummary.totalExpenses, 1)));
+    return tripExpenseSummary.budgetSummary.totalExpenses / tripExpenseSummary.budgetSummary.expectedBudget;
+  }, [tripExpenseSummary?.budgetSummary.expectedBudget, tripExpenseSummary?.budgetSummary.totalExpenses]);
+  const splitHeroLiquidPercent = useMemo(() => {
+    if (!tripExpenseSummary?.budgetSummary.expectedBudget || tripExpenseSummary.budgetSummary.expectedBudget <= 0) {
+      return 0;
     }
 
-    return 0.18;
-  }, [splitPreviewAmount, splitPreviewShareAmount, tripExpenseSummary]);
+    return Math.round(splitHeroLiquidRatio * 100);
+  }, [splitHeroLiquidRatio, tripExpenseSummary?.budgetSummary.expectedBudget]);
+  const isSplitHeroOverBudget = splitHeroLiquidRatio > 1;
   const maxTripBalanceMagnitude = useMemo(() => {
     if (!tripExpenseSummary?.balances.length) {
       return 1;
@@ -1783,7 +2083,53 @@ function App() {
       return Math.max(largestMagnitude, Math.abs(balance.netBalance), balance.totalOwed, balance.totalReceivable, 1);
     }, 1);
   }, [tripExpenseSummary]);
+  const budgetProgressTone = useMemo(() => {
+    const status = tripExpenseSummary?.budgetSummary.budgetStatus ?? 'healthy';
 
+    if (status === 'over_budget') {
+      return {
+        badgeClassName: 'bg-red-50 text-red-600',
+        barClassName: 'bg-[linear-gradient(90deg,rgba(224,122,95,0.96),rgba(239,160,136,0.92))]',
+        surfaceClassName: 'bg-red-50/80 text-red-700',
+        title: 'Over budget',
+      };
+    }
+
+    if (status === 'at_risk') {
+      return {
+        badgeClassName: 'bg-amber-100/85 text-amber-700',
+        barClassName: 'bg-[linear-gradient(90deg,rgba(233,196,106,0.96),rgba(244,210,132,0.92))]',
+        surfaceClassName: 'bg-amber-100/70 text-amber-800',
+        title: 'Near budget cap',
+      };
+    }
+
+    return {
+      badgeClassName: 'bg-success/12 text-green-700',
+      barClassName: 'bg-[linear-gradient(90deg,rgba(129,178,154,0.96),rgba(172,214,195,0.92))]',
+      surfaceClassName: 'bg-success/10 text-green-700',
+      title: 'Healthy pace',
+    };
+  }, [tripExpenseSummary?.budgetSummary.budgetStatus]);
+  const budgetProgressSummary = useMemo(() => {
+    if (!tripExpenseSummary) {
+      return {
+        expectedBudget: 0,
+        totalExpenses: 0,
+        remainingBudget: 0,
+        overBudgetAmount: 0,
+        utilizationLabel: '0%',
+      };
+    }
+
+    return {
+      expectedBudget: tripExpenseSummary.budgetSummary.expectedBudget,
+      totalExpenses: tripExpenseSummary.budgetSummary.totalExpenses,
+      remainingBudget: tripExpenseSummary.budgetSummary.remainingBudget,
+      overBudgetAmount: tripExpenseSummary.budgetSummary.overBudgetAmount,
+      utilizationLabel: `${tripExpenseSummary.budgetSummary.budgetUtilizationPercent.toFixed(2)}%`,
+    };
+  }, [tripExpenseSummary]);
   const completedTripsCount = useMemo(
     () => archivedMyPosts.length,
     [archivedMyPosts],
@@ -1804,6 +2150,7 @@ function App() {
       'tripDetails',
       'profile',
       'history',
+      'explorer',
       'wallet',
       'onboarding',
       'verification',
@@ -1823,6 +2170,23 @@ function App() {
       setPostAuthRedirectScreen(null);
     }
 
+    if (
+      typeof window !== 'undefined' &&
+      targetScreen !== 'history' &&
+      targetScreen !== 'explorer' &&
+      (TRIP_HISTORY_PATH_PATTERN.test(window.location.pathname) || TRIP_EXPLORER_PATH_PATTERN.test(window.location.pathname))
+    ) {
+      window.history.replaceState({}, document.title, '/');
+    }
+
+    if (targetScreen !== 'history') {
+      setActiveTripHistoryTripId(null);
+    }
+
+    if (targetScreen !== 'explorer') {
+      setActiveTripExplorerTripId(null);
+    }
+
     const requiresSession: ScreenName[] = [
       'createTrip',
       'editPost',
@@ -1831,6 +2195,7 @@ function App() {
       'chat',
       'profile',
       'history',
+      'explorer',
       'wallet',
       'onboarding',
       'verification',
@@ -1865,6 +2230,116 @@ function App() {
 
     setCurrentScreen(targetScreen);
     setIsAccountPanelOpen(false);
+  };
+
+  const handleOpenTripHistory = () => {
+    const tripId = tripExpenseSummary?.trip.id;
+    if (!tripId) {
+      return;
+    }
+
+    setActiveTripHistoryTripId(tripId);
+    setCurrentScreen('history');
+    setIsAccountPanelOpen(false);
+
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, document.title, `/trip/${encodeURIComponent(tripId)}/history`);
+    }
+  };
+
+  const handleOpenAIExplorer = () => {
+    const tripId = tripExpenseSummary?.trip.id;
+    if (!tripId) {
+      return;
+    }
+
+    setActiveTripExplorerTripId(tripId);
+    setCurrentScreen('explorer');
+    setIsAccountPanelOpen(false);
+
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, document.title, `/trip/${encodeURIComponent(tripId)}/explorer`);
+    }
+  };
+
+  const handleGenerateTripSuggestions = async (userPreferences: TripSuggestionPreferences) => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id;
+
+    if (!currentAuthToken || !tripId) {
+      setTripSuggestionsError('Open an active trip to generate AI suggestions.');
+      return;
+    }
+
+    setIsTripSuggestionsGenerating(true);
+    setTripSuggestionsError('');
+
+    try {
+      const summary = await generateTripSuggestions(tripId, userPreferences, currentAuthToken);
+      setTripSuggestionsSummary(summary);
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        return;
+      }
+
+      setTripSuggestionsError(error instanceof Error ? error.message : 'Unable to generate AI suggestions right now.');
+    } finally {
+      setIsTripSuggestionsGenerating(false);
+    }
+  };
+
+  const handleVoteForTripSuggestion = async (suggestionId: string) => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id;
+
+    if (!currentAuthToken || !tripId) {
+      setTripSuggestionsError('Open an active trip to vote on group suggestions.');
+      return;
+    }
+
+    setActiveSuggestionVoteId(suggestionId);
+    setTripSuggestionsError('');
+
+    try {
+      const summary = await voteForTripSuggestion(tripId, suggestionId, currentAuthToken);
+      setTripSuggestionsSummary(summary);
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        return;
+      }
+
+      setTripSuggestionsError(error instanceof Error ? error.message : 'Unable to update this group vote right now.');
+    } finally {
+      setActiveSuggestionVoteId(null);
+    }
+  };
+
+  const handleAddSuggestionToExpenses = (suggestionName: string, estimatedCost: number) => {
+    setPendingExplorerExpensePrefill({
+      description: `${suggestionName} group outing`,
+      amount: estimatedCost.toFixed(2),
+    });
+    setCurrentScreen('wallet');
+    setActiveTripExplorerTripId(null);
+    setSystemNotice(`Sent ${suggestionName} back to Split Expenses with the estimated cost prefilled.`);
+
+    if (typeof window !== 'undefined' && TRIP_EXPLORER_PATH_PATTERN.test(window.location.pathname)) {
+      window.history.pushState({}, document.title, '/wallet');
+    }
   };
 
   const handleCostChange = (category: ExpenseCategory, value: string) => {
@@ -1941,11 +2416,12 @@ function App() {
     if (!userSession) {
       setCurrentScreen('auth');
       setSystemNotice('Please sign in to continue.');
-      return;
+      return false;
     }
 
     const newTripId = `trip-user-${Date.now()}`;
-    const inferredBudgetFlexibility = Math.max(1, Math.min(10, Math.round(payload.budget / 250)));
+    const estimatedCostPerTraveler = Number((payload.expectedBudget / Math.max(payload.peopleRequired, 1)).toFixed(2));
+    const inferredBudgetFlexibility = Math.max(1, Math.min(10, Math.round(estimatedCostPerTraveler / 250)));
     const hostDNA = userSession.dna
       ? normalizeTravelDNA(userSession.dna)
       : normalizeTravelDNA({
@@ -1958,7 +2434,7 @@ function App() {
 
     if (!journeyDateRange) {
       setSystemNotice('Please choose a valid start and end journey date.');
-      return;
+      return false;
     }
 
     const conflictingBooking = findConflictingBookedTrip(
@@ -1968,21 +2444,22 @@ function App() {
     );
     if (conflictingBooking) {
       setSystemNotice(TRIP_OVERLAP_NOTICE);
-      return;
+      return false;
     }
 
     const createdTrip: Trip = {
       id: newTripId,
-      title: `${userSession.firstName || userSession.name} Hosted Trip`,
+      title: payload.title,
       hostName: userSession.name,
-      priceShare: payload.budget,
+      priceShare: estimatedCostPerTraveler,
+      expectedBudget: payload.expectedBudget,
       matchPercentage: 82,
       tripDNA: hostDNA,
       imageUrl: payload.posterImageUrls[0],
       isVerified: Boolean(userSession.isVerified),
       route: payload.location,
       duration: `${journeyDateRange.durationDays} Days`,
-      totalExpectedFromPartner: payload.budget * payload.peopleRequired,
+      totalExpectedFromPartner: payload.expectedBudget,
       partnerExpectations: payload.expectations,
       notes: `Preferred travelers: ${preferredTravelers}. ${
         payload.onlyVerifiedUsers ? 'Verified users only.' : 'Open to all users.'
@@ -1993,7 +2470,7 @@ function App() {
 
     if (!authorKey) {
       setSystemNotice('Unable to identify post author. Update your profile and try again.');
-      return;
+      return false;
     }
 
     try {
@@ -2001,17 +2478,21 @@ function App() {
         authorKey,
         status: 'Active',
         onlyVerifiedUsers: payload.onlyVerifiedUsers,
-        title: createdTrip.title,
+        title: payload.title,
         hostName: createdTrip.hostName,
         isVerified: Boolean(createdTrip.isVerified),
         imageUrl: createdTrip.imageUrl,
         location: payload.location,
-        cost: payload.budget,
+        cost: estimatedCostPerTraveler,
+        expectedBudget: payload.expectedBudget,
         durationDays: journeyDateRange.durationDays,
         requiredPeople: payload.peopleRequired,
         spotsFilledPercent: 0,
         expectations: payload.expectations,
         travelerType: payload.travelerType,
+        currency: payload.currency,
+        isPrivate: payload.isPrivate,
+        emergencyContact: payload.emergencyContact,
         startDate: journeyDateRange.startDate.toISOString(),
         endDate: journeyDateRange.endDate.toISOString(),
       });
@@ -2048,9 +2529,11 @@ function App() {
       setSystemNotice('Trip post created and saved to database.');
       void loadSelfTripsForHost();
       await loadPostStatsFromDatabase(authorKey);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to create trip post right now.';
       setSystemNotice(message);
+      return false;
     }
   };
 
@@ -2542,7 +3025,7 @@ function App() {
   const handleSaveEditedPost = async (payload: CreateTripPayload) => {
     if (!currentUserAuthorKey) {
       setSystemNotice('Sign in to edit your post.');
-      return;
+      return false;
     }
 
     const currentPost = editingFeedPost
@@ -2550,13 +3033,13 @@ function App() {
       : null;
     if (!currentPost) {
       setSystemNotice('Post not found.');
-      return;
+      return false;
     }
 
     const journeyDateRange = createJourneyDateRange(payload.startJourneyDate, payload.endJourneyDate);
     if (!journeyDateRange) {
       setSystemNotice('Please choose a valid start and end journey date.');
-      return;
+      return false;
     }
 
     const conflictingBooking = findConflictingBookedTrip(
@@ -2567,26 +3050,31 @@ function App() {
     );
     if (conflictingBooking) {
       setSystemNotice(TRIP_OVERLAP_NOTICE);
-      return;
+      return false;
     }
 
     setIsPostActionInProgress(true);
     try {
+      const estimatedCostPerTraveler = Number((payload.expectedBudget / Math.max(payload.peopleRequired, 1)).toFixed(2));
       const updatedPost = await updateFeedPost(currentPost.id, {
         authorKey: currentUserAuthorKey,
         status: currentPost.status,
         onlyVerifiedUsers: payload.onlyVerifiedUsers,
-        title: currentPost.title,
+        title: payload.title,
         hostName: currentPost.hostName,
         isVerified: currentPost.isVerified,
         imageUrl: payload.posterImageUrls[0] ?? currentPost.imageUrl,
         location: payload.location,
-        cost: payload.budget,
+        cost: estimatedCostPerTraveler,
+        expectedBudget: payload.expectedBudget,
         durationDays: journeyDateRange.durationDays,
         requiredPeople: payload.peopleRequired,
         spotsFilledPercent: currentPost.spotsFilledPercent,
         expectations: payload.expectations,
         travelerType: payload.travelerType,
+        currency: payload.currency,
+        isPrivate: payload.isPrivate,
+        emergencyContact: payload.emergencyContact,
         startDate: journeyDateRange.startDate.toISOString(),
         endDate: journeyDateRange.endDate.toISOString(),
       });
@@ -2600,9 +3088,11 @@ function App() {
       setSystemNotice('Post updated successfully.');
       void loadSelfTripsForHost();
       await loadPostStatsFromDatabase(currentUserAuthorKey);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to update post right now.';
       setSystemNotice(message);
+      return false;
     } finally {
       setIsPostActionInProgress(false);
     }
@@ -3489,10 +3979,13 @@ function App() {
     currentScreen === 'home' || currentScreen === 'discovery' || currentScreen === 'dashboard';
 
   const isWorkspaceScreen =
-    currentScreen === 'dashboard' || currentScreen === 'expenses' || currentScreen === 'chat';
+    currentScreen === 'dashboard' || currentScreen === 'expenses' || currentScreen === 'chat' || currentScreen === 'explorer';
+
+  const activeWorkspaceTripId = tripExpenseSummary?.trip.id ?? activeTripExplorerTripId ?? null;
 
   const sidebarTargetById: Record<string, ScreenName> = {
     'my-trips': 'dashboard',
+    'ai-explorer': 'explorer',
     wallet: 'wallet',
     support: 'chat',
     'safety-center': 'dashboard',
@@ -3738,6 +4231,127 @@ function App() {
   };
 
   const renderHistoryScreen = () => {
+    if (activeTripHistoryTripId) {
+      const historySummary = tripExpenseSummary?.trip.id === activeTripHistoryTripId ? tripExpenseSummary : null;
+      const historyFeedPost = feedPosts.find((post) => post.id === activeTripHistoryTripId) ?? null;
+
+      return (
+        <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
+          <article className="rounded-3xl border border-white/20 bg-white/85 p-6 shadow-xl shadow-slate-950/10 backdrop-blur-md sm:p-8">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-primary/55">Trip Ledger</p>
+                <h2 className="mt-2 text-3xl font-black text-primary">Split History</h2>
+                <p className="mt-2 text-sm text-primary/72">
+                  {historySummary?.trip.title ?? historyFeedPost?.title ?? 'Active Trip'} ledger from{' '}
+                  {formatTripDateRangeLabel(historyFeedPost?.startDate, historyFeedPost?.endDate)}.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleNavigation('wallet')}
+                className="interactive-btn inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-primary/20"
+              >
+                Back to Active Trip
+              </button>
+            </div>
+
+            {historySummary ? (
+              <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
+                <div className="space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div className={glassInsetCardClassName}>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Trip Total</p>
+                      <AnimatedAmount className="mt-3 text-primary" value={historySummary.totalExpenses} />
+                    </div>
+                    <div className={glassInsetCardClassName}>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Expenses</p>
+                      <p className="mt-3 text-2xl font-black text-primary">{historySummary.expenses.length}</p>
+                    </div>
+                    <div className={glassInsetCardClassName}>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Travelers</p>
+                      <p className="mt-3 text-2xl font-black text-primary">{historySummary.members.length}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-3xl border border-white/20 bg-white/78 p-5 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Full Ledger</p>
+                        <h3 className="mt-2 text-2xl font-black text-primary">Expense timeline</h3>
+                      </div>
+                      <div className="rounded-full bg-primary/6 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/55">
+                        {historyFeedPost?.location ?? historySummary.trip.location}
+                      </div>
+                    </div>
+
+                    <div className="mt-5 space-y-3">
+                      {historySummary.expenses.map((expense) => (
+                        <div key={expense.id} className="rounded-[26px] border border-white/20 bg-white/82 p-4 shadow-md shadow-slate-950/6">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-primary">{expense.description}</p>
+                              <p className="mt-1 text-xs text-primary/55">
+                                Paid by {expense.paidBy.name} • {new Date(expense.createdAt).toLocaleString()}
+                              </p>
+                            </div>
+                            <div className="rounded-full bg-primary/6 px-3 py-1.5 text-sm font-bold text-primary">
+                              {formatCurrency(expense.amount)}
+                            </div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {expense.settlements.map((settlement) => (
+                              <span
+                                key={`${expense.id}-${settlement.userId}-${settlement.owesToUserId}`}
+                                className="rounded-full bg-background/80 px-3 py-1 text-[11px] font-semibold text-primary/60"
+                              >
+                                {settlement.name} owes {settlement.owesToName} {formatCurrency(settlement.amount)}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="rounded-3xl border border-white/20 bg-white/78 p-5 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Settlement Snapshot</p>
+                    <h3 className="mt-2 text-2xl font-black text-primary">Who pays whom</h3>
+                    <div className="mt-5 space-y-3">
+                      {historySummary.settlementSummary.length > 0 ? (
+                        historySummary.settlementSummary.map((settlement) => (
+                          <div
+                            key={`${settlement.fromUserId}-${settlement.toUserId}`}
+                            className="rounded-[24px] border border-white/20 bg-white/82 px-4 py-3 shadow-md shadow-slate-950/6"
+                          >
+                            <p className="text-sm font-semibold text-primary">{settlement.fromName}</p>
+                            <p className="mt-1 text-xs uppercase tracking-[0.18em] text-primary/45">owes {settlement.toName}</p>
+                            <p className="mt-2 text-sm font-black text-red-600">{formatCurrency(settlement.amount)}</p>
+                          </div>
+                        ))
+                      ) : (
+                        <ExpenseEmptyState
+                          title="No settlement actions pending"
+                          description="Everyone is balanced right now, so the ledger does not need any follow-up payments."
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-8 rounded-3xl border border-white/20 bg-white/78 p-6 text-sm text-primary/70 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                {isTripExpenseLoading ? 'Loading split history...' : 'The trip ledger is not available right now.'}
+              </div>
+            )}
+          </article>
+        </section>
+      );
+    }
+
     return (
       <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
         <article className="rounded-card bg-white/95 p-8 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
@@ -4002,9 +4616,14 @@ function App() {
 
   void renderWalletScreenLegacy;
 
+  const glassDashboardCardClassName =
+    'rounded-3xl border border-white/20 bg-white/70 p-6 shadow-xl shadow-slate-950/10 backdrop-blur-md';
+  const glassInsetCardClassName =
+    'rounded-[28px] border border-white/20 bg-white/70 px-4 py-4 shadow-lg shadow-slate-950/8 backdrop-blur-md';
+
   const renderWalletScreen = () => (
-    <section className="mx-auto w-full max-w-[1240px] px-4 pb-16 pt-8 sm:px-6">
-      <article className="overflow-hidden rounded-[38px] bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(255,251,244,0.9))] p-5 shadow-[0_38px_120px_-58px_rgba(25,33,52,0.75)] ring-1 ring-white/60 backdrop-blur-2xl sm:p-7 lg:p-8">
+    <section className="mx-auto w-full max-w-7xl px-4 pb-16 pt-8 sm:px-6">
+      <article className="overflow-hidden rounded-[38px] border border-white/20 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(255,251,244,0.9))] p-5 shadow-[0_38px_120px_-58px_rgba(25,33,52,0.75)] backdrop-blur-2xl sm:p-7 lg:p-8">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full bg-white/78 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-primary/55 shadow-sm shadow-slate-950/5">
@@ -4152,315 +4771,426 @@ function App() {
         ) : null}
         {isWalletLoading ? <p className="mt-5 text-sm text-primary/60">Refreshing wallet balances...</p> : null}
 
-        <div className="mt-8 grid gap-6 xl:grid-cols-[1.12fr_0.88fr]">
-          <section className="space-y-6">
-            <article className="overflow-hidden rounded-[36px] bg-[linear-gradient(145deg,rgba(61,64,91,0.14),rgba(129,178,154,0.18),rgba(255,255,255,0.8))] p-1 shadow-[0_36px_95px_-52px_rgba(28,37,58,0.8)]">
-              {tripExpenseSummary ? (
-                <div className="relative overflow-hidden rounded-[32px] bg-white/34 px-5 py-6 backdrop-blur-2xl sm:px-6 sm:py-7">
-                  {tripExpenseSummary.trip.imageUrl ? (
-                    <>
+        <div className="mt-8 space-y-6">
+          {tripExpenseError ? (
+            <p className="rounded-3xl border border-red-200/70 bg-red-50/90 px-4 py-3 text-sm text-red-700 shadow-lg shadow-red-200/40">
+              {tripExpenseError}
+            </p>
+          ) : null}
+
+          <div className="grid grid-cols-1 gap-8 md:grid-cols-2 md:items-stretch">
+            <section>
+              <article className={`${glassDashboardCardClassName} relative flex min-h-[360px] overflow-hidden p-0`}>
+                {tripExpenseSummary ? (
+                  <>
+                    {tripExpenseSummary.trip.imageUrl ? (
                       <img
                         src={tripExpenseSummary.trip.imageUrl}
                         alt={tripExpenseSummary.trip.title}
-                        className="absolute inset-0 h-full w-full scale-105 object-cover opacity-20"
+                        className="absolute inset-0 h-full w-full object-cover"
                       />
-                      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.72),transparent_55%),linear-gradient(180deg,rgba(255,251,244,0.68),rgba(255,255,255,0.72))]" />
-                    </>
-                  ) : (
-                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(129,178,154,0.24),transparent_30%),radial-gradient(circle_at_top_right,rgba(224,122,95,0.22),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.58),rgba(255,251,244,0.88))]" />
-                  )}
-
-                  <div className="relative z-10">
-                    <div className="flex flex-col items-center text-center">
-                      <div className="flex flex-wrap items-center justify-center gap-2">
-                        <span className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/50 shadow-sm shadow-slate-950/5">
+                    ) : null}
+                    <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(20,29,44,0.15),rgba(20,29,44,0.76)),radial-gradient(circle_at_top,rgba(255,255,255,0.24),transparent_45%)]" />
+                    <div className="relative z-10 flex min-h-[360px] w-full flex-col justify-between p-6">
+                      <div className="flex flex-wrap items-center gap-2 text-white">
+                        <span className="inline-flex items-center gap-2 rounded-full bg-white/18 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] backdrop-blur-md">
                           <ReceiptText className="h-3.5 w-3.5" />
                           Active Trip
                         </span>
-                        <span className="inline-flex items-center gap-2 rounded-full bg-white/72 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45 shadow-sm shadow-slate-950/5">
-                          <MapPin className="h-3.5 w-3.5" />
-                          {tripExpenseSummary.trip.location}
-                        </span>
-                        <span className="inline-flex items-center gap-2 rounded-full bg-white/72 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45 shadow-sm shadow-slate-950/5">
-                          <Users className="h-3.5 w-3.5" />
-                          {tripExpenseSummary.members.length} travelers
+                        <span className="inline-flex items-center gap-2 rounded-full bg-white/18 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] backdrop-blur-md">
+                          Host {activeTripHostLabel}
                         </span>
                       </div>
 
-                      <h3 className="mt-5 max-w-3xl text-3xl font-black tracking-tight text-primary sm:text-4xl">
-                        {tripExpenseSummary.trip.title}
-                      </h3>
-                      <p className="mt-3 max-w-2xl text-sm leading-7 text-primary/62">
-                        A calm, live snapshot of your shared spend. Add one bill and everyone sees the split before you save it.
+                      <div>
+                        <p className="text-sm font-medium text-white/80">{tripExpenseSummary.trip.location}</p>
+                        <h3 className="mt-3 max-w-xl text-3xl font-black tracking-tight text-white sm:text-4xl">
+                          {tripExpenseSummary.trip.title}
+                        </h3>
+                        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-white/85">
+                          <span className="inline-flex items-center gap-2 rounded-full bg-white/16 px-3 py-1.5 backdrop-blur-md">
+                            <MapPin className="h-4 w-4" />
+                            {tripExpenseSummary.trip.location}
+                          </span>
+                          <span className="inline-flex items-center gap-2 rounded-full bg-white/16 px-3 py-1.5 backdrop-blur-md">
+                            <CalendarDays className="h-4 w-4" />
+                            {activeTripDateRangeLabel}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="rounded-[28px] border border-white/20 bg-white/18 p-4 text-white backdrop-blur-md">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/72">Trip Total</p>
+                          <AnimatedAmount className="mt-3 text-white" value={tripExpenseSummary.totalExpenses} />
+                        </div>
+                        <div className="rounded-[28px] border border-white/20 bg-white/18 p-4 text-white backdrop-blur-md">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/72">Travelers</p>
+                          <p className="mt-3 text-3xl font-black">{tripExpenseSummary.members.length}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex min-h-[360px] w-full items-center justify-center p-6 text-sm text-primary/70">
+                    {isTripExpenseLoading ? 'Loading trip overview...' : 'No active trip is available right now.'}
+                  </div>
+                )}
+              </article>
+            </section>
+
+            <section ref={addExpenseComposerRef}>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Balances</p>
+                    <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Who should pay whom</h3>
+                  </div>
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/6 text-primary">
+                    <Wallet className="h-5 w-5" />
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  {tripExpenseSummary && tripExpenseSummary.settlementSummary.length > 0 ? (
+                    tripExpenseSummary.settlementSummary.map((settlement) => (
+                      <div key={`${settlement.fromUserId}-${settlement.toUserId}`} className={glassInsetCardClassName}>
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-primary">{settlement.fromName}</p>
+                            <p className="mt-1 text-xs uppercase tracking-[0.22em] text-primary/45">owes {settlement.toName}</p>
+                          </div>
+                          <div className="rounded-full bg-red-50 px-3 py-1.5 text-sm font-bold text-red-600">
+                            {formatCurrency(settlement.amount)}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <ExpenseEmptyState
+                      title="Settlements will appear here"
+                      description="As soon as the first shared expense lands, we will show who should pay whom in this clean ledger."
+                    />
+                  )}
+                </div>
+              </article>
+            </section>
+
+            <section>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                <div className="safe-flex-row items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Add Expense</p>
+                    <h3 className="mt-2 truncate-text text-2xl font-black tracking-tight text-primary">Split a new bill</h3>
+                  </div>
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/6 text-primary">
+                    <Plus className="h-5 w-5" />
+                  </div>
+                </div>
+
+              {tripExpenseSummary ? (
+                <div className="mt-5 space-y-5">
+                  <div className="grid gap-4 lg:grid-cols-[1.45fr_0.95fr]">
+                    <FloatingLabelField
+                      label="Description"
+                      value={splitExpenseDescription}
+                      onChange={(event) => setSplitExpenseDescription(event.target.value)}
+                    />
+                    <FloatingLabelField
+                      badge="USD"
+                      inputMode="decimal"
+                      label="Amount"
+                      min={0}
+                      step="0.01"
+                      type="number"
+                      value={splitExpenseAmount}
+                      onChange={(event) => setSplitExpenseAmount(event.target.value)}
+                    />
+                  </div>
+
+                  <ExpenseParticipantChecklist
+                    title="Tap the travelers joining this split"
+                    helperText="Choose the members for this bill, then confirm the split once the preview looks right."
+                    items={splitParticipantChips}
+                    onToggle={handleSplitParticipantToggle}
+                    selectedCountLabel={`${selectedSplitDebtorIds.length + 1} selected`}
+                  />
+
+                  <div className="flex flex-col gap-4 rounded-[28px] border border-white/20 bg-white/70 px-5 py-4 shadow-lg shadow-slate-950/8 backdrop-blur-md sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Split Preview</p>
+                      <p className="mt-2 text-sm text-primary/68">
+                        {splitPreviewAmount > 0 && splitSelectedMemberCount > 0
+                          ? `${splitSelectedMemberCount} travelers are sharing ${formatCurrency(splitPreviewAmount)} and each checked traveler owes ${formatCurrency(splitPreviewShareAmount)}.`
+                          : 'Enter an amount, then tap the travelers who should be included in this shared expense.'}
                       </p>
                     </div>
 
-                    <div className="mt-8 flex flex-col items-center gap-6 xl:flex-row xl:justify-center xl:gap-10">
-                      <div className="min-w-[220px] rounded-[34px] bg-white/72 px-7 py-6 text-center shadow-xl shadow-slate-950/10 backdrop-blur-xl">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary/45">Trip Total</p>
-                        <AnimatedAmount className="mt-3 block text-4xl font-black tracking-tight text-primary" value={tripExpenseSummary.totalExpenses} />
-                        <p className="mt-3 text-xs font-medium text-primary/50">
-                          Across {tripExpenseSummary.expenses.length} shared expense{tripExpenseSummary.expenses.length === 1 ? '' : 's'}
-                        </p>
-                      </div>
-
-                      <LiquidSplitMeter
-                        fillRatio={splitHeroLiquidRatio}
-                        label={splitPreviewAmount > 0 ? `Previewing ${formatCurrency(splitPreviewAmount)}` : 'Waiting for an amount'}
-                        valueLabel={`${Math.round(splitHeroLiquidRatio * 100)}% full`}
-                      />
-
-                      <div className="min-w-[220px] rounded-[34px] bg-white/72 px-7 py-6 text-center shadow-xl shadow-slate-950/10 backdrop-blur-xl">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary/45">Split Share</p>
-                        <AnimatedAmount className="mt-3 block text-4xl font-black tracking-tight text-primary" value={splitPreviewShareAmount} />
-                        <p className="mt-3 text-xs font-medium text-primary/50">
-                          Per selected traveler in this current split preview
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-8 grid gap-4 lg:grid-cols-[1.45fr_0.95fr]">
-                      <FloatingLabelField
-                        label="Description"
-                        value={splitExpenseDescription}
-                        onChange={(event) => setSplitExpenseDescription(event.target.value)}
-                      />
-                      <FloatingLabelField
-                        badge="USD"
-                        inputMode="decimal"
-                        label="Amount"
-                        min={0}
-                        step="0.01"
-                        type="number"
-                        value={splitExpenseAmount}
-                        onChange={(event) => setSplitExpenseAmount(event.target.value)}
-                      />
-                    </div>
-
-                    <div className="mt-5">
-                      <ExpenseParticipantChecklist
-                        title="Tap the travelers joining this split"
-                        helperText="Avatar chips animate in with a physical press so you can see exactly who is included before you save."
-                        items={splitParticipantChips}
-                        onToggle={handleSplitParticipantToggle}
-                        selectedCountLabel={`${selectedSplitDebtorIds.length + 1} selected`}
-                      />
-                    </div>
-
-                    <div className="mt-5 flex flex-col gap-4 rounded-[32px] bg-white/68 px-5 py-4 shadow-xl shadow-slate-950/8 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Split Preview</p>
-                        <p className="mt-2 text-sm text-primary/68">
-                          {splitPreviewAmount > 0 && splitSelectedMemberCount > 0
-                            ? `${splitSelectedMemberCount} travelers are sharing ${formatCurrency(splitPreviewAmount)} and each checked traveler owes ${formatCurrency(splitPreviewShareAmount)}.`
-                            : 'Enter an amount, then tap the travelers who should be included in this shared expense.'}
-                        </p>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleSplitExpenseSubmit()}
-                        disabled={isTripExpenseSubmitting || isTripExpenseLoading}
-                        className={`interactive-btn inline-flex items-center justify-center gap-2 rounded-[24px] px-5 py-3 text-sm font-semibold text-white shadow-xl shadow-slate-950/15 transition disabled:cursor-not-allowed disabled:opacity-55 ${
-                          isSplitExpenseSuccessVisible
-                            ? 'bg-[linear-gradient(145deg,rgba(129,178,154,1),rgba(104,154,130,0.96))]'
-                            : 'bg-[linear-gradient(145deg,rgba(61,64,91,1),rgba(73,78,121,0.96))]'
-                        }`}
-                      >
-                        {isTripExpenseSubmitting ? (
-                          'Saving...'
-                        ) : isSplitExpenseSuccessVisible ? (
-                          <>
-                            <BadgeCheck className="h-4 w-4" />
-                            Bill Split!
-                          </>
-                        ) : (
-                          <>
-                            Save expense
-                            <ArrowRight className="h-4 w-4" />
-                          </>
-                        )}
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleSplitExpenseSubmit()}
+                      disabled={isTripExpenseSubmitting || isTripExpenseLoading}
+                      className={`interactive-btn inline-flex items-center justify-center gap-2 rounded-[24px] px-5 py-3 text-sm font-semibold text-white shadow-xl shadow-slate-950/15 transition disabled:cursor-not-allowed disabled:opacity-55 ${
+                        isSplitExpenseSuccessVisible
+                          ? 'bg-[linear-gradient(145deg,rgba(129,178,154,1),rgba(104,154,130,0.96))]'
+                          : 'bg-[linear-gradient(145deg,rgba(61,64,91,1),rgba(73,78,121,0.96))]'
+                      }`}
+                    >
+                      {isTripExpenseSubmitting ? (
+                        'Saving...'
+                      ) : isSplitExpenseSuccessVisible ? (
+                        <>
+                          <BadgeCheck className="h-4 w-4" />
+                          Bill Split!
+                        </>
+                      ) : (
+                        <>
+                          Save expense
+                          <ArrowRight className="h-4 w-4" />
+                        </>
+                      )}
+                    </button>
                   </div>
                 </div>
-              ) : isTripExpenseLoading ? (
-                <div className="rounded-[32px] bg-white/65 px-5 py-8 text-sm text-primary/70">Loading trip split summary...</div>
               ) : (
-                <div className="rounded-[32px] bg-white/65 px-5 py-8 shadow-xl shadow-slate-950/8">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">No Active Trip</p>
-                  <p className="mt-3 max-w-xl text-sm leading-7 text-primary/65">
-                    No active trip is available right now. Once a trip is live for today, this screen will load it automatically.
+                <div className={`${glassInsetCardClassName} mt-5 px-5 py-6`}>
+                  <p className="text-sm font-semibold text-primary">Add expenses once the active trip is loaded.</p>
+                  <p className="mt-2 text-sm leading-6 text-primary/60">
+                    This composer will unlock automatically when there is a live split trip available for the current user.
                   </p>
                 </div>
               )}
+              </article>
+            </section>
 
-              {tripExpenseError ? (
-                <p className="mt-4 rounded-[24px] bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg shadow-red-200/55">
-                  {tripExpenseError}
-                </p>
-              ) : null}
-            </article>
-          </section>
-
-          <section className="space-y-6">
-            <article className="rounded-[34px] bg-white/88 p-5 shadow-[0_28px_80px_-42px_rgba(17,24,39,0.35)]">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Balances</p>
-                  <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Who should pay whom</h3>
+            <section>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                <div className="safe-flex-row items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Budget Liquidation</p>
+                    <h3 className="mt-2 truncate-text text-2xl font-black tracking-tight text-primary">Burn rate</h3>
+                  </div>
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/6 text-primary">
+                    <CircleDollarSign className="h-5 w-5" />
+                  </div>
                 </div>
-                <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/6 text-primary">
-                  <Wallet className="h-5 w-5" />
-                </div>
-              </div>
 
-              <div className="mt-5 space-y-3">
-                {tripExpenseSummary && tripExpenseSummary.settlementSummary.length > 0 ? (
-                  tripExpenseSummary.settlementSummary.map((settlement) => (
-                    <div
-                      key={`${settlement.fromUserId}-${settlement.toUserId}`}
-                      className="rounded-[26px] bg-[linear-gradient(145deg,rgba(255,255,255,0.98),rgba(249,246,236,0.98))] px-4 py-4 shadow-lg shadow-slate-950/8"
-                    >
-                      <div className="flex items-center justify-between gap-4">
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-primary">{settlement.fromName}</p>
-                          <p className="mt-1 text-xs uppercase tracking-[0.22em] text-primary/45">owes {settlement.toName}</p>
+                {tripExpenseSummary ? (
+                  <div className="mt-5 space-y-4">
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_220px]">
+                      <div className={glassInsetCardClassName}>
+                        <div className="safe-flex-row items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Expected Budget</p>
+                            <AnimatedAmount className="mt-2 text-primary" value={budgetProgressSummary.expectedBudget} />
+                          </div>
+                          <span
+                            className={`inline-flex items-center rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${budgetProgressTone.badgeClassName}`}
+                          >
+                            {budgetProgressTone.title}
+                          </span>
                         </div>
-                        <div className="rounded-full bg-red-50 px-3 py-1.5 text-sm font-bold text-red-600">
-                          {formatCurrency(settlement.amount)}
+
+                        <div className="mt-4">
+                          <div className="safe-flex-row items-center justify-between gap-3 text-xs font-medium text-primary/56">
+                            <span className="truncate-text">Spent {formatCurrency(budgetProgressSummary.totalExpenses)}</span>
+                            <span>{budgetProgressSummary.utilizationLabel}</span>
+                          </div>
+                          <div className="mt-2 h-3 overflow-hidden rounded-full bg-primary/8">
+                            <motion.div
+                              initial={{ width: 0 }}
+                              animate={{ width: `${tripExpenseSummary.budgetSummary.budgetUtilizationDisplayPercent}%` }}
+                              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+                              className={`h-full rounded-full ${budgetProgressTone.barClassName}`}
+                            />
+                          </div>
                         </div>
+
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                          <div className={`flex h-full flex-col justify-between rounded-[22px] px-3.5 py-3 ${budgetProgressTone.surfaceClassName}`}>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em]">Trip Budget</p>
+                            <p className="mt-2 text-lg font-black">
+                              {formatCurrency(budgetProgressSummary.expectedBudget)}
+                            </p>
+                            <p className="mt-1 text-xs opacity-80">
+                              Planned total budget for this trip
+                            </p>
+                          </div>
+                          <div className="flex h-full flex-col justify-between rounded-[22px] bg-primary/5 px-3.5 py-3 text-primary">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/48">Trip Cost</p>
+                            <p className="mt-2 text-lg font-black leading-tight [overflow-wrap:anywhere]">
+                              {formatCurrency(budgetProgressSummary.totalExpenses)}
+                            </p>
+                            <p className="mt-1 text-xs text-primary/56">Total spent across all members so far.</p>
+                          </div>
+                        </div>
+
+                        {budgetProgressSummary.overBudgetAmount > 0 ? (
+                          <p className="mt-4 rounded-[20px] bg-red-50 px-3.5 py-3 text-xs font-medium text-red-700">
+                            Budget overrun: {formatCurrency(budgetProgressSummary.overBudgetAmount)}
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <div className={`${glassInsetCardClassName} flex items-center justify-center`}>
+                        <LiquidSplitMeter
+                          fillRatio={splitHeroLiquidRatio}
+                          helperText="Tracks current trip spend against the expected budget for all members."
+                          isWarning={isSplitHeroOverBudget}
+                          label={
+                            budgetProgressSummary.expectedBudget > 0
+                              ? `${formatCurrency(budgetProgressSummary.totalExpenses)} of ${formatCurrency(budgetProgressSummary.expectedBudget)} budget`
+                              : 'Budget not available yet'
+                          }
+                          valueLabel={`${splitHeroLiquidPercent}% of budget`}
+                        />
                       </div>
                     </div>
-                  ))
+
+                  </div>
                 ) : (
-                  <ExpenseEmptyState
-                    title="Settlements will appear here"
-                    description="As soon as the first shared expense lands, we'll show who should pay whom in a cleaner settlement flow."
-                  />
+                  <div className="mt-5">
+                    <ExpenseEmptyState
+                      title="Budget analytics will appear here"
+                      description="Once an active trip is available, we will show burn rate, remaining budget, and the live split meter here."
+                    />
+                  </div>
                 )}
-              </div>
-            </article>
+              </article>
+            </section>
 
-            <article className="rounded-[34px] bg-white/88 p-5 shadow-[0_28px_80px_-42px_rgba(17,24,39,0.35)]">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Member Summary</p>
-                  <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Net balances</h3>
-                </div>
-                <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-success/12 text-success">
-                  <TrendingUp className="h-5 w-5" />
-                </div>
-              </div>
+            <section>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Member Summary</p>
+                      <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Net balances</h3>
+                    </div>
+                    <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-success/12 text-success">
+                      <TrendingUp className="h-5 w-5" />
+                    </div>
+                  </div>
 
-              <div className="mt-5 space-y-3">
-                {tripExpenseSummary && tripExpenseSummary.balances.length > 0 ? (
-                  tripExpenseSummary.balances.map((balance) => {
-                    const magnitude = Math.max(Math.abs(balance.netBalance), balance.totalOwed, balance.totalReceivable, 0);
-                    const widthPercent = Math.max(12, Math.round((magnitude / maxTripBalanceMagnitude) * 100));
-                    const isPositive = balance.netBalance >= 0;
+                  <div className="mt-5 space-y-3">
+                    {tripExpenseSummary && tripExpenseSummary.balances.length > 0 ? (
+                      tripExpenseSummary.balances.map((balance) => {
+                        const magnitude = Math.max(Math.abs(balance.netBalance), balance.totalOwed, balance.totalReceivable, 0);
+                        const widthPercent = Math.max(12, Math.round((magnitude / maxTripBalanceMagnitude) * 100));
+                        const isPositive = balance.netBalance >= 0;
 
-                    return (
-                      <div
-                        key={balance.userId}
-                        className="rounded-[28px] bg-[linear-gradient(145deg,rgba(255,255,255,0.98),rgba(249,246,236,0.98))] px-4 py-4 shadow-lg shadow-slate-950/8"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex min-w-0 items-center gap-3">
-                            <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
-                              {balance.avatar ? (
-                                <img src={balance.avatar} alt={balance.name} className="h-full w-full object-cover" />
-                              ) : (
-                                balance.name.charAt(0).toUpperCase()
-                              )}
+                        return (
+                          <div key={balance.userId} className={glassInsetCardClassName}>
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex min-w-0 items-center gap-3">
+                                <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-bold text-primary">
+                                  {balance.avatar ? (
+                                    <img src={balance.avatar} alt={balance.name} className="h-full w-full object-cover" />
+                                  ) : (
+                                    balance.name.charAt(0).toUpperCase()
+                                  )}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold text-primary">{balance.name}</p>
+                                  <p className="text-xs text-primary/55">
+                                    Spent {formatCurrency(balance.totalSpent ?? 0)} / Equal share {formatCurrency(balance.equalShare ?? 0)}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div
+                                className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-bold ${
+                                  isPositive ? 'bg-success/15 text-green-700' : 'bg-red-50 text-red-600'
+                                }`}
+                              >
+                                {isPositive ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
+                                {isPositive ? '+' : '-'}
+                                {formatCurrency(Math.abs(balance.netBalance))}
+                              </div>
                             </div>
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-primary">{balance.name}</p>
-                              <p className="text-xs text-primary/55">
-                                Spent {formatCurrency(balance.totalSpent ?? 0)} / Equal share {formatCurrency(balance.equalShare ?? 0)}
-                              </p>
+
+                            <div className="mt-4 h-2 overflow-hidden rounded-full bg-primary/8">
+                              <motion.div
+                                initial={{ width: 0 }}
+                                animate={{ width: `${widthPercent}%` }}
+                                transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+                                className={`h-full rounded-full ${
+                                  isPositive
+                                    ? 'bg-[linear-gradient(90deg,rgba(129,178,154,0.95),rgba(172,214,195,0.95))]'
+                                    : 'bg-[linear-gradient(90deg,rgba(224,122,95,0.92),rgba(246,185,166,0.9))]'
+                                }`}
+                              />
+                            </div>
+
+                            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-primary/52">
+                              <span>{isPositive ? 'Should receive' : 'Still owes'} {formatCurrency(Math.abs(balance.netBalance))}</span>
+                              <span>{balance.totalReceivable > 0 ? `Receivable ${formatCurrency(balance.totalReceivable)}` : `Owes ${formatCurrency(balance.totalOwed)}`}</span>
                             </div>
                           </div>
+                        );
+                      })
+                    ) : (
+                      <ExpenseEmptyState
+                        title="No balance data yet"
+                        description="Member balances will animate into view after the first shared expense, complete with visual bars for who owes and who should receive."
+                      />
+                    )}
+                  </div>
+                </article>
+            </section>
 
-                          <div
-                            className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-bold ${
-                              isPositive ? 'bg-success/15 text-green-700' : 'bg-red-50 text-red-600'
-                            }`}
-                          >
-                            {isPositive ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
-                            {isPositive ? '+' : '-'}
-                            {formatCurrency(Math.abs(balance.netBalance))}
-                          </div>
-                        </div>
+            <section>
+              <article className={`${glassDashboardCardClassName} h-full`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Recent Expenses</p>
+                    <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Trip activity</h3>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handleOpenTripHistory}
+                      disabled={!tripExpenseSummary}
+                      className="interactive-btn inline-flex items-center gap-2 rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-primary/20 disabled:cursor-not-allowed disabled:opacity-55"
+                    >
+                      <History className="h-4 w-4" />
+                      History
+                    </button>
+                    <div className="rounded-[24px] bg-[linear-gradient(145deg,rgba(61,64,91,1),rgba(73,78,121,0.96))] px-4 py-3 text-right text-white shadow-lg shadow-primary/20">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/72">Total</p>
+                      <AnimatedAmount className="mt-2 block text-xl font-black" value={tripExpenseSummary?.totalExpenses ?? 0} />
+                    </div>
+                  </div>
+                </div>
 
-                        <div className="mt-4 h-2 overflow-hidden rounded-full bg-primary/8">
-                          <motion.div
-                            initial={{ width: 0 }}
-                            animate={{ width: `${widthPercent}%` }}
-                            transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
-                            className={`h-full rounded-full ${
-                              isPositive
-                                ? 'bg-[linear-gradient(90deg,rgba(129,178,154,0.95),rgba(172,214,195,0.95))]'
-                                : 'bg-[linear-gradient(90deg,rgba(224,122,95,0.92),rgba(246,185,166,0.9))]'
-                            }`}
+                <div className="mt-5 space-y-3">
+                  <AnimatePresence mode="popLayout">
+                    {tripExpenseSummary && tripExpenseSummary.expenses.length > 0
+                      ? tripExpenseSummary.expenses.map((expense) => (
+                          <ExpenseItem
+                            key={expense.id}
+                            expense={expense}
+                            currentUserId={userSession?.id}
+                            canEdit={Boolean(userSession?.id)}
+                            isDeleting={deletingExpenseId === expense.id}
+                            onDelete={(expenseId) => void handleExpenseDelete(expenseId)}
+                            onEdit={handleOpenExpenseEdit}
                           />
-                        </div>
+                        ))
+                      : null}
+                  </AnimatePresence>
 
-                        <div className="mt-3 flex items-center justify-between gap-3 text-xs text-primary/52">
-                          <span>{isPositive ? 'Should receive' : 'Still owes'} {formatCurrency(Math.abs(balance.netBalance))}</span>
-                          <span>{balance.totalReceivable > 0 ? `Receivable ${formatCurrency(balance.totalReceivable)}` : `Owes ${formatCurrency(balance.totalOwed)}`}</span>
-                        </div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <ExpenseEmptyState
-                    title="No balance data yet"
-                    description="Member balances will animate into view after the first shared expense, complete with visual bars for who owes and who should receive."
-                  />
-                )}
-              </div>
-            </article>
-
-            <article className="rounded-[34px] bg-white/88 p-5 shadow-[0_28px_80px_-42px_rgba(17,24,39,0.35)]">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Recent Expenses</p>
-                  <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Trip activity</h3>
+                  {tripExpenseSummary && tripExpenseSummary.expenses.length === 0 ? (
+                    <ExpenseEmptyState
+                      title="No expenses recorded yet"
+                      description="Your shared receipts will land here with a soft pop animation, so the ledger stays playful instead of feeling like a spreadsheet."
+                    />
+                  ) : null}
                 </div>
-                <div className="rounded-[24px] bg-[linear-gradient(145deg,rgba(61,64,91,1),rgba(73,78,121,0.96))] px-4 py-3 text-right text-white shadow-lg shadow-primary/20">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/72">Total</p>
-                  <AnimatedAmount className="mt-2 block text-xl font-black" value={tripExpenseSummary?.totalExpenses ?? 0} />
-                </div>
-              </div>
+              </article>
+	            </section>
+	          </div>
 
-              <div className="mt-5 space-y-3">
-                <AnimatePresence mode="popLayout">
-                  {tripExpenseSummary && tripExpenseSummary.expenses.length > 0
-                    ? tripExpenseSummary.expenses.map((expense) => (
-                        <ExpenseItem
-                          key={expense.id}
-                          expense={expense}
-                          currentUserId={userSession?.id}
-                          canEdit={Boolean(userSession?.id)}
-                          isDeleting={deletingExpenseId === expense.id}
-                          onDelete={(expenseId) => void handleExpenseDelete(expenseId)}
-                          onEdit={handleOpenExpenseEdit}
-                        />
-                      ))
-                    : null}
-                </AnimatePresence>
-
-                {tripExpenseSummary && tripExpenseSummary.expenses.length === 0 ? (
-                  <ExpenseEmptyState
-                    title="No expenses recorded yet"
-                    description="Your shared receipts will land here with a soft pop animation, so the ledger stays playful instead of feeling like a spreadsheet."
-                  />
-                ) : null}
-              </div>
-            </article>
-          </section>
-        </div>
+	        </div>
 
 	        {editingExpenseId && tripExpenseSummary ? (
 	          <div className="fixed inset-0 z-30 flex items-center justify-center bg-primary/30 px-4 backdrop-blur-sm">
@@ -4648,6 +5378,22 @@ function App() {
     </section>
   );
 
+  const renderAIExplorerScreen = () => (
+    <AIExplorer
+      tripSummary={tripExpenseSummary}
+      suggestionsSummary={tripSuggestionsSummary}
+      activeVoteId={activeSuggestionVoteId}
+      dateRangeLabel={activeTripDateRangeLabel}
+      error={tripSuggestionsError}
+      isGenerating={isTripSuggestionsGenerating}
+      isLoading={isTripSuggestionsLoading || isTripExpenseLoading}
+      onBackToSplit={() => handleNavigation('wallet')}
+      onGenerate={(userPreferences) => void handleGenerateTripSuggestions(userPreferences)}
+      onSplitCost={handleAddSuggestionToExpenses}
+      onVote={(suggestionId) => void handleVoteForTripSuggestion(suggestionId)}
+    />
+  );
+
   const renderCreateTripScreen = () =>
     userSession ? (
       <CreateTripView
@@ -4700,6 +5446,7 @@ function App() {
               onDeletePost={handleDeleteFeedPost}
               onCompletePost={handleCompleteFeedPost}
               onCancelPost={handleCancelFeedPost}
+              onCreateNewTrip={activeView === 'myPosts' ? handleHostTrip : undefined}
             />
           )}
         </section>
@@ -5010,6 +5757,8 @@ function App() {
         return renderProfileScreen();
       case 'history':
         return renderHistoryScreen();
+      case 'explorer':
+        return renderAIExplorerScreen();
       case 'wallet':
         return renderWalletScreen();
       case 'dashboard':
@@ -5165,13 +5914,22 @@ function App() {
                 <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary/70">Workspace</p>
                 <nav>
                   <ul className="space-y-2">
-                    {navItems.map((item) => {
+                    {navItems
+                      .filter((item) => item.id !== 'ai-explorer' || Boolean(activeWorkspaceTripId))
+                      .map((item) => {
                       const target = sidebarTargetById[item.id] ?? 'dashboard';
                       return (
                         <li key={item.id}>
                           <button
                             type="button"
-                            onClick={() => handleNavigation(target)}
+                            onClick={() => {
+                              if (item.id === 'ai-explorer') {
+                                handleOpenAIExplorer();
+                                return;
+                              }
+
+                              handleNavigation(target);
+                            }}
                             className={getSidebarClass(target)}
                           >
                             {renderSidebarIcon(item.icon)}
@@ -5338,6 +6096,18 @@ function App() {
                   </span>
                   <span>Wallet</span>
                 </button>
+                {activeWorkspaceTripId ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenAIExplorer}
+                    className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                  >
+                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                      <Sparkles className="h-5 w-5" />
+                    </span>
+                    <span>AI Explorer</span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => handleNavigation('onboarding')}

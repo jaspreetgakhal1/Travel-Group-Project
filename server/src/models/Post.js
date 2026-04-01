@@ -2,6 +2,20 @@
 import mongoose from 'mongoose';
 import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 
+const TRAVELER_TYPE_VALUES = [
+  'Budget Backpacker',
+  'Luxury Seeker',
+  'Adventure Junkie',
+  'Digital Nomad',
+  'Culture Vulture',
+  'Social Butterfly',
+  'Slow Traveler',
+  'Foodie Explorer',
+  'Photo Enthusiast',
+  'Minimalist',
+];
+const CURRENCY_VALUES = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD', 'JPY'];
+
 const postSchema = new mongoose.Schema(
   {
     author: {
@@ -61,6 +75,16 @@ const postSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+    expectedBudget: {
+      type: Number,
+      required: true,
+      min: 1,
+      default() {
+        const durationDays = Number.isInteger(this.durationDays) && this.durationDays > 0 ? this.durationDays : 1;
+        const participantCount = Number.isInteger(this.requiredPeople) && this.requiredPeople > 0 ? this.requiredPeople : 1;
+        return durationDays * participantCount * 100;
+      },
+    },
     durationDays: {
       type: Number,
       required: true,
@@ -88,7 +112,34 @@ const postSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      enum: TRAVELER_TYPE_VALUES,
       maxlength: 120,
+    },
+    currency: {
+      type: String,
+      required: true,
+      trim: true,
+      uppercase: true,
+      enum: CURRENCY_VALUES,
+      default: 'USD',
+    },
+    isPrivate: {
+      type: Boolean,
+      default: false,
+    },
+    emergencyContact: {
+      name: {
+        type: String,
+        required: true,
+        trim: true,
+        maxlength: 120,
+      },
+      phone: {
+        type: String,
+        required: true,
+        trim: true,
+        maxlength: 40,
+      },
     },
     startDate: {
       type: Date,

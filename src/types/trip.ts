@@ -4,6 +4,8 @@ export interface Trip {
   id: string;
   hostId?: string;
   title: string;
+  startDate?: string;
+  endDate?: string;
   hostName: string;
   hostCountryCode?: string;
   hostMobileNumber?: string;

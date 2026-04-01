@@ -4,5 +4,6 @@ export const env: {
   jwtSecret: string;
   jwtExpiresIn: string;
   allowedOrigins: string[];
+  geminiApiKey: string;
+  geminiModel: string;
 };
-

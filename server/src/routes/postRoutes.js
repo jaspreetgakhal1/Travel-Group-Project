@@ -16,6 +16,19 @@ import {
 import { markPastTripsCompleted } from '../utils/expireTrips.js';
 
 const router = express.Router();
+const TRAVELER_TYPE_VALUES = [
+  'Budget Backpacker',
+  'Luxury Seeker',
+  'Adventure Junkie',
+  'Digital Nomad',
+  'Culture Vulture',
+  'Social Butterfly',
+  'Slow Traveler',
+  'Foodie Explorer',
+  'Photo Enthusiast',
+  'Minimalist',
+];
+const CURRENCY_VALUES = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD', 'JPY'];
 
 const normalizeAuthorKey = (value) => value.trim().toLowerCase();
 const ACTIVE_STATUS_FILTER = {
@@ -175,6 +188,12 @@ const getSpotsFilledPercent = (spotsFilled, maxParticipants) => {
   return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
 };
 
+const calculateExpectedBudgetDefault = (durationDays, participantCount) => {
+  const safeDurationDays = Number.isInteger(durationDays) && durationDays > 0 ? durationDays : 1;
+  const safeParticipantCount = Number.isInteger(participantCount) && participantCount > 0 ? participantCount : 1;
+  return safeDurationDays * safeParticipantCount * 100;
+};
+
 const syncTripWithPost = async (post, organizerId) => {
   const normalizedDateRange = normalizeTripDateRange(post.startDate, post.endDate);
   if (!normalizedDateRange) {
@@ -190,6 +209,26 @@ const syncTripWithPost = async (post, organizerId) => {
         location: post.location,
         imageUrl: post.imageUrl,
         price: post.cost,
+        expectedBudget:
+          Number.isFinite(post.expectedBudget) && post.expectedBudget >= 1
+            ? Number(post.expectedBudget.toFixed(2))
+            : calculateExpectedBudgetDefault(post.durationDays, post.requiredPeople),
+        travelerType: typeof post.travelerType === 'string' ? post.travelerType.trim() : '',
+        currency:
+          typeof post.currency === 'string' && CURRENCY_VALUES.includes(post.currency.trim().toUpperCase())
+            ? post.currency.trim().toUpperCase()
+            : 'USD',
+        isPrivate: Boolean(post.isPrivate),
+        emergencyContact: {
+          name:
+            typeof post.emergencyContact?.name === 'string' && post.emergencyContact.name.trim()
+              ? post.emergencyContact.name.trim()
+              : 'Primary Emergency Contact',
+          phone:
+            typeof post.emergencyContact?.phone === 'string' && post.emergencyContact.phone.trim()
+              ? post.emergencyContact.phone.trim()
+              : 'Not provided',
+        },
         startDate: normalizedDateRange.startDate,
         endDate: normalizedDateRange.endDate,
         status: getPostStatus(post.status),
@@ -317,6 +356,10 @@ const toFeedPost = (post, user = null, trip = null) => {
     imageUrl: post.imageUrl,
     location: post.location,
     cost: post.cost,
+    expectedBudget:
+      Number.isFinite(post.expectedBudget) && post.expectedBudget >= 1
+        ? Number(post.expectedBudget.toFixed(2))
+        : calculateExpectedBudgetDefault(post.durationDays, post.requiredPeople),
     durationDays: post.durationDays,
     requiredPeople: post.requiredPeople,
     maxParticipants,
@@ -325,6 +368,18 @@ const toFeedPost = (post, user = null, trip = null) => {
     participantIds,
     expectations: post.expectations,
     travelerType: post.travelerType,
+    currency: typeof post.currency === 'string' && post.currency.trim() ? post.currency.trim().toUpperCase() : 'USD',
+    isPrivate: Boolean(post.isPrivate),
+    emergencyContact: {
+      name:
+        typeof post.emergencyContact?.name === 'string' && post.emergencyContact.name.trim()
+          ? post.emergencyContact.name.trim()
+          : '',
+      phone:
+        typeof post.emergencyContact?.phone === 'string' && post.emergencyContact.phone.trim()
+          ? post.emergencyContact.phone.trim()
+          : '',
+    },
     startDate: toIsoDateString(post.startDate),
     endDate: toIsoDateString(post.endDate),
   };
@@ -341,11 +396,15 @@ const validatePostPayload = (body) => {
     imageUrl,
     location,
     cost,
+    expectedBudget,
     durationDays,
     requiredPeople,
     spotsFilledPercent,
     expectations,
     travelerType,
+    currency,
+    isPrivate,
+    emergencyContact,
     startDate,
     endDate,
   } = body ?? {};
@@ -358,11 +417,19 @@ const validatePostPayload = (body) => {
     typeof imageUrl !== 'string' ||
     typeof location !== 'string' ||
     typeof cost !== 'number' ||
+    (typeof expectedBudget !== 'undefined' && expectedBudget !== null && typeof expectedBudget !== 'number') ||
     typeof durationDays !== 'number' ||
     typeof requiredPeople !== 'number' ||
     typeof spotsFilledPercent !== 'number' ||
     !Array.isArray(expectations) ||
     typeof travelerType !== 'string' ||
+    typeof currency !== 'string' ||
+    typeof isPrivate !== 'boolean' ||
+    !emergencyContact ||
+    typeof emergencyContact !== 'object' ||
+    Array.isArray(emergencyContact) ||
+    typeof emergencyContact.name !== 'string' ||
+    typeof emergencyContact.phone !== 'string' ||
     typeof startDate !== 'string' ||
     typeof endDate !== 'string'
   ) {
@@ -387,13 +454,40 @@ const validatePostPayload = (body) => {
   const normalizedImageUrl = imageUrl.trim();
   const normalizedLocation = location.trim();
   const normalizedTravelerType = travelerType.trim();
+  const normalizedCurrency = currency.trim().toUpperCase();
+  const normalizedEmergencyContactName = emergencyContact.name.trim();
+  const normalizedEmergencyContactPhone = emergencyContact.phone.trim();
 
-  if (!normalizedTitle || !normalizedHostName || !normalizedImageUrl || !normalizedLocation || !normalizedTravelerType) {
-    return { isValid: false, message: 'Title, host, image, location, and traveler type are required.' };
+  if (
+    !normalizedTitle ||
+    !normalizedHostName ||
+    !normalizedImageUrl ||
+    !normalizedLocation ||
+    !normalizedTravelerType ||
+    !normalizedCurrency ||
+    !normalizedEmergencyContactName ||
+    !normalizedEmergencyContactPhone
+  ) {
+    return {
+      isValid: false,
+      message: 'Title, host, image, location, traveler type, currency, and emergency contact are required.',
+    };
   }
 
   if (!Number.isFinite(cost) || cost < 0) {
     return { isValid: false, message: 'Cost must be a non-negative number.' };
+  }
+
+  if (!TRAVELER_TYPE_VALUES.includes(normalizedTravelerType)) {
+    return { isValid: false, message: 'Traveler type is invalid.' };
+  }
+
+  if (!CURRENCY_VALUES.includes(normalizedCurrency)) {
+    return { isValid: false, message: 'Currency is invalid.' };
+  }
+
+  if (!Number.isFinite(expectedBudget) || expectedBudget < 1) {
+    return { isValid: false, message: 'Expected budget must be at least 1.' };
   }
 
   if (!Number.isInteger(durationDays) || durationDays < 1) {
@@ -435,11 +529,18 @@ const validatePostPayload = (body) => {
       imageUrl: normalizedImageUrl,
       location: normalizedLocation,
       cost: Number(cost.toFixed(2)),
+      expectedBudget: Number(expectedBudget.toFixed(2)),
       durationDays,
       requiredPeople,
       spotsFilledPercent: Math.round(spotsFilledPercent),
       expectations: expectations.map((expectation) => expectation.trim()),
       travelerType: normalizedTravelerType,
+      currency: normalizedCurrency,
+      isPrivate,
+      emergencyContact: {
+        name: normalizedEmergencyContactName,
+        phone: normalizedEmergencyContactPhone,
+      },
       startDate: parsedStartDate,
       endDate: parsedEndDate,
     },
@@ -672,11 +773,15 @@ router.put('/:postId', async (request, response) => {
     post.imageUrl = validationResult.payload.imageUrl;
     post.location = validationResult.payload.location;
     post.cost = validationResult.payload.cost;
+    post.expectedBudget = validationResult.payload.expectedBudget;
     post.durationDays = validationResult.payload.durationDays;
     post.requiredPeople = validationResult.payload.requiredPeople;
     post.spotsFilledPercent = validationResult.payload.spotsFilledPercent;
     post.expectations = validationResult.payload.expectations;
     post.travelerType = validationResult.payload.travelerType;
+    post.currency = validationResult.payload.currency;
+    post.isPrivate = validationResult.payload.isPrivate;
+    post.emergencyContact = validationResult.payload.emergencyContact;
     post.startDate = validationResult.payload.startDate;
     post.endDate = validationResult.payload.endDate;
     post.author = authorUser._id;

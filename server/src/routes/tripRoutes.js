@@ -1,6 +1,7 @@
 import express from 'express';
 import mongoose, { Types } from 'mongoose';
 import { requireAuth } from '../middleware/requireAuth.js';
+import { verifyTripAccess } from '../middleware/verifyTripAccess.js';
 import { Participant } from '../models/Participant.js';
 import { Post } from '../models/Post.js';
 import { Trip } from '../models/Trip.js';
@@ -8,12 +9,14 @@ import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
 import { ACTIVE_TRIP_STATUS, CANCELLED_TRIP_STATUS, COMPLETED_TRIP_STATUS, TRIP_OVERLAP_ERROR_MESSAGE, findTripOverlap, toDayEnd, toDayStart, } from '../utils/tripScheduling.js';
 import { markPastTripsCompleted } from '../utils/expireTrips.js';
+import { generateTripSuggestions } from '../utils/geminiTripSuggestions.js';
 import { buildTripSettlement } from '../utils/wallet.js';
 const router = express.Router();
 const REQUEST_STATUSES = ['pending', 'accepted', 'rejected'];
 const isRequestStatus = (value) => typeof value === 'string' && REQUEST_STATUSES.includes(value);
 const normalizeAuthorKey = (value) => value.trim().toLowerCase();
 const getParticipantIds = (value) => Array.isArray(value) ? value.map((participantId) => String(participantId)) : [];
+const getUniqueTripMemberIds = (organizerId, participants) => Array.from(new Set([String(organizerId), ...getParticipantIds(participants)].filter(Boolean)));
 const getSpotsFilledPercent = (spotsFilled, maxParticipants) => {
     if (!Number.isFinite(maxParticipants) || maxParticipants <= 0) {
         return 0;
@@ -36,6 +39,157 @@ const getTripStatus = (value) => {
     }
     return ACTIVE_TRIP_STATUS;
 };
+const tripSuggestionStreams = new Map();
+let nextTripSuggestionStreamId = 1;
+const getSuggestionTravelerTypeFallback = (category) => {
+    if (typeof category === 'string' && category.trim()) {
+        return `${category.trim()} travelers`;
+    }
+    return 'collaborative travelers';
+};
+const normalizePreferenceValue = (value, fallback) => typeof value === 'string' && value.trim() ? value.trim() : fallback;
+const normalizeStoredSuggestionPreferences = (value) => {
+    const preferenceValue = value;
+    if (!preferenceValue) {
+        return null;
+    }
+    const collectiveMood = normalizePreferenceValue(preferenceValue.collectiveMood, '');
+    const interest = normalizePreferenceValue(preferenceValue.interest, '');
+    const budget = normalizePreferenceValue(preferenceValue.budget, '');
+    const food = normalizePreferenceValue(preferenceValue.food, '');
+    const crowds = normalizePreferenceValue(preferenceValue.crowds, '');
+    if (!collectiveMood || !interest || !budget || !food || !crowds) {
+        return null;
+    }
+    return {
+        collectiveMood,
+        interest,
+        budget,
+        food,
+        crowds,
+    };
+};
+const writeSuggestionStreamEvent = (response, payload) => {
+    response.write('event: suggestions\n');
+    response.write(`data: ${JSON.stringify(payload)}\n\n`);
+};
+const removeTripSuggestionStreamClient = (tripId, clientId) => {
+    const tripClients = tripSuggestionStreams.get(tripId);
+    const client = tripClients?.get(clientId);
+    if (client) {
+        clearInterval(client.heartbeatId);
+    }
+    tripClients?.delete(clientId);
+    if (tripClients && tripClients.size === 0) {
+        tripSuggestionStreams.delete(tripId);
+    }
+};
+const loadTripSuggestionContext = async (tripId) => {
+    const trip = await Trip.findById(tripId)
+        .select('_id title location travelerType category organizerId participants suggestions suggestionPreferences suggestionsGeneratedAt')
+        .lean();
+    if (!trip) {
+        return null;
+    }
+    let travelerType = typeof trip.travelerType === 'string' && trip.travelerType.trim() ? trip.travelerType.trim() : '';
+    if (!travelerType) {
+        const post = await Post.findById(tripId).select('travelerType').lean();
+        travelerType =
+            typeof post?.travelerType === 'string' && post.travelerType.trim()
+                ? post.travelerType.trim()
+                : getSuggestionTravelerTypeFallback(trip.category);
+    }
+    return {
+        tripId: String(trip._id),
+        title: trip.title,
+        destination: trip.location,
+        travelerType,
+        totalTravelers: Math.max(1, getUniqueTripMemberIds(trip.organizerId, trip.participants).length),
+        generatedPreferences: normalizeStoredSuggestionPreferences(trip.suggestionPreferences),
+        generatedAt: trip.suggestionsGeneratedAt instanceof Date
+            ? trip.suggestionsGeneratedAt.toISOString()
+            : trip.suggestionsGeneratedAt
+                ? new Date(trip.suggestionsGeneratedAt).toISOString()
+                : null,
+        suggestions: (Array.isArray(trip.suggestions) ? trip.suggestions : []).map((suggestion) => ({
+            id: String(suggestion._id),
+            name: typeof suggestion.name === 'string' ? suggestion.name.trim() : 'Suggested stop',
+            whyVisit: typeof suggestion.whyVisit === 'string' && suggestion.whyVisit.trim()
+                ? suggestion.whyVisit.trim()
+                : 'A strong fit for this group trip.',
+            estimatedCostPerPerson: typeof suggestion.estimatedCostPerPerson === 'number' && Number.isFinite(suggestion.estimatedCostPerPerson)
+                ? Number(suggestion.estimatedCostPerPerson.toFixed(2))
+                : 0,
+            vibeMatchPercent: typeof suggestion.vibeMatchPercent === 'number' && Number.isFinite(suggestion.vibeMatchPercent)
+                ? Math.max(0, Math.min(100, Math.round(suggestion.vibeMatchPercent)))
+                : 0,
+            imageUrl: typeof suggestion.imageUrl === 'string' && suggestion.imageUrl.trim() ? suggestion.imageUrl.trim() : '',
+            voteUserIds: getParticipantIds(suggestion.voteUserIds),
+        })),
+    };
+};
+const serializeTripSuggestions = (context, viewerUserId) => {
+    const highestVoteCount = context.suggestions.reduce((currentHighest, suggestion) => Math.max(currentHighest, suggestion.voteUserIds.length), 0);
+    const leaderSuggestionIds = highestVoteCount > 0
+        ? context.suggestions
+            .filter((suggestion) => suggestion.voteUserIds.length === highestVoteCount)
+            .map((suggestion) => suggestion.id)
+        : [];
+    const winningSuggestionId = leaderSuggestionIds.length === 1 ? leaderSuggestionIds[0] : null;
+    return {
+        tripId: context.tripId,
+        title: context.title,
+        destination: context.destination,
+        travelerType: context.travelerType,
+        totalTravelers: context.totalTravelers,
+        generatedPreferences: context.generatedPreferences,
+        generatedAt: context.generatedAt,
+        suggestions: context.suggestions.map((suggestion) => {
+            const voteCount = suggestion.voteUserIds.length;
+            return {
+                id: suggestion.id,
+                name: suggestion.name,
+                whyVisit: suggestion.whyVisit,
+                estimatedCostPerPerson: suggestion.estimatedCostPerPerson,
+                vibeMatchPercent: suggestion.vibeMatchPercent,
+                imageUrl: suggestion.imageUrl,
+                voteCount,
+                votePercent: context.totalTravelers > 0 ? Number(((voteCount / context.totalTravelers) * 100).toFixed(2)) : 0,
+                hasVoted: suggestion.voteUserIds.includes(viewerUserId),
+                isLeader: leaderSuggestionIds.includes(suggestion.id),
+                isWinningSuggestion: winningSuggestionId === suggestion.id,
+            };
+        }),
+    };
+};
+const buildTripSuggestionsPayload = async (tripId, viewerUserId) => {
+    const context = await loadTripSuggestionContext(tripId);
+    if (!context) {
+        return null;
+    }
+    return serializeTripSuggestions(context, viewerUserId);
+};
+const broadcastTripSuggestions = async (tripId) => {
+    const tripClients = tripSuggestionStreams.get(tripId);
+    if (!tripClients || tripClients.size === 0) {
+        return;
+    }
+    const context = await loadTripSuggestionContext(tripId);
+    if (!context) {
+        for (const clientId of tripClients.keys()) {
+            removeTripSuggestionStreamClient(tripId, clientId);
+        }
+        return;
+    }
+    for (const [clientId, client] of tripClients.entries()) {
+        try {
+            writeSuggestionStreamEvent(client.response, serializeTripSuggestions(context, client.userId));
+        }
+        catch {
+            removeTripSuggestionStreamClient(tripId, clientId);
+        }
+    }
+};
 const findCurrentActiveTripIdForUser = async (userId) => {
     const currentDayStart = toDayStart(new Date());
     const currentDayEnd = toDayEnd(new Date());
@@ -56,13 +210,13 @@ const findCurrentActiveTripIdForUser = async (userId) => {
 };
 const resolveTripForJoinRequest = async (tripId) => {
     const existingTrip = await Trip.findById(tripId)
-        .select('_id organizerId maxParticipants participants startDate endDate status')
+        .select('_id organizerId maxParticipants participants startDate endDate status expectedBudget')
         .lean();
     if (existingTrip) {
         return { trip: existingTrip };
     }
     const post = await Post.findById(tripId)
-        .select('_id title location requiredPeople startDate endDate status authorKey hostName')
+        .select('_id title location imageUrl requiredPeople expectedBudget startDate endDate status authorKey hostName travelerType currency isPrivate emergencyContact')
         .lean();
     if (!post) {
         return { trip: null, message: 'Trip not found.' };
@@ -104,6 +258,27 @@ const resolveTripForJoinRequest = async (tripId) => {
             location: typeof post.location === 'string' && post.location.trim()
                 ? post.location.trim()
                 : 'Custom route',
+            imageUrl: typeof post.imageUrl === 'string' && post.imageUrl.trim()
+                ? post.imageUrl.trim()
+                : '',
+            expectedBudget: typeof post.expectedBudget === 'number' && Number.isFinite(post.expectedBudget) && post.expectedBudget >= 1
+                ? Number(post.expectedBudget.toFixed(2))
+                : Math.max(1, maxParticipants) * Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)) + 1) * 100,
+            travelerType: typeof post.travelerType === 'string' && post.travelerType.trim()
+                ? post.travelerType.trim()
+                : '',
+            currency: typeof post.currency === 'string' && post.currency.trim()
+                ? post.currency.trim().toUpperCase()
+                : 'USD',
+            isPrivate: Boolean(post.isPrivate),
+            emergencyContact: {
+                name: typeof post.emergencyContact?.name === 'string' && post.emergencyContact.name.trim()
+                    ? post.emergencyContact.name.trim()
+                    : 'Primary Emergency Contact',
+                phone: typeof post.emergencyContact?.phone === 'string' && post.emergencyContact.phone.trim()
+                    ? post.emergencyContact.phone.trim()
+                    : 'Not provided',
+            },
             startDate,
             endDate,
             status: getTripStatus(post.status),
@@ -128,14 +303,15 @@ router.get('/self', requireAuth, async (req, res) => {
     try {
         await markPastTripsCompleted();
         const hostObjectId = new Types.ObjectId(hostId);
+        const todayStart = toDayStart(new Date()) ?? new Date();
         const trips = await Trip.find({
             organizerId: hostObjectId,
         })
-            .sort({ createdAt: -1 })
-            .select('_id organizerId title location startDate endDate status maxParticipants participants createdAt updatedAt')
+            .sort({ startDate: 1, createdAt: 1 })
+            .select('_id organizerId title location expectedBudget startDate endDate status maxParticipants participants createdAt updatedAt')
             .lean();
         if (trips.length === 0) {
-            return res.status(200).json({ trips: [] });
+            return res.status(200).json({ trips: [], upcomingTrips: [], pastTrips: [] });
         }
         const tripObjectIds = trips.map((trip) => new Types.ObjectId(String(trip._id)));
         const pendingCounts = await TripJoinRequest.aggregate([
@@ -157,28 +333,40 @@ router.get('/self', requireAuth, async (req, res) => {
             accumulator[String(currentValue._id)] = currentValue.pendingRequestCount;
             return accumulator;
         }, {});
+        const tripSummaries = trips.map((trip) => {
+            const tripId = String(trip._id);
+            const participantIds = getParticipantIds(trip.participants);
+            const spotsFilled = participantIds.length;
+            return {
+                id: tripId,
+                hostId: String(trip.organizerId),
+                title: trip.title,
+                location: trip.location,
+                expectedBudget: typeof trip.expectedBudget === 'number' ? Number(trip.expectedBudget.toFixed(2)) : 0,
+                startDate: trip.startDate,
+                endDate: trip.endDate,
+                status: getTripStatus(trip.status),
+                maxParticipants: trip.maxParticipants,
+                spotsFilled,
+                spotsFilledPercent: getSpotsFilledPercent(spotsFilled, trip.maxParticipants),
+                participantIds,
+                pendingRequestCount: pendingCountByTripId[tripId] ?? 0,
+                createdAt: trip.createdAt,
+                updatedAt: trip.updatedAt,
+            };
+        });
+        const upcomingTrips = tripSummaries.filter((trip) => {
+            const tripEndDate = trip.endDate instanceof Date ? trip.endDate : new Date(trip.endDate);
+            return !Number.isNaN(tripEndDate.getTime()) && tripEndDate >= todayStart;
+        });
+        const pastTrips = tripSummaries.filter((trip) => {
+            const tripEndDate = trip.endDate instanceof Date ? trip.endDate : new Date(trip.endDate);
+            return Number.isNaN(tripEndDate.getTime()) || tripEndDate < todayStart;
+        });
         return res.status(200).json({
-            trips: trips.map((trip) => {
-                const tripId = String(trip._id);
-                const participantIds = getParticipantIds(trip.participants);
-                const spotsFilled = participantIds.length;
-                return {
-                    id: tripId,
-                    hostId: String(trip.organizerId),
-                    title: trip.title,
-                    location: trip.location,
-                    startDate: trip.startDate,
-                    endDate: trip.endDate,
-                    status: getTripStatus(trip.status),
-                    maxParticipants: trip.maxParticipants,
-                    spotsFilled,
-                    spotsFilledPercent: getSpotsFilledPercent(spotsFilled, trip.maxParticipants),
-                    participantIds,
-                    pendingRequestCount: pendingCountByTripId[tripId] ?? 0,
-                    createdAt: trip.createdAt,
-                    updatedAt: trip.updatedAt,
-                };
-            }),
+            trips: upcomingTrips,
+            upcomingTrips,
+            pastTrips,
         });
     }
     catch (error) {
@@ -227,6 +415,199 @@ router.get('/:tripId/settlement', requireAuth, async (req, res) => {
         return res.status(500).json({ message: 'Unable to load trip settlement right now.' });
     }
 });
+router.get('/:tripId/suggestions', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    try {
+        const payload = await buildTripSuggestionsPayload(tripId, requesterId);
+        if (!payload) {
+            return res.status(404).json({ message: 'Trip not found.' });
+        }
+        return res.status(200).json(payload);
+    }
+    catch (error) {
+        console.error('GET /api/trips/:tripId/suggestions failed', error);
+        return res.status(500).json({ message: 'Unable to load AI trip suggestions right now.' });
+    }
+});
+router.get('/:tripId/suggestions/stream', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    try {
+        const payload = await buildTripSuggestionsPayload(tripId, requesterId);
+        if (!payload) {
+            return res.status(404).json({ message: 'Trip not found.' });
+        }
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.flushHeaders?.();
+        const clientId = nextTripSuggestionStreamId++;
+        const heartbeatId = setInterval(() => {
+            res.write('event: ping\n');
+            res.write('data: {}\n\n');
+        }, 15000);
+        if (!tripSuggestionStreams.has(tripId)) {
+            tripSuggestionStreams.set(tripId, new Map());
+        }
+        tripSuggestionStreams.get(tripId)?.set(clientId, {
+            response: res,
+            userId: requesterId,
+            heartbeatId,
+        });
+        writeSuggestionStreamEvent(res, payload);
+        req.on('close', () => {
+            removeTripSuggestionStreamClient(tripId, clientId);
+        });
+    }
+    catch (error) {
+        console.error('GET /api/trips/:tripId/suggestions/stream failed', error);
+        if (!res.headersSent) {
+            return res.status(500).json({ message: 'Unable to open live voting updates right now.' });
+        }
+        res.end();
+    }
+});
+router.post('/:tripId/generate-suggestions', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    const userPreferences = req.body;
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    try {
+        const requestedCollectiveMood = normalizePreferenceValue(userPreferences.userPreferences?.collectiveMood, '');
+        const requestedInterest = normalizePreferenceValue(userPreferences.userPreferences?.interest, '');
+        const requestedBudget = normalizePreferenceValue(userPreferences.userPreferences?.budget, '');
+        const requestedFood = normalizePreferenceValue(userPreferences.userPreferences?.food, '');
+        const requestedCrowds = normalizePreferenceValue(userPreferences.userPreferences?.crowds, '');
+        if ((!requestedCollectiveMood || !requestedInterest || !requestedBudget || !requestedFood || !requestedCrowds)) {
+            const existingPayload = await buildTripSuggestionsPayload(tripId, requesterId);
+            if (existingPayload && existingPayload.suggestions.length > 0) {
+                return res.status(200).json(existingPayload);
+            }
+        }
+        const context = await loadTripSuggestionContext(tripId);
+        if (!context) {
+            return res.status(404).json({ message: 'Trip not found.' });
+        }
+        const nextPreferences = {
+            collectiveMood: normalizePreferenceValue(userPreferences.userPreferences?.collectiveMood, context.generatedPreferences?.collectiveMood || 'Peace & Zen'),
+            interest: normalizePreferenceValue(userPreferences.userPreferences?.interest, context.generatedPreferences?.interest || 'Arts & Culture'),
+            budget: normalizePreferenceValue(userPreferences.userPreferences?.budget, context.generatedPreferences?.budget || 'Balanced'),
+            food: normalizePreferenceValue(userPreferences.userPreferences?.food, context.generatedPreferences?.food || 'Coffee & Cafes'),
+            crowds: normalizePreferenceValue(userPreferences.userPreferences?.crowds, context.generatedPreferences?.crowds || 'Hidden Gems/Quiet'),
+        };
+        if (!requestedCollectiveMood &&
+            !requestedInterest &&
+            !requestedBudget &&
+            !requestedFood &&
+            !requestedCrowds &&
+            context.suggestions.length > 0) {
+            const existingPayload = await buildTripSuggestionsPayload(tripId, requesterId);
+            if (existingPayload) {
+                return res.status(200).json(existingPayload);
+            }
+        }
+        const generatedSuggestions = await generateTripSuggestions({
+            destination: context.destination,
+            travelerType: context.travelerType,
+            collectiveMood: nextPreferences.collectiveMood,
+            interest: nextPreferences.interest,
+            budget: nextPreferences.budget,
+            food: nextPreferences.food,
+            crowds: nextPreferences.crowds,
+        });
+        await Trip.updateOne({ _id: new Types.ObjectId(tripId) }, {
+            $set: {
+                travelerType: context.travelerType,
+                suggestionPreferences: nextPreferences,
+                suggestions: generatedSuggestions.map((suggestion) => ({
+                    name: suggestion.name,
+                    whyVisit: suggestion.whyVisit,
+                    estimatedCostPerPerson: suggestion.estimatedCostPerPerson,
+                    vibeMatchPercent: suggestion.vibeMatchPercent,
+                    imageUrl: suggestion.imageUrl,
+                    voteUserIds: [],
+                    createdAt: new Date(),
+                })),
+                suggestionsGeneratedAt: new Date(),
+            },
+        });
+        const payload = await buildTripSuggestionsPayload(tripId, requesterId);
+        if (!payload) {
+            return res.status(404).json({ message: 'Trip not found.' });
+        }
+        await broadcastTripSuggestions(tripId);
+        return res.status(201).json(payload);
+    }
+    catch (error) {
+        console.error('POST /api/trips/:tripId/generate-suggestions failed', error);
+        const message = error instanceof Error ? error.message : 'Unable to generate AI suggestions right now.';
+        const statusCode = message === 'Gemini API key is not configured.' ? 503 : 500;
+        return res.status(statusCode).json({ message });
+    }
+});
+router.post('/:tripId/suggestions/:suggestionId/vote', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    const suggestionId = typeof req.params.suggestionId === 'string' ? req.params.suggestionId : '';
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    if (!suggestionId || !mongoose.isValidObjectId(suggestionId)) {
+        return res.status(400).json({ message: 'Suggestion id is invalid.' });
+    }
+    try {
+        const userObjectId = new Types.ObjectId(requesterId);
+        const matchingTrip = await Trip.findOne({
+            _id: new Types.ObjectId(tripId),
+            'suggestions._id': new Types.ObjectId(suggestionId),
+        })
+            .select('suggestions')
+            .lean();
+        if (!matchingTrip) {
+            return res.status(404).json({ message: 'Suggestion not found for this trip.' });
+        }
+        const selectedSuggestion = (Array.isArray(matchingTrip.suggestions) ? matchingTrip.suggestions : []).find((suggestion) => String(suggestion._id) === suggestionId);
+        const alreadyVoted = getParticipantIds(selectedSuggestion?.voteUserIds).includes(requesterId);
+        await Trip.updateOne({ _id: new Types.ObjectId(tripId) }, {
+            $pull: {
+                'suggestions.$[].voteUserIds': userObjectId,
+            },
+        });
+        if (!alreadyVoted) {
+            await Trip.updateOne({
+                _id: new Types.ObjectId(tripId),
+                'suggestions._id': new Types.ObjectId(suggestionId),
+            }, {
+                $addToSet: {
+                    'suggestions.$.voteUserIds': userObjectId,
+                },
+            });
+        }
+        const payload = await buildTripSuggestionsPayload(tripId, requesterId);
+        if (!payload) {
+            return res.status(404).json({ message: 'Trip not found.' });
+        }
+        await broadcastTripSuggestions(tripId);
+        return res.status(200).json(payload);
+    }
+    catch (error) {
+        console.error('POST /api/trips/:tripId/suggestions/:suggestionId/vote failed', error);
+        return res.status(500).json({ message: 'Unable to register this vote right now.' });
+    }
+});
 router.get('/:tripId', async (req, res) => {
     const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
     if (!tripId || !mongoose.isValidObjectId(tripId)) {
@@ -235,7 +616,7 @@ router.get('/:tripId', async (req, res) => {
     try {
         await markPastTripsCompleted();
         const trip = await Trip.findById(tripId)
-            .select('_id organizerId title location startDate endDate status maxParticipants participants createdAt updatedAt')
+            .select('_id organizerId title location imageUrl expectedBudget travelerType currency isPrivate emergencyContact startDate endDate status maxParticipants participants createdAt updatedAt')
             .lean();
         if (!trip) {
             return res.status(404).json({ message: 'Trip not found.' });
@@ -248,6 +629,19 @@ router.get('/:tripId', async (req, res) => {
                 hostId: String(trip.organizerId),
                 title: trip.title,
                 location: trip.location,
+                imageUrl: typeof trip.imageUrl === 'string' ? trip.imageUrl : '',
+                expectedBudget: typeof trip.expectedBudget === 'number' ? Number(trip.expectedBudget.toFixed(2)) : 0,
+                travelerType: typeof trip.travelerType === 'string' ? trip.travelerType : '',
+                currency: typeof trip.currency === 'string' ? trip.currency : 'USD',
+                isPrivate: Boolean(trip.isPrivate),
+                emergencyContact: {
+                    name: typeof trip.emergencyContact?.name === 'string' && trip.emergencyContact.name.trim()
+                        ? trip.emergencyContact.name.trim()
+                        : '',
+                    phone: typeof trip.emergencyContact?.phone === 'string' && trip.emergencyContact.phone.trim()
+                        ? trip.emergencyContact.phone.trim()
+                        : '',
+                },
                 startDate: trip.startDate,
                 endDate: trip.endDate,
                 status: getTripStatus(trip.status),

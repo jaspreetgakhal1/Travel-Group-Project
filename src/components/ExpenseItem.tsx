@@ -42,21 +42,21 @@ const ExpenseItem: React.FC<ExpenseItemProps> = ({
       transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
       className="overflow-hidden rounded-[30px] bg-white/92 px-5 py-4 shadow-xl shadow-slate-950/10"
     >
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="safe-flex-row flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="safe-flex-row items-center gap-2">
             <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/6 text-primary">
               <ReceiptText className="h-5 w-5" />
             </span>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-base font-semibold text-primary">{expense.description}</p>
-              <p className="mt-1 text-sm text-primary/60">
+              <p className="truncate-text text-base font-semibold text-primary">{expense.description}</p>
+              <p className="truncate-text mt-1 text-sm text-primary/60">
                 Paid by {expense.paidBy.name} and split {expense.memberCount} ways at ${expense.splitAmount.toFixed(2)} each
               </p>
             </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">
+          <div className="safe-flex-row mt-4 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">
             <span className="inline-flex items-center gap-1.5 rounded-full bg-background/75 px-3 py-1">
               <Clock3 className="h-3.5 w-3.5" />
               {wasEdited ? 'Edited' : 'Added'} {activityTimestamp}
@@ -73,9 +73,11 @@ const ExpenseItem: React.FC<ExpenseItemProps> = ({
         </div>
 
         <div className="flex items-start gap-3">
-          <div className="rounded-[26px] bg-[linear-gradient(155deg,rgba(61,64,91,0.96),rgba(90,95,132,0.88))] px-4 py-3 text-right text-white shadow-lg shadow-primary/20">
+          <div className="min-w-0 rounded-[26px] bg-[linear-gradient(155deg,rgba(61,64,91,0.96),rgba(90,95,132,0.88))] px-4 py-3 text-right text-white shadow-lg shadow-primary/20">
             <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/65">Amount</p>
-            <p className="mt-1 text-lg font-black">${expense.amount.toFixed(2)}</p>
+            <p className="truncate-text mt-1 text-[clamp(0.95rem,4vw,1.125rem)] font-black leading-none tabular-nums [font-variant-numeric:tabular-nums]">
+              ${expense.amount.toFixed(2)}
+            </p>
           </div>
 
           <div className="flex gap-2">

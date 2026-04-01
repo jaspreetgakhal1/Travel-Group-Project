@@ -3,11 +3,18 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 type InterestedInOption = 'Male' | 'Female' | 'Unspecified';
+type TripCurrency = 'USD' | 'CAD' | 'EUR' | 'GBP' | 'INR' | 'AUD' | 'JPY';
+
+type EmergencyContact = {
+  name: string;
+  phone: string;
+};
 
 export type CreateTripPayload = {
+  title: string;
   posterImageUrls: string[];
   peopleRequired: number;
-  budget: number;
+  expectedBudget: number;
   expectations: string[];
   interestedIn: InterestedInOption;
   onlyVerifiedUsers: boolean;
@@ -15,14 +22,30 @@ export type CreateTripPayload = {
   endJourneyDate: string;
   location: string;
   travelerType: string;
+  currency: TripCurrency;
+  isPrivate: boolean;
+  emergencyContact: EmergencyContact;
 };
+
+type ValidationField =
+  | 'title'
+  | 'posterImageUrls'
+  | 'location'
+  | 'startJourneyDate'
+  | 'endJourneyDate'
+  | 'expectedBudget'
+  | 'travelerType'
+  | 'currency'
+  | 'emergencyContactName'
+  | 'emergencyContactPhone'
+  | 'expectations';
 
 type CreateTripViewProps = {
   hostName: string;
   mode?: 'create' | 'edit';
   initialPayload?: CreateTripPayload;
   isSubmitting?: boolean;
-  onTripCreated: (payload: CreateTripPayload) => void | Promise<void>;
+  onTripCreated: (payload: CreateTripPayload) => boolean | Promise<boolean>;
   onCancel?: () => void;
 };
 
@@ -47,9 +70,37 @@ const TRAVELER_TYPE_OPTIONS = [
   'Photo Enthusiast',
   'Minimalist',
 ] as const;
+const CURRENCY_OPTIONS: TripCurrency[] = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD', 'JPY'];
 const TRAVELER_TYPE_PLACEHOLDER = 'Select your travel style';
-const SELECT_INPUT_CLASS_NAME =
-  'interactive-input w-full appearance-none rounded-card border border-primary/15 bg-white px-4 py-3 pr-11 text-sm text-primary outline-none transition focus:border-[#81B29A] focus:ring-2 focus:ring-[#81B29A]/20';
+const SQUARE_PANEL_CLASS_NAME = 'rounded-xl bg-background/80 p-4 ring-1 ring-primary/10';
+const SQUARE_TOGGLE_BUTTON_CLASS_NAME =
+  'interactive-btn rounded-xl border px-4 py-3 text-sm font-semibold transition';
+const FIELD_CONTAINER_IDS: Record<ValidationField, string> = {
+  title: 'create-trip-title-field',
+  posterImageUrls: 'create-trip-poster-field',
+  location: 'create-trip-location-field',
+  startJourneyDate: 'create-trip-start-date-field',
+  endJourneyDate: 'create-trip-end-date-field',
+  expectedBudget: 'create-trip-expected-budget-field',
+  travelerType: 'create-trip-traveler-type-field',
+  currency: 'create-trip-currency-field',
+  emergencyContactName: 'create-trip-emergency-contact-name-field',
+  emergencyContactPhone: 'create-trip-emergency-contact-phone-field',
+  expectations: 'create-trip-expectations-field',
+};
+const FIELD_SCROLL_ORDER: ValidationField[] = [
+  'title',
+  'posterImageUrls',
+  'location',
+  'startJourneyDate',
+  'endJourneyDate',
+  'expectedBudget',
+  'travelerType',
+  'currency',
+  'emergencyContactName',
+  'emergencyContactPhone',
+  'expectations',
+];
 
 const readFileAsDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -73,6 +124,14 @@ const formatDateInputValue = (date: Date): string => {
   const day = `${date.getDate()}`.padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
+
+const getInputClassName = (hasError: boolean, extraClassName = ''): string =>
+  `interactive-input w-full rounded-xl border bg-white px-4 py-3 text-sm text-primary outline-none transition ${
+    hasError
+      ? 'border-red-500 shadow-[0_0_0_4px_rgba(239,68,68,0.12)] focus:border-red-500 focus:ring-2 focus:ring-red-500/20'
+      : 'border-primary/15 focus:border-[#81B29A] focus:ring-2 focus:ring-[#81B29A]/20'
+  } ${extraClassName}`.trim();
+
 const buildDefaultJourneyDates = (): Pick<CreateTripPayload, 'startJourneyDate' | 'endJourneyDate'> => {
   const startDate = new Date();
   startDate.setHours(0, 0, 0, 0);
@@ -96,9 +155,10 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
   onCancel,
 }) => {
   const isEditMode = mode === 'edit';
+  const [tripTitle, setTripTitle] = useState('');
   const [posterImageDataUrls, setPosterImageDataUrls] = useState<string[]>([]);
   const [peopleRequired, setPeopleRequired] = useState(4);
-  const [budget, setBudget] = useState('');
+  const [expectedBudget, setExpectedBudget] = useState('');
   const [selectedExpectations, setSelectedExpectations] = useState<string[]>([]);
   const [customExpectations, setCustomExpectations] = useState<string[]>([]);
   const [expectationDraft, setExpectationDraft] = useState('');
@@ -108,6 +168,11 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
   const [endJourneyDate, setEndJourneyDate] = useState('');
   const [location, setLocation] = useState('');
   const [travelerType, setTravelerType] = useState('');
+  const [currency, setCurrency] = useState<TripCurrency>('USD');
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [emergencyContactName, setEmergencyContactName] = useState('');
+  const [emergencyContactPhone, setEmergencyContactPhone] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<ValidationField, string>>>({});
   const [formError, setFormError] = useState('');
   const [isLocalSubmitting, setIsLocalSubmitting] = useState(false);
   const isBusy = isSubmitting || isLocalSubmitting;
@@ -120,15 +185,22 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
   const applyPayloadToForm = (payload?: CreateTripPayload) => {
     const defaultJourneyDates = buildDefaultJourneyDates();
     const sourcePayload = payload ?? {
+      title: '',
       posterImageUrls: [],
       peopleRequired: 4,
-      budget: 0,
+      expectedBudget: 0,
       expectations: [],
       interestedIn: 'Unspecified' as InterestedInOption,
       onlyVerifiedUsers: false,
       ...defaultJourneyDates,
       location: '',
       travelerType: '',
+      currency: 'USD' as TripCurrency,
+      isPrivate: false,
+      emergencyContact: {
+        name: '',
+        phone: '',
+      },
     };
     const customFromPayload = sourcePayload.expectations.filter(
       (expectation) =>
@@ -137,9 +209,10 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
         ),
     );
 
+    setTripTitle(sourcePayload.title ?? '');
     setPosterImageDataUrls(sourcePayload.posterImageUrls);
     setPeopleRequired(sourcePayload.peopleRequired);
-    setBudget(sourcePayload.budget > 0 ? sourcePayload.budget.toString() : '');
+    setExpectedBudget(typeof sourcePayload.expectedBudget === 'number' && sourcePayload.expectedBudget > 0 ? sourcePayload.expectedBudget.toString() : '');
     setSelectedExpectations(sourcePayload.expectations);
     setCustomExpectations(customFromPayload);
     setExpectationDraft('');
@@ -153,6 +226,11 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
         (travelerTypeOption) => travelerTypeOption.toLowerCase() === (sourcePayload.travelerType ?? '').toLowerCase(),
       ) ?? '',
     );
+    setCurrency(CURRENCY_OPTIONS.includes(sourcePayload.currency) ? sourcePayload.currency : 'USD');
+    setIsPrivate(Boolean(sourcePayload.isPrivate));
+    setEmergencyContactName(sourcePayload.emergencyContact?.name ?? '');
+    setEmergencyContactPhone(sourcePayload.emergencyContact?.phone ?? '');
+    setFieldErrors({});
     setFormError('');
   };
 
@@ -194,6 +272,15 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
     try {
       const dataUrls = await Promise.all(filesToAdd.map((file) => readFileAsDataUrl(file)));
       setPosterImageDataUrls((previous) => [...previous, ...dataUrls]);
+      setFieldErrors((previous) => {
+        if (!previous.posterImageUrls) {
+          return previous;
+        }
+
+        const nextErrors = { ...previous };
+        delete nextErrors.posterImageUrls;
+        return nextErrors;
+      });
 
       if (imageFiles.length > remainingSlots || imageFiles.length !== selectedFiles.length) {
         setFormError(`Only ${MAX_POSTER_IMAGES} poster images are allowed and they must be image files.`);
@@ -208,6 +295,15 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
 
   const handleRemovePosterImage = (index: number) => {
     setPosterImageDataUrls((previous) => previous.filter((_, currentIndex) => currentIndex !== index));
+    setFieldErrors((previous) => {
+      if (!previous.posterImageUrls) {
+        return previous;
+      }
+
+      const nextErrors = { ...previous };
+      delete nextErrors.posterImageUrls;
+      return nextErrors;
+    });
   };
 
   const handlePeopleCounterStep = (direction: 'increment' | 'decrement') => {
@@ -222,6 +318,15 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
         ? previous.filter((currentExpectation) => currentExpectation !== expectation)
         : [...previous, expectation],
     );
+    setFieldErrors((previous) => {
+      if (!previous.expectations) {
+        return previous;
+      }
+
+      const nextErrors = { ...previous };
+      delete nextErrors.expectations;
+      return nextErrors;
+    });
   };
 
   const handleAddCustomExpectation = () => {
@@ -242,6 +347,15 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
     setCustomExpectations((previous) => [...previous, normalizedExpectation]);
     setSelectedExpectations((previous) => [...previous, normalizedExpectation]);
     setExpectationDraft('');
+    setFieldErrors((previous) => {
+      if (!previous.expectations) {
+        return previous;
+      }
+
+      const nextErrors = { ...previous };
+      delete nextErrors.expectations;
+      return nextErrors;
+    });
     setFormError('');
   };
 
@@ -256,50 +370,98 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
 
   const handleCreateTripSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const nextFieldErrors: Partial<Record<ValidationField, string>> = {};
+    const normalizedTitle = tripTitle.trim();
+    const normalizedLocation = location.trim();
+    const normalizedExpectedBudget = expectedBudget.trim();
+    const normalizedEmergencyContactName = emergencyContactName.trim();
+    const normalizedEmergencyContactPhone = emergencyContactPhone.trim();
+
+    if (!normalizedTitle) {
+      nextFieldErrors.title = 'This field is required.';
+    }
 
     if (posterImageDataUrls.length === 0) {
-      setFormError('Please add at least one poster image.');
-      return;
+      nextFieldErrors.posterImageUrls = 'This field is required.';
     }
 
-    const parsedBudget = Number(budget);
-    if (!Number.isFinite(parsedBudget) || parsedBudget <= 0) {
-      setFormError('Please enter a valid budget amount.');
-      return;
-    }
-
-    if (selectedExpectations.length === 0) {
-      setFormError('Select at least one expectation from the checklist.');
-      return;
-    }
-
-    const normalizedLocation = location.trim();
     if (!normalizedLocation) {
-      setFormError('Location is required.');
-      return;
+      nextFieldErrors.location = 'This field is required.';
+    }
+
+    if (!startJourneyDate) {
+      nextFieldErrors.startJourneyDate = 'This field is required.';
+    }
+
+    if (!endJourneyDate) {
+      nextFieldErrors.endJourneyDate = 'This field is required.';
+    }
+
+    if (!normalizedExpectedBudget) {
+      nextFieldErrors.expectedBudget = 'This field is required.';
     }
 
     if (!travelerType) {
-      setFormError('Please select your traveler type.');
+      nextFieldErrors.travelerType = 'This field is required.';
+    }
+
+    if (!currency) {
+      nextFieldErrors.currency = 'This field is required.';
+    }
+
+    if (!normalizedEmergencyContactName) {
+      nextFieldErrors.emergencyContactName = 'This field is required.';
+    }
+
+    if (!normalizedEmergencyContactPhone) {
+      nextFieldErrors.emergencyContactPhone = 'This field is required.';
+    }
+
+    if (selectedExpectations.length === 0) {
+      nextFieldErrors.expectations = 'This field is required.';
+    }
+
+    const parsedExpectedBudget = Number(normalizedExpectedBudget);
+    if (normalizedExpectedBudget && (!Number.isFinite(parsedExpectedBudget) || parsedExpectedBudget < 1)) {
+      nextFieldErrors.expectedBudget = 'Expected budget must be at least 1.';
+    }
+
+    if (
+      startJourneyDate &&
+      endJourneyDate &&
+      new Date(`${endJourneyDate}T23:59:59`).getTime() < new Date(`${startJourneyDate}T00:00:00`).getTime()
+    ) {
+      nextFieldErrors.endJourneyDate = 'End date must be on or after start date.';
+    }
+
+    if (Object.keys(nextFieldErrors).length > 0) {
+      setFieldErrors(nextFieldErrors);
+      setFormError('');
+
+      const firstFieldWithError = FIELD_SCROLL_ORDER.find((fieldKey) => nextFieldErrors[fieldKey]);
+      if (firstFieldWithError && typeof document !== 'undefined') {
+        const fieldContainer = document.getElementById(FIELD_CONTAINER_IDS[firstFieldWithError]);
+        fieldContainer?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        window.setTimeout(() => {
+          const focusableElement = fieldContainer?.querySelector('input, select, textarea, button');
+          if (focusableElement instanceof HTMLElement) {
+            focusableElement.focus({ preventScroll: true });
+          }
+        }, 180);
+      }
       return;
     }
 
-    if (!startJourneyDate || !endJourneyDate) {
-      setFormError('Please choose both journey start and end dates.');
-      return;
-    }
-
-    if (new Date(`${endJourneyDate}T23:59:59`).getTime() < new Date(`${startJourneyDate}T00:00:00`).getTime()) {
-      setFormError('End journey date cannot be earlier than start journey date.');
-      return;
-    }
+    setFieldErrors({});
+    setFormError('');
 
     setIsLocalSubmitting(true);
     try {
-      await onTripCreated({
+      const wasSaved = await onTripCreated({
+        title: normalizedTitle,
         posterImageUrls: posterImageDataUrls,
         peopleRequired,
-        budget: parsedBudget,
+        expectedBudget: parsedExpectedBudget,
         expectations: selectedExpectations,
         interestedIn,
         onlyVerifiedUsers,
@@ -307,9 +469,15 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
         endJourneyDate,
         location: normalizedLocation,
         travelerType,
+        currency,
+        isPrivate,
+        emergencyContact: {
+          name: normalizedEmergencyContactName,
+          phone: normalizedEmergencyContactPhone,
+        },
       });
 
-      if (!isEditMode) {
+      if (wasSaved && !isEditMode) {
         resetForm();
       }
     } catch (error) {
@@ -332,7 +500,35 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
         </p>
 
         <form className="mt-6 space-y-5" onSubmit={handleCreateTripSubmit} noValidate>
-          <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+          <label id={FIELD_CONTAINER_IDS.title} className={`block ${SQUARE_PANEL_CLASS_NAME}`}>
+            <span className="mb-1 block text-sm font-semibold text-primary">
+              Trip Title <span className="text-red-500">*</span>
+            </span>
+            <input
+              id="create-trip-title"
+              type="text"
+              value={tripTitle}
+              disabled={isBusy}
+              onChange={(event) => {
+                setTripTitle(event.target.value);
+                setFieldErrors((previous) => {
+                  if (!previous.title) {
+                    return previous;
+                  }
+
+                  const nextErrors = { ...previous };
+                  delete nextErrors.title;
+                  return nextErrors;
+                });
+              }}
+              className={getInputClassName(Boolean(fieldErrors.title))}
+              placeholder="Name your trip"
+              aria-invalid={Boolean(fieldErrors.title)}
+            />
+            {fieldErrors.title ? <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.title}</p> : null}
+          </label>
+
+          <div id={FIELD_CONTAINER_IDS.posterImageUrls} className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
             <p className="text-sm font-semibold text-primary">Poster Image (max 4 photos)</p>
             <input
               type="file"
@@ -340,10 +536,14 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
               multiple
               onChange={handlePosterImageChange}
               className="mt-3 text-sm text-primary file:mr-3 file:rounded-card file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
+              aria-invalid={Boolean(fieldErrors.posterImageUrls)}
             />
             <p className="mt-2 text-xs text-primary/75">
               {posterImageDataUrls.length} / {MAX_POSTER_IMAGES} selected
             </p>
+            {fieldErrors.posterImageUrls ? (
+              <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.posterImageUrls}</p>
+            ) : null}
 
             {posterImageDataUrls.length > 0 ? (
               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -363,8 +563,8 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
             ) : null}
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className={SQUARE_PANEL_CLASS_NAME}>
               <p className="text-sm font-semibold text-primary">Number Of people Required</p>
               <div className="mt-3 inline-flex items-center gap-3 rounded-card border border-primary/15 bg-white px-3 py-2">
                 <button
@@ -387,66 +587,185 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
               </div>
             </div>
 
-            <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-              <span className="mb-1 block text-sm font-semibold text-primary">Budget</span>
+            <label id={FIELD_CONTAINER_IDS.expectedBudget} className={`block ${SQUARE_PANEL_CLASS_NAME}`}>
+              <span className="mb-1 flex items-center gap-2 text-sm font-semibold text-primary">
+                Expected Budget <span className="text-red-500">*</span>
+                <span
+                  title="This is the total estimated cost for the whole group. We will use this to track your spending and calculate the final liquidation."
+                  className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-primary/20 bg-white text-[11px] font-bold text-primary/65"
+                >
+                  ?
+                </span>
+              </span>
               <input
                 type="number"
-                min={0}
+                min={1}
                 step="0.01"
-                value={budget}
+                value={expectedBudget}
                 disabled={isBusy}
-                onChange={(event) => setBudget(event.target.value)}
-                className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
-                placeholder="Enter total budget"
+                onChange={(event) => {
+                  setExpectedBudget(event.target.value);
+                  setFieldErrors((previous) => {
+                    if (!previous.expectedBudget) {
+                      return previous;
+                    }
+
+                    const nextErrors = { ...previous };
+                    delete nextErrors.expectedBudget;
+                    return nextErrors;
+                  });
+                }}
+                className={getInputClassName(Boolean(fieldErrors.expectedBudget))}
+                placeholder="Enter the full trip budget"
+                aria-invalid={Boolean(fieldErrors.expectedBudget)}
               />
+              <p className="mt-2 text-xs text-primary/65">Required for budget tracking, settlement, and liquidation progress.</p>
+              {fieldErrors.expectedBudget ? (
+                <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.expectedBudget}</p>
+              ) : null}
             </label>
           </div>
 
-          <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-            <span className="mb-1 block text-sm font-semibold text-primary">Location</span>
+          <div className="grid gap-4 lg:grid-cols-1">
+            <label id={FIELD_CONTAINER_IDS.currency} className={`block ${SQUARE_PANEL_CLASS_NAME}`}>
+              <span className="mb-1 block text-sm font-semibold text-primary">Currency</span>
+              <div className="relative">
+                <select
+                  value={currency}
+                  disabled={isBusy}
+                  onChange={(event) => {
+                    setCurrency(event.target.value as TripCurrency);
+                    setFieldErrors((previous) => {
+                      if (!previous.currency) {
+                        return previous;
+                      }
+
+                      const nextErrors = { ...previous };
+                      delete nextErrors.currency;
+                      return nextErrors;
+                    });
+                  }}
+                  className={getInputClassName(Boolean(fieldErrors.currency), 'appearance-none pr-11')}
+                  aria-invalid={Boolean(fieldErrors.currency)}
+                >
+                  {CURRENCY_OPTIONS.map((currencyOption) => (
+                    <option key={currencyOption} value={currencyOption}>
+                      {currencyOption}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-primary/55" />
+              </div>
+              {fieldErrors.currency ? <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.currency}</p> : null}
+            </label>
+          </div>
+
+          <label id={FIELD_CONTAINER_IDS.location} className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+            <span className="mb-1 block text-sm font-semibold text-primary">
+              Destination <span className="text-red-500">*</span>
+            </span>
             <input
               type="text"
               value={location}
               disabled={isBusy}
-              onChange={(event) => setLocation(event.target.value)}
-              className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
-              placeholder="Enter trip location"
+              onChange={(event) => {
+                setLocation(event.target.value);
+                setFieldErrors((previous) => {
+                  if (!previous.location) {
+                    return previous;
+                  }
+
+                  const nextErrors = { ...previous };
+                  delete nextErrors.location;
+                  return nextErrors;
+                });
+              }}
+              className={getInputClassName(Boolean(fieldErrors.location))}
+              placeholder="Enter trip destination"
+              aria-invalid={Boolean(fieldErrors.location)}
             />
+            {fieldErrors.location ? <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.location}</p> : null}
           </label>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-              <span className="mb-1 block text-sm font-semibold text-primary">Start Journey Date</span>
+            <label id={FIELD_CONTAINER_IDS.startJourneyDate} className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+              <span className="mb-1 block text-sm font-semibold text-primary">
+                Start Date <span className="text-red-500">*</span>
+              </span>
               <input
                 type="date"
                 value={startJourneyDate}
                 disabled={isBusy}
-                onChange={(event) => setStartJourneyDate(event.target.value)}
-                className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
+                onChange={(event) => {
+                  setStartJourneyDate(event.target.value);
+                  setFieldErrors((previous) => {
+                    if (!previous.startJourneyDate) {
+                      return previous;
+                    }
+
+                    const nextErrors = { ...previous };
+                    delete nextErrors.startJourneyDate;
+                    return nextErrors;
+                  });
+                }}
+                className={getInputClassName(Boolean(fieldErrors.startJourneyDate))}
+                aria-invalid={Boolean(fieldErrors.startJourneyDate)}
               />
+              {fieldErrors.startJourneyDate ? (
+                <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.startJourneyDate}</p>
+              ) : null}
             </label>
 
-            <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
-              <span className="mb-1 block text-sm font-semibold text-primary">End Journey Date</span>
+            <label id={FIELD_CONTAINER_IDS.endJourneyDate} className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+              <span className="mb-1 block text-sm font-semibold text-primary">
+                End Date <span className="text-red-500">*</span>
+              </span>
               <input
                 type="date"
                 value={endJourneyDate}
                 disabled={isBusy}
                 min={startJourneyDate || undefined}
-                onChange={(event) => setEndJourneyDate(event.target.value)}
-                className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
+                onChange={(event) => {
+                  setEndJourneyDate(event.target.value);
+                  setFieldErrors((previous) => {
+                    if (!previous.endJourneyDate) {
+                      return previous;
+                    }
+
+                    const nextErrors = { ...previous };
+                    delete nextErrors.endJourneyDate;
+                    return nextErrors;
+                  });
+                }}
+                className={getInputClassName(Boolean(fieldErrors.endJourneyDate))}
+                aria-invalid={Boolean(fieldErrors.endJourneyDate)}
               />
+              {fieldErrors.endJourneyDate ? (
+                <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.endJourneyDate}</p>
+              ) : null}
             </label>
           </div>
 
-          <label className="block rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+          <label id={FIELD_CONTAINER_IDS.travelerType} className={`block ${SQUARE_PANEL_CLASS_NAME}`}>
             <span className="mb-1 block text-sm font-semibold text-primary">Traveler Type</span>
             <div className="relative">
               <select
                 value={travelerType}
                 disabled={isBusy}
-                onChange={(event) => setTravelerType(event.target.value)}
-                className={SELECT_INPUT_CLASS_NAME}
+                onChange={(event) => {
+                  setTravelerType(event.target.value);
+                  setFieldErrors((previous) => {
+                    if (!previous.travelerType) {
+                      return previous;
+                    }
+
+                    const nextErrors = { ...previous };
+                    delete nextErrors.travelerType;
+                    return nextErrors;
+                  });
+                }}
+                className={getInputClassName(Boolean(fieldErrors.travelerType), 'appearance-none pr-11')}
+                aria-invalid={Boolean(fieldErrors.travelerType)}
               >
                 <option value="">{TRAVELER_TYPE_PLACEHOLDER}</option>
                 {TRAVELER_TYPE_OPTIONS.map((travelerTypeOption) => (
@@ -457,9 +776,101 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
               </select>
               <ChevronDown className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-primary/55" />
             </div>
+            {fieldErrors.travelerType ? (
+              <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.travelerType}</p>
+            ) : null}
           </label>
 
-          <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label id={FIELD_CONTAINER_IDS.emergencyContactName} className={`block ${SQUARE_PANEL_CLASS_NAME}`}>
+              <span className="mb-1 block text-sm font-semibold text-primary">Emergency Contact Name</span>
+              <input
+                type="text"
+                value={emergencyContactName}
+                disabled={isBusy}
+                onChange={(event) => {
+                  setEmergencyContactName(event.target.value);
+                  setFieldErrors((previous) => {
+                    if (!previous.emergencyContactName) {
+                      return previous;
+                    }
+
+                    const nextErrors = { ...previous };
+                    delete nextErrors.emergencyContactName;
+                    return nextErrors;
+                  });
+                }}
+                className={getInputClassName(Boolean(fieldErrors.emergencyContactName))}
+                placeholder="Enter emergency contact name"
+                aria-invalid={Boolean(fieldErrors.emergencyContactName)}
+              />
+              {fieldErrors.emergencyContactName ? (
+                <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.emergencyContactName}</p>
+              ) : null}
+            </label>
+
+            <label id={FIELD_CONTAINER_IDS.emergencyContactPhone} className={`block ${SQUARE_PANEL_CLASS_NAME}`}>
+              <span className="mb-1 block text-sm font-semibold text-primary">Emergency Contact Phone</span>
+              <input
+                type="tel"
+                value={emergencyContactPhone}
+                disabled={isBusy}
+                onChange={(event) => {
+                  setEmergencyContactPhone(event.target.value);
+                  setFieldErrors((previous) => {
+                    if (!previous.emergencyContactPhone) {
+                      return previous;
+                    }
+
+                    const nextErrors = { ...previous };
+                    delete nextErrors.emergencyContactPhone;
+                    return nextErrors;
+                  });
+                }}
+                className={getInputClassName(Boolean(fieldErrors.emergencyContactPhone))}
+                placeholder="Enter emergency contact phone"
+                aria-invalid={Boolean(fieldErrors.emergencyContactPhone)}
+              />
+              {fieldErrors.emergencyContactPhone ? (
+                <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.emergencyContactPhone}</p>
+              ) : null}
+            </label>
+          </div>
+
+          <div className={SQUARE_PANEL_CLASS_NAME}>
+            <p className="text-sm font-semibold text-primary">Trip Privacy</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => setIsPrivate(false)}
+                className={`${SQUARE_TOGGLE_BUTTON_CLASS_NAME} ${
+                  !isPrivate
+                    ? 'border-[#81B29A]/40 bg-[#81B29A]/15 text-primary'
+                    : 'border-primary/15 bg-white text-primary/70'
+                }`}
+              >
+                Public Trip
+              </button>
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => setIsPrivate(true)}
+                className={`${SQUARE_TOGGLE_BUTTON_CLASS_NAME} ${
+                  isPrivate
+                    ? 'border-[#81B29A]/40 bg-[#81B29A]/15 text-primary'
+                    : 'border-primary/15 bg-white text-primary/70'
+                }`}
+              >
+                Private Trip
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-primary/65">
+              {isPrivate ? 'Only invited members will be able to view this trip.' : 'This trip can be discovered publicly.'}
+            </p>
+          </div>
+
+          <div id={FIELD_CONTAINER_IDS.expectations} className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">
             <p className="text-sm font-semibold text-primary">Expectation Text box (Checklist)</p>
             <div className="mt-3 flex flex-wrap gap-2">
               <input
@@ -510,6 +921,9 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
                 );
               })}
             </div>
+            {fieldErrors.expectations ? (
+              <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.expectations}</p>
+            ) : null}
           </div>
 
           <div className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">

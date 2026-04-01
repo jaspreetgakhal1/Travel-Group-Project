@@ -9,7 +9,7 @@ export type ChatMessage = {
 
 export type ExpenseCategory = 'Transport' | 'Stay' | 'Food' | 'Tickets';
 
-export type NavIcon = 'trips' | 'safety' | 'wallet' | 'support';
+export type NavIcon = 'trips' | 'safety' | 'wallet' | 'support' | 'explorer';
 
 export type NavItem = {
   id: string;
@@ -43,6 +43,7 @@ export const chatMessages: ChatMessage[] = [
 
 export const navItems: NavItem[] = [
   { id: 'my-trips', label: 'My Trips', icon: 'trips' },
+  { id: 'ai-explorer', label: 'AI Explorer', icon: 'explorer' },
   { id: 'safety-center', label: 'Safety Center', icon: 'safety' },
   { id: 'wallet', label: 'Wallet', icon: 'wallet' },
   { id: 'support', label: 'Support', icon: 'support' },

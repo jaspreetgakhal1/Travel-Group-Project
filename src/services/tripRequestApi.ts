@@ -6,6 +6,11 @@ export type RequestSource = 'api' | 'local';
 export type HostTripSummary = {
   id: string;
   hostId: string;
+  title?: string;
+  location?: string;
+  startDate?: string;
+  endDate?: string;
+  status?: string;
   maxParticipants?: number;
   spotsFilled?: number;
   spotsFilledPercent?: number;
@@ -27,6 +32,39 @@ type SelfTripsResponse = {
   trips: Array<{
     id: string;
     hostId: string;
+    title?: string;
+    location?: string;
+    startDate?: string;
+    endDate?: string;
+    status?: string;
+    maxParticipants?: number;
+    spotsFilled?: number;
+    spotsFilledPercent?: number;
+    participantIds?: string[];
+    pendingRequestCount: number;
+  }>;
+  upcomingTrips?: Array<{
+    id: string;
+    hostId: string;
+    title?: string;
+    location?: string;
+    startDate?: string;
+    endDate?: string;
+    status?: string;
+    maxParticipants?: number;
+    spotsFilled?: number;
+    spotsFilledPercent?: number;
+    participantIds?: string[];
+    pendingRequestCount: number;
+  }>;
+  pastTrips?: Array<{
+    id: string;
+    hostId: string;
+    title?: string;
+    location?: string;
+    startDate?: string;
+    endDate?: string;
+    status?: string;
     maxParticipants?: number;
     spotsFilled?: number;
     spotsFilledPercent?: number;
@@ -128,9 +166,16 @@ export const fetchSelfTrips = async (authToken: string): Promise<HostTripSummary
     authToken,
   );
 
-  return response.trips.map((trip) => ({
+  const upcomingTrips = response.upcomingTrips ?? response.trips;
+
+  return upcomingTrips.map((trip) => ({
     id: trip.id,
     hostId: trip.hostId,
+    title: trip.title,
+    location: trip.location,
+    startDate: trip.startDate,
+    endDate: trip.endDate,
+    status: trip.status,
     maxParticipants: trip.maxParticipants,
     spotsFilled: trip.spotsFilled,
     spotsFilledPercent: trip.spotsFilledPercent,

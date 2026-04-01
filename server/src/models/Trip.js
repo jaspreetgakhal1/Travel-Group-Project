@@ -1,6 +1,78 @@
 import mongoose, { Schema } from 'mongoose';
 import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
 const { model, models } = mongoose;
+const TRAVELER_TYPE_VALUES = [
+    'Budget Backpacker',
+    'Luxury Seeker',
+    'Adventure Junkie',
+    'Digital Nomad',
+    'Culture Vulture',
+    'Social Butterfly',
+    'Slow Traveler',
+    'Foodie Explorer',
+    'Photo Enthusiast',
+    'Minimalist',
+];
+const CURRENCY_VALUES = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD', 'JPY'];
+const calculateExpectedBudgetDefault = (startDate, endDate, participantCount) => {
+    const normalizedStartDate = startDate instanceof Date ? startDate : new Date(startDate ?? Date.now());
+    const normalizedEndDate = endDate instanceof Date ? endDate : new Date(endDate ?? normalizedStartDate);
+    const durationMs = Math.max(normalizedEndDate.getTime() - normalizedStartDate.getTime(), 0);
+    const durationDays = Math.max(1, Math.ceil(durationMs / (24 * 60 * 60 * 1000)) + 1);
+    const safeParticipantCount = Number.isInteger(participantCount) && participantCount > 0 ? participantCount : 1;
+    return durationDays * safeParticipantCount * 100;
+};
+export const getTripExpectedBudgetDefault = (tripValue) => calculateExpectedBudgetDefault(tripValue?.startDate, tripValue?.endDate, tripValue?.maxParticipants ?? 1);
+const tripSuggestionSchema = new Schema({
+    name: {
+        type: String,
+        required: true,
+        trim: true,
+        maxlength: 120,
+    },
+    whyVisit: {
+        type: String,
+        required: true,
+        trim: true,
+        maxlength: 280,
+    },
+    estimatedCostPerPerson: {
+        type: Number,
+        required: true,
+        min: 0,
+        default: 0,
+    },
+    vibeMatchPercent: {
+        type: Number,
+        required: true,
+        min: 0,
+        max: 100,
+        default: 0,
+    },
+    imageUrl: {
+        type: String,
+        required: true,
+        trim: true,
+        maxlength: 2048,
+        default: '',
+    },
+    voteUserIds: {
+        type: [
+            {
+                type: Schema.Types.ObjectId,
+                ref: 'User',
+            },
+        ],
+        default: [],
+    },
+    createdAt: {
+        type: Date,
+        default: Date.now,
+    },
+}, {
+    _id: true,
+    id: true,
+});
 const tripSchema = new Schema({
     organizerId: {
         type: Schema.Types.ObjectId,
@@ -38,6 +110,54 @@ const tripSchema = new Schema({
         type: Number,
         min: 0,
         default: 0,
+    },
+    expectedBudget: {
+        type: Number,
+        required: true,
+        min: 1,
+        default() {
+            return getTripExpectedBudgetDefault(this);
+        },
+    },
+    travelerType: {
+        type: String,
+        trim: true,
+        enum: TRAVELER_TYPE_VALUES,
+        maxlength: 120,
+        default: '',
+    },
+    currency: {
+        type: String,
+        required: true,
+        trim: true,
+        uppercase: true,
+        enum: CURRENCY_VALUES,
+        default: 'USD',
+    },
+    isPrivate: {
+        type: Boolean,
+        default: false,
+    },
+    emergencyContact: {
+        type: {
+            name: {
+                type: String,
+                required: true,
+                trim: true,
+                maxlength: 120,
+            },
+            phone: {
+                type: String,
+                required: true,
+                trim: true,
+                maxlength: 40,
+            },
+        },
+        required: true,
+        default: {
+            name: 'Primary Emergency Contact',
+            phone: 'Not provided',
+        },
     },
     category: {
         type: String,
@@ -77,6 +197,49 @@ const tripSchema = new Schema({
             },
         ],
         default: [],
+    },
+    suggestions: {
+        type: [tripSuggestionSchema],
+        default: [],
+    },
+    suggestionPreferences: {
+        type: {
+            collectiveMood: {
+                type: String,
+                trim: true,
+                maxlength: 80,
+                default: '',
+            },
+            interest: {
+                type: String,
+                trim: true,
+                maxlength: 80,
+                default: '',
+            },
+            budget: {
+                type: String,
+                trim: true,
+                maxlength: 80,
+                default: '',
+            },
+            food: {
+                type: String,
+                trim: true,
+                maxlength: 80,
+                default: '',
+            },
+            crowds: {
+                type: String,
+                trim: true,
+                maxlength: 80,
+                default: '',
+            },
+        },
+        default: null,
+    },
+    suggestionsGeneratedAt: {
+        type: Date,
+        default: null,
     },
 }, {
     timestamps: true,

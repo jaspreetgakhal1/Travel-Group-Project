@@ -24,6 +24,7 @@ export type FeedPost = {
   imageUrl: string;
   location: string;
   cost: number;
+  expectedBudget: number;
   durationDays: number;
   requiredPeople: number;
   maxParticipants: number;
@@ -32,6 +33,12 @@ export type FeedPost = {
   participantIds: string[];
   expectations: string[];
   travelerType: string;
+  currency: string;
+  isPrivate: boolean;
+  emergencyContact: {
+    name: string;
+    phone: string;
+  };
   startDate: string;
   endDate: string;
   pendingRequestCount?: number;
