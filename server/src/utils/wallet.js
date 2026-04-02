@@ -61,7 +61,9 @@ export const loadTripContext = async (tripId, requesterId) => {
     return { error: { status: 400, message: 'Trip id is invalid.' } };
   }
 
-  const trip = await Trip.findById(tripId).select('_id organizerId title location imageUrl participants startDate endDate maxParticipants expectedBudget').lean();
+  const trip = await Trip.findById(tripId)
+    .select('_id organizerId title location imageUrl participants startDate endDate maxParticipants expectedBudget currency')
+    .lean();
   if (!trip) {
     return { error: { status: 404, message: 'Trip not found.' } };
   }
@@ -239,6 +241,7 @@ export const buildTripSettlement = async (tripId, requesterId) => {
       title: trip.title,
       location: trip.location,
       imageUrl: typeof trip.imageUrl === 'string' ? trip.imageUrl : '',
+      currency: typeof trip.currency === 'string' && trip.currency.trim() ? trip.currency.trim().toUpperCase() : 'USD',
       expectedBudget: fromCents(expectedBudgetCents),
       durationDays: getTripDurationDays(trip.startDate, trip.endDate),
     },

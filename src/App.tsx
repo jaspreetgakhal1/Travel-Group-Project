@@ -42,6 +42,7 @@ import VerificationGateView from './views/VerificationGateView';
 import CreateTripView, { type CreateTripPayload } from './views/CreateTripView';
 import AboutUsView from './views/AboutUsView';
 import ContactUsView from './views/ContactUsView';
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import {
   fetchUserProfile,
   loginWithCredentials,
@@ -219,6 +220,28 @@ type HostTripRequestsByTripId = Record<string, HostTripRequest[]>;
 type HostRequestReviewStatus = Extract<JoinRequestStatus, 'accepted' | 'rejected'>;
 type JoinConflictMessageByPostId = Record<string, string>;
 type WalletPanel = 'payables' | 'release' | null;
+type HistoryDebtView = 'list' | 'chart';
+
+type HistoryDebtDirection = 'owe' | 'owed';
+
+type HistoryDebtDetail = {
+  id: string;
+  amount: number;
+  createdAt: string;
+  description: string;
+  direction: HistoryDebtDirection;
+  paidByName: string;
+};
+
+type HistoryDebtCard = {
+  amount: number;
+  avatar: string | null;
+  direction: HistoryDebtDirection;
+  key: string;
+  name: string;
+  userId: string;
+  details: HistoryDebtDetail[];
+};
 
 type TripRuntime = {
   status: TripLifecycleStatus;
@@ -246,16 +269,36 @@ const EMPTY_POST_STATS: PostStats = {
   completedCount: 0,
   totalCount: 0,
 };
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  style: 'currency',
-});
+const currencyFormatterCache = new Map<string, Intl.NumberFormat>();
+const HISTORY_OWED_COLORS = ['#059669', '#10b981', '#34d399', '#6ee7b7'];
+const HISTORY_OWE_COLORS = ['#ea580c', '#f97316', '#fb923c', '#fdba74'];
 
-const formatCurrency = (value: number) => currencyFormatter.format(value);
+const getCurrencyFormatter = (currencyCode = 'USD') => {
+  const normalizedCurrencyCode =
+    typeof currencyCode === 'string' && /^[A-Z]{3}$/i.test(currencyCode.trim()) ? currencyCode.trim().toUpperCase() : 'USD';
+  const existingFormatter = currencyFormatterCache.get(normalizedCurrencyCode);
+
+  if (existingFormatter) {
+    return existingFormatter;
+  }
+
+  const formatter = new Intl.NumberFormat('en-US', {
+    currency: normalizedCurrencyCode,
+    minimumFractionDigits: 2,
+    style: 'currency',
+  });
+
+  currencyFormatterCache.set(normalizedCurrencyCode, formatter);
+  return formatter;
+};
+
+const formatCurrency = (value: number, currencyCode = 'USD') => getCurrencyFormatter(currencyCode).format(value);
 const TRIP_OVERLAP_NOTICE =
   'Logic Error: You are already committed to another trip during these dates. You cannot be in two places at once.';
 const TRIP_OVERLAP_HELPER_TEXT = 'Conflicts with your already booked trip dates.';
+
+const toCurrencyCents = (value: number): number => Math.round(value * 100);
+const fromCurrencyCents = (value: number): number => Number((value / 100).toFixed(2));
 
 const toDayStartTimestamp = (value: string | Date): number | null => {
   const parsedDate = value instanceof Date ? new Date(value) : new Date(value);
@@ -965,6 +1008,7 @@ function App() {
   const [walletReleaseEntry, setWalletReleaseEntry] = useState<WalletSummaryEntry | null>(null);
   const [walletReleaseAmount, setWalletReleaseAmount] = useState('');
   const [activeTripHistoryTripId, setActiveTripHistoryTripId] = useState<string | null>(null);
+  const [historyDebtView, setHistoryDebtView] = useState<HistoryDebtView>('list');
   const [activeTripExplorerTripId, setActiveTripExplorerTripId] = useState<string | null>(null);
   const [pendingExplorerExpensePrefill, setPendingExplorerExpensePrefill] = useState<{
     description: string;
@@ -1937,6 +1981,7 @@ function App() {
           payableEntry: payableEntry ?? null,
         };
       })
+      .filter((entry) => entry.netBalanceAmount > 0)
       .sort((left, right) => right.totalOwesAmount - left.totalOwesAmount);
   }, [selectedTripPaidEntries, tripExpenseSummary, userSession?.id, walletSummary?.releasedEntries]);
   const selectedTripPayableTotal = useMemo(
@@ -1950,13 +1995,163 @@ function App() {
 
     return tripExpenseSummary.balances.find((balance) => balance.userId === userSession.id) ?? null;
   }, [tripExpenseSummary, userSession?.id]);
-  const tripScopedPayableAmount = useMemo(() => {
+  const selectedTripNetPayableTotal = useMemo(() => {
+    if (selectedTripParticipantEntries.length > 0) {
+      return Number(
+        selectedTripParticipantEntries.reduce((total, entry) => total + entry.netBalanceAmount, 0).toFixed(2),
+      );
+    }
+
     if (currentUserTripBalance && currentUserTripBalance.totalOwed > 0) {
       return Number(currentUserTripBalance.totalOwed.toFixed(2));
     }
 
     return selectedTripPayableTotal;
-  }, [currentUserTripBalance, selectedTripPayableTotal]);
+  }, [currentUserTripBalance, selectedTripParticipantEntries, selectedTripPayableTotal]);
+  const activeHistorySummary = useMemo(() => {
+    if (currentScreen !== 'history' || !activeTripHistoryTripId) {
+      return null;
+    }
+
+    return tripExpenseSummary?.trip.id === activeTripHistoryTripId ? tripExpenseSummary : null;
+  }, [activeTripHistoryTripId, currentScreen, tripExpenseSummary]);
+  const activeHistoryFeedPost = useMemo(() => {
+    if (!activeTripHistoryTripId) {
+      return null;
+    }
+
+    return feedPosts.find((post) => post.id === activeTripHistoryTripId) ?? null;
+  }, [activeTripHistoryTripId, feedPosts]);
+  const activeHistoryCurrencyCodes = useMemo(() => {
+    const codes = new Set<string>();
+
+    if (typeof activeHistorySummary?.trip.currency === 'string' && activeHistorySummary.trip.currency.trim()) {
+      codes.add(activeHistorySummary.trip.currency.trim().toUpperCase());
+    }
+
+    if (typeof activeHistoryFeedPost?.currency === 'string' && activeHistoryFeedPost.currency.trim()) {
+      codes.add(activeHistoryFeedPost.currency.trim().toUpperCase());
+    }
+
+    if (codes.size === 0) {
+      codes.add('USD');
+    }
+
+    return Array.from(codes);
+  }, [activeHistoryFeedPost?.currency, activeHistorySummary?.trip.currency]);
+  const activeHistoryPrimaryCurrency = activeHistoryCurrencyCodes[0] ?? 'USD';
+  const historyDebtCards = useMemo(() => {
+    if (!activeHistorySummary || !userSession?.id) {
+      return [];
+    }
+
+    const membersById = new Map(activeHistorySummary.members.map((member) => [member.id, member]));
+    const debtByUserId = new Map<
+      string,
+      {
+        counterpartAvatar: string | null;
+        counterpartName: string;
+        counterpartUserId: string;
+        details: HistoryDebtDetail[];
+        netCents: number;
+      }
+    >();
+
+    activeHistorySummary.expenses.forEach((expense) => {
+      expense.settlements.forEach((settlement) => {
+        let counterpartUserId = '';
+        let direction: HistoryDebtDirection | null = null;
+        let counterpartName = '';
+
+        if (settlement.userId === userSession.id && settlement.owesToUserId !== userSession.id) {
+          counterpartUserId = settlement.owesToUserId;
+          counterpartName = settlement.owesToName;
+          direction = 'owe';
+        } else if (settlement.owesToUserId === userSession.id && settlement.userId !== userSession.id) {
+          counterpartUserId = settlement.userId;
+          counterpartName = settlement.name;
+          direction = 'owed';
+        }
+
+        if (!direction || !counterpartUserId) {
+          return;
+        }
+
+        const counterpartMember = membersById.get(counterpartUserId);
+        const counterpartAvatar = counterpartMember?.avatar ?? settlement.avatar ?? null;
+        const amountCents = toCurrencyCents(settlement.amount);
+        const existingDebt = debtByUserId.get(counterpartUserId) ?? {
+          counterpartAvatar,
+          counterpartName,
+          counterpartUserId,
+          details: [],
+          netCents: 0,
+        };
+
+        existingDebt.netCents += direction === 'owed' ? amountCents : -amountCents;
+        existingDebt.details.push({
+          id: `${expense.id}:${settlement.userId}:${settlement.owesToUserId}:${direction}`,
+          amount: settlement.amount,
+          createdAt: expense.createdAt,
+          description: expense.description,
+          direction,
+          paidByName: expense.paidBy.name,
+        });
+
+        debtByUserId.set(counterpartUserId, existingDebt);
+      });
+    });
+
+    return Array.from(debtByUserId.values())
+      .map((entry) => {
+        if (entry.netCents === 0) {
+          return null;
+        }
+
+        return {
+          amount: fromCurrencyCents(Math.abs(entry.netCents)),
+          avatar: entry.counterpartAvatar,
+          direction: entry.netCents > 0 ? 'owed' : 'owe',
+          key: `history-debt:${entry.counterpartUserId}`,
+          name: entry.counterpartName,
+          userId: entry.counterpartUserId,
+          details: entry.details.sort(
+            (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+          ),
+        } satisfies HistoryDebtCard;
+      })
+      .filter((entry): entry is HistoryDebtCard => Boolean(entry))
+      .sort((left, right) => right.amount - left.amount);
+  }, [activeHistorySummary, userSession?.id]);
+  const historyYouOweCards = useMemo(
+    () => historyDebtCards.filter((entry) => entry.direction === 'owe'),
+    [historyDebtCards],
+  );
+  const historyYouAreOwedCards = useMemo(
+    () => historyDebtCards.filter((entry) => entry.direction === 'owed'),
+    [historyDebtCards],
+  );
+  const historyYouOweTotal = useMemo(
+    () => fromCurrencyCents(historyYouOweCards.reduce((total, entry) => total + toCurrencyCents(entry.amount), 0)),
+    [historyYouOweCards],
+  );
+  const historyYouAreOwedTotal = useMemo(
+    () => fromCurrencyCents(historyYouAreOwedCards.reduce((total, entry) => total + toCurrencyCents(entry.amount), 0)),
+    [historyYouAreOwedCards],
+  );
+  const historyDebtChartData = useMemo(
+    () =>
+      historyDebtCards.map((entry, index) => ({
+        direction: entry.direction,
+        fill:
+          entry.direction === 'owed'
+            ? HISTORY_OWED_COLORS[index % HISTORY_OWED_COLORS.length]
+            : HISTORY_OWE_COLORS[index % HISTORY_OWE_COLORS.length],
+        name: entry.name,
+        value: entry.amount,
+      })),
+    [historyDebtCards],
+  );
   const splitPreviewAmount = useMemo(() => {
     const parsedAmount = Number.parseFloat(splitExpenseAmount);
     return Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : 0;
@@ -2239,6 +2434,7 @@ function App() {
     }
 
     setActiveTripHistoryTripId(tripId);
+    setHistoryDebtView('list');
     setCurrentScreen('history');
     setIsAccountPanelOpen(false);
 
@@ -4232,8 +4428,8 @@ function App() {
 
   const renderHistoryScreen = () => {
     if (activeTripHistoryTripId) {
-      const historySummary = tripExpenseSummary?.trip.id === activeTripHistoryTripId ? tripExpenseSummary : null;
-      const historyFeedPost = feedPosts.find((post) => post.id === activeTripHistoryTripId) ?? null;
+      const historySummary = activeHistorySummary;
+      const historyFeedPost = activeHistoryFeedPost;
 
       return (
         <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
@@ -4258,7 +4454,317 @@ function App() {
             </div>
 
             {historySummary ? (
-              <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
+              <div className="mt-8 space-y-6">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div className={glassInsetCardClassName}>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Trip Total</p>
+                    <p className="mt-3 text-2xl font-black text-primary">
+                      {formatCurrency(historySummary.totalExpenses, activeHistoryPrimaryCurrency)}
+                    </p>
+                  </div>
+                  <div className={glassInsetCardClassName}>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Expenses</p>
+                    <p className="mt-3 text-2xl font-black text-primary">{historySummary.expenses.length}</p>
+                  </div>
+                  <div className={glassInsetCardClassName}>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Travelers</p>
+                    <p className="mt-3 text-2xl font-black text-primary">{historySummary.members.length}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-[32px] border border-white/30 bg-white/70 p-5 shadow-[0_28px_70px_-38px_rgba(15,23,42,0.35)] backdrop-blur-2xl sm:p-6">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Debt Summary</p>
+                      <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Who owes whom right now</h3>
+                      <p className="mt-2 max-w-2xl text-sm text-primary/64">
+                        A netted snapshot of the trip, split into what you owe and what other travelers still owe you.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-start gap-2 lg:justify-end">
+                      <span className="rounded-full bg-primary/6 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/58">
+                        {historyFeedPost?.location ?? historySummary.trip.location}
+                      </span>
+                      <span className="rounded-full bg-white/80 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/58 shadow-sm shadow-slate-950/5">
+                        {activeHistoryCurrencyCodes.length > 1
+                          ? `Multiple Currency ${activeHistoryCurrencyCodes.join(' / ')}`
+                          : `Base Currency ${activeHistoryPrimaryCurrency}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex justify-center">
+                    <div className="inline-flex rounded-full border border-white/30 bg-white/80 p-1 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                      <button
+                        type="button"
+                        onClick={() => setHistoryDebtView('list')}
+                        className={`interactive-btn rounded-full px-4 py-2 text-sm font-semibold transition ${
+                          historyDebtView === 'list' ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-primary/62'
+                        }`}
+                      >
+                        View as List
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHistoryDebtView('chart')}
+                        className={`interactive-btn rounded-full px-4 py-2 text-sm font-semibold transition ${
+                          historyDebtView === 'chart' ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-primary/62'
+                        }`}
+                      >
+                        View Chart
+                      </button>
+                    </div>
+                  </div>
+
+                  {historyDebtView === 'list' ? (
+                    <div className="relative mt-6 rounded-[28px] border border-white/25 bg-white/55 p-3 shadow-inner shadow-white/35 backdrop-blur-md sm:p-4">
+                      <div className="pointer-events-none absolute inset-y-5 left-1/2 hidden w-px -translate-x-1/2 bg-primary/10 lg:block" />
+                      <div className="grid grid-cols-2 gap-4 lg:gap-8">
+                        <div className="space-y-3 lg:pr-4">
+                          <div className="flex items-center justify-between gap-3 px-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-primary/42">You Owe</p>
+                            <span className="text-sm font-black text-orange-600">
+                              {formatCurrency(historyYouOweTotal, activeHistoryPrimaryCurrency)}
+                            </span>
+                          </div>
+
+                          {historyYouOweCards.length > 0 ? (
+                            historyYouOweCards.map((entry) => (
+                              <div
+                                key={entry.key}
+                                className="rounded-[26px] border border-white/35 bg-white/80 p-4 shadow-[0_18px_45px_-32px_rgba(15,23,42,0.4)]"
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-orange-100 text-sm font-bold text-orange-600">
+                                    {entry.avatar ? (
+                                      <img src={entry.avatar} alt={entry.name} className="h-full w-full object-cover" />
+                                    ) : (
+                                      entry.name.charAt(0).toUpperCase()
+                                    )}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-semibold text-orange-600">You owe {entry.name}</p>
+                                    <p className="mt-1 text-[1.65rem] font-black tracking-tight text-primary">
+                                      {formatCurrency(entry.amount, activeHistoryPrimaryCurrency)}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                {entry.details.length > 0 ? (
+                                  <details className="mt-3 rounded-[20px] bg-background/70 px-3.5 py-3">
+                                    <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-[0.18em] text-primary/48">
+                                      {entry.details.length} expense detail{entry.details.length === 1 ? '' : 's'}
+                                    </summary>
+                                    <div className="mt-3 space-y-2">
+                                      {entry.details.map((detail) => (
+                                        <div key={detail.id} className="flex items-start justify-between gap-3 text-sm">
+                                          <div className="min-w-0">
+                                            <p className="truncate text-primary/78">for {detail.description}</p>
+                                            <p className="mt-0.5 text-xs text-primary/45">
+                                              Paid by {detail.paidByName} on {new Date(detail.createdAt).toLocaleDateString()}
+                                            </p>
+                                          </div>
+                                          <span className="shrink-0 font-semibold text-orange-600">
+                                            -{formatCurrency(detail.amount, activeHistoryPrimaryCurrency)}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </details>
+                                ) : null}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="rounded-[24px] border border-dashed border-primary/12 bg-white/72 px-4 py-5 text-sm text-primary/58">
+                              You do not owe anyone for this trip right now.
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="space-y-3 lg:pl-4">
+                          <div className="flex items-center justify-between gap-3 px-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-primary/42">You Are Owed</p>
+                            <span className="text-sm font-black text-emerald-600">
+                              {formatCurrency(historyYouAreOwedTotal, activeHistoryPrimaryCurrency)}
+                            </span>
+                          </div>
+
+                          {historyYouAreOwedCards.length > 0 ? (
+                            historyYouAreOwedCards.map((entry) => (
+                              <div
+                                key={entry.key}
+                                className="rounded-[26px] border border-white/35 bg-white/80 p-4 shadow-[0_18px_45px_-32px_rgba(15,23,42,0.4)]"
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-emerald-100 text-sm font-bold text-emerald-600">
+                                    {entry.avatar ? (
+                                      <img src={entry.avatar} alt={entry.name} className="h-full w-full object-cover" />
+                                    ) : (
+                                      entry.name.charAt(0).toUpperCase()
+                                    )}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-semibold text-emerald-600">{entry.name} owes you</p>
+                                    <p className="mt-1 text-[1.65rem] font-black tracking-tight text-primary">
+                                      {formatCurrency(entry.amount, activeHistoryPrimaryCurrency)}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                {entry.details.length > 0 ? (
+                                  <details className="mt-3 rounded-[20px] bg-background/70 px-3.5 py-3">
+                                    <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-[0.18em] text-primary/48">
+                                      {entry.details.length} expense detail{entry.details.length === 1 ? '' : 's'}
+                                    </summary>
+                                    <div className="mt-3 space-y-2">
+                                      {entry.details.map((detail) => (
+                                        <div key={detail.id} className="flex items-start justify-between gap-3 text-sm">
+                                          <div className="min-w-0">
+                                            <p className="truncate text-primary/78">for {detail.description}</p>
+                                            <p className="mt-0.5 text-xs text-primary/45">
+                                              Paid by {detail.paidByName} on {new Date(detail.createdAt).toLocaleDateString()}
+                                            </p>
+                                          </div>
+                                          <span className="shrink-0 font-semibold text-emerald-600">
+                                            +{formatCurrency(detail.amount, activeHistoryPrimaryCurrency)}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </details>
+                                ) : null}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="rounded-[24px] border border-dashed border-primary/12 bg-white/72 px-4 py-5 text-sm text-primary/58">
+                              No one owes you anything for this trip right now.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-6 rounded-[28px] border border-white/25 bg-white/60 p-4 shadow-inner shadow-white/35 backdrop-blur-md sm:p-5">
+                      {historyDebtChartData.length > 0 ? (
+                        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px] lg:items-center">
+                          <div className="h-[280px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <PieChart>
+                                <Pie
+                                  data={historyDebtChartData}
+                                  dataKey="value"
+                                  innerRadius={72}
+                                  outerRadius={108}
+                                  paddingAngle={3}
+                                  stroke="rgba(255,255,255,0.92)"
+                                  strokeWidth={3}
+                                >
+                                  {historyDebtChartData.map((entry) => (
+                                    <Cell key={`${entry.direction}-${entry.name}`} fill={entry.fill} />
+                                  ))}
+                                </Pie>
+                                <Tooltip
+                                  formatter={(value) =>
+                                    formatCurrency(
+                                      Array.isArray(value) ? Number(value[0] ?? 0) : Number(value ?? 0),
+                                      activeHistoryPrimaryCurrency,
+                                    )
+                                  }
+                                  contentStyle={{
+                                    backdropFilter: 'blur(16px)',
+                                    background: 'rgba(255,255,255,0.92)',
+                                    border: '1px solid rgba(148, 163, 184, 0.2)',
+                                    borderRadius: '18px',
+                                    boxShadow: '0 18px 40px -28px rgba(15, 23, 42, 0.45)',
+                                  }}
+                                />
+                              </PieChart>
+                            </ResponsiveContainer>
+                          </div>
+
+                          <div className="space-y-3">
+                            {historyDebtChartData.map((entry) => (
+                              <div
+                                key={`${entry.direction}-${entry.name}`}
+                                className="flex items-center justify-between gap-3 rounded-[22px] border border-white/35 bg-white/82 px-4 py-3"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.fill }} />
+                                    <p className="truncate text-sm font-semibold text-primary">{entry.name}</p>
+                                  </div>
+                                  <p
+                                    className={`mt-1 text-xs font-semibold uppercase tracking-[0.18em] ${
+                                      entry.direction === 'owed' ? 'text-emerald-600' : 'text-orange-600'
+                                    }`}
+                                  >
+                                    {entry.direction === 'owed' ? 'Owes You' : 'You Owe'}
+                                  </p>
+                                </div>
+                                <span
+                                  className={`shrink-0 text-sm font-black ${
+                                    entry.direction === 'owed' ? 'text-emerald-600' : 'text-orange-600'
+                                  }`}
+                                >
+                                  {formatCurrency(entry.value, activeHistoryPrimaryCurrency)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <ExpenseEmptyState
+                          title="No debt distribution yet"
+                          description="Once the trip has unsettled balances, this chart will break down who owes you and who you owe."
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-3xl border border-white/20 bg-white/78 p-5 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Full Ledger</p>
+                      <h3 className="mt-2 text-2xl font-black text-primary">Expense timeline</h3>
+                    </div>
+                    <div className="rounded-full bg-primary/6 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/55">
+                      {historyFeedPost?.location ?? historySummary.trip.location}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 space-y-3">
+                    {historySummary.expenses.map((expense) => (
+                      <div key={expense.id} className="rounded-[26px] border border-white/20 bg-white/82 p-4 shadow-md shadow-slate-950/6">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-primary">{expense.description}</p>
+                            <p className="mt-1 text-xs text-primary/55">
+                              Paid by {expense.paidBy.name} on {new Date(expense.createdAt).toLocaleString()}
+                            </p>
+                          </div>
+                          <div className="rounded-full bg-primary/6 px-3 py-1.5 text-sm font-bold text-primary">
+                            {formatCurrency(expense.amount, activeHistoryPrimaryCurrency)}
+                          </div>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {expense.settlements.map((settlement) => (
+                            <span
+                              key={`${expense.id}-${settlement.userId}-${settlement.owesToUserId}`}
+                              className="rounded-full bg-background/80 px-3 py-1 text-[11px] font-semibold text-primary/60"
+                            >
+                              {settlement.name} owes {settlement.owesToName}{' '}
+                              {formatCurrency(settlement.amount, activeHistoryPrimaryCurrency)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="hidden">
                 <div className="space-y-4">
                   <div className="grid gap-4 sm:grid-cols-3">
                     <div className={glassInsetCardClassName}>
@@ -4340,6 +4846,7 @@ function App() {
                       )}
                     </div>
                   </div>
+                </div>
                 </div>
               </div>
             ) : (
@@ -4649,7 +5156,7 @@ function App() {
                   <WalletCards className="h-4 w-4" />
                   Total Due
                 </div>
-                <AnimatedAmount className="mt-3 block text-2xl font-black" value={tripScopedPayableAmount} />
+                <AnimatedAmount className="mt-3 block text-2xl font-black" value={selectedTripNetPayableTotal} />
               </button>
 
               <AnimatePresence>
@@ -4705,7 +5212,7 @@ function App() {
                   <Coins className="h-4 w-4" />
                   Settle Up
                 </div>
-                <AnimatedAmount className="mt-3 block text-2xl font-black" value={tripScopedPayableAmount} />
+                <AnimatedAmount className="mt-3 block text-2xl font-black" value={selectedTripNetPayableTotal} />
               </button>
 
               <AnimatePresence>
