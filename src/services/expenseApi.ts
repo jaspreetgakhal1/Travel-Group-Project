@@ -22,6 +22,7 @@ export type TripExpenseSummary = {
     title: string;
     location: string;
     imageUrl: string;
+    currency: string;
     expectedBudget: number;
     durationDays: number;
   };
