@@ -17,11 +17,30 @@ if (missingVariables.length > 0) {
 const getAllowedOrigins = () => {
   // Support both common Vite dev ports when no explicit allowlist is provided.
   const rawValue = process.env.CLIENT_ORIGIN ?? 'http://localhost:5173,http://localhost:5174';
+  const expandLoopbackOrigin = (origin) => {
+    try {
+      const url = new URL(origin);
+
+      if (url.hostname === 'localhost') {
+        return [origin, origin.replace('localhost', '127.0.0.1')];
+      }
+
+      if (url.hostname === '127.0.0.1') {
+        return [origin, origin.replace('127.0.0.1', 'localhost')];
+      }
+    } catch {
+      return [origin];
+    }
+
+    return [origin];
+  };
+
   // Support comma-separated origins and remove empty values.
-  return rawValue
+  return [...new Set(rawValue
     .split(',')
     .map((origin) => origin.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .flatMap(expandLoopbackOrigin))];
 };
 
 // Export normalized runtime configuration.
