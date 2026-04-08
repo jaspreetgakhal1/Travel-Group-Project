@@ -3,14 +3,17 @@ import { Trip } from '../models/Trip.js';
 export {
   ACTIVE_TRIP_STATUS,
   CANCELLED_TRIP_STATUS,
+  CANCELLED_TRIP_STATUS_VALUES,
   COMPLETED_TRIP_STATUS,
-  TRIP_STATUS_VALUES,
+  COMPLETED_TRIP_STATUS_VALUES,
   isTripCurrentActive,
-  normalizeTripDateRange,
-  toDayEnd,
-  toDayStart,
-} from './tripStatus.js';
-import { CANCELLED_TRIP_STATUS, normalizeTripDateRange } from './tripStatus.js';
+  normalizeTripRecordStatus,
+  TRIP_RECORD_STATUS_VALUES,
+  UPCOMING_TRIP_STATUS,
+} from './tripRecordStatus.js';
+export { normalizeTripDateRange, toDayEnd, toDayStart } from './tripStatus.js';
+import { CANCELLED_TRIP_STATUS_VALUES } from './tripRecordStatus.js';
+import { normalizeTripDateRange } from './tripStatus.js';
 export const TRIP_OVERLAP_ERROR_MESSAGE =
   'Logic Error: You are already committed to another trip during these dates. You cannot be in two places at once.';
 
@@ -35,7 +38,7 @@ export const buildTripOverlapQuery = ({ userId, startDate, endDate, excludeTripI
   }
 
   const overlapQuery = {
-    status: { $ne: CANCELLED_TRIP_STATUS },
+    status: { $nin: [...CANCELLED_TRIP_STATUS_VALUES] },
     $or: [{ organizerId: userObjectId }, { participants: userObjectId }],
     startDate: { $lte: normalizedDateRange.endDate },
     endDate: { $gte: normalizedDateRange.startDate },

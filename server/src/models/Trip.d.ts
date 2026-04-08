@@ -1,5 +1,5 @@
 import { HydratedDocument, Model, Types } from 'mongoose';
-import { TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
+import { TRIP_RECORD_STATUS_VALUES } from '../utils/tripRecordStatus.js';
 declare const CURRENCY_VALUES: readonly ["USD", "CAD", "EUR", "GBP", "INR", "AUD", "JPY"];
 export interface ITripSuggestion {
     _id: Types.ObjectId;
@@ -37,7 +37,7 @@ export interface ITrip {
     category?: 'Adventure' | 'Luxury' | 'Budget' | 'Nature';
     startDate: Date;
     endDate: Date;
-    status: (typeof TRIP_STATUS_VALUES)[number];
+    status: (typeof TRIP_RECORD_STATUS_VALUES)[number];
     maxParticipants: number;
     participants: Types.ObjectId[];
     suggestions: ITripSuggestion[];

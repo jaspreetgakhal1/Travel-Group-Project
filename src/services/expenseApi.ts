@@ -109,6 +109,10 @@ export type WalletSummary = {
   releasedEntries: WalletSummaryEntry[];
 };
 
+export type ActiveTripResponse = {
+  tripId: string | null;
+};
+
 const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
@@ -149,6 +153,9 @@ const request = async <T>(path: string, init: RequestInit, authToken: string): P
 
 export const fetchActiveTripExpenseSummary = async (authToken: string): Promise<TripExpenseSummary> =>
   request<TripExpenseSummary>('/api/trips/active/settlement', { method: 'GET' }, authToken);
+
+export const fetchActiveTripId = async (authToken: string): Promise<ActiveTripResponse> =>
+  request<ActiveTripResponse>('/api/trips/active', { method: 'GET' }, authToken);
 
 export const fetchTripExpenseSummary = async (tripId: string, authToken: string): Promise<TripExpenseSummary> =>
   request<TripExpenseSummary>(`/api/trips/${encodeURIComponent(tripId)}/settlement`, { method: 'GET' }, authToken);

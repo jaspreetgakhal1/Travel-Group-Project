@@ -8,6 +8,7 @@ import FastImage from './FastImage';
 
 type TripPostProps = {
   post: FeedPost;
+  viewerTripRole?: 'host' | 'member';
   currentUserId?: string | null;
   currentUserAuthorKey?: string | null;
   currentUserIsVerified?: boolean;
@@ -39,6 +40,7 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
 
 function TripPost({
   post,
+  viewerTripRole,
   currentUserId = null,
   currentUserAuthorKey = null,
   currentUserIsVerified = false,
@@ -73,8 +75,12 @@ function TripPost({
   const isVibeWarning = typeof matchPercentage === 'number' && matchPercentage < 50;
   const maxParticipants = post.maxParticipants > 0 ? post.maxParticipants : post.requiredPeople;
   const spotsFilled = Math.max(0, Math.min(post.spotsFilled, maxParticipants));
+  const inferredViewerTripRole =
+    viewerTripRole ??
+    (currentUserId && post.hostId === currentUserId ? 'host' : currentUserId && post.participantIds.includes(currentUserId) ? 'member' : undefined);
+  const isViewerHost = inferredViewerTripRole === 'host';
   const isTripFull = spotsFilled >= maxParticipants;
-  const isJoinedTrip = Boolean(currentUserId && post.participantIds.includes(currentUserId));
+  const isJoinedTrip = inferredViewerTripRole === 'member' || Boolean(currentUserId && post.participantIds.includes(currentUserId));
   const hasAcceptedParticipants = post.participantIds.length > 0;
   const hostName = resolvedAuthor?.name ?? post.hostName;
   const hostAvatar = resolvedAuthor?.avatar ?? post.hostProfileImageDataUrl ?? null;
@@ -84,16 +90,16 @@ function TripPost({
       : null;
   const normalizedPostAuthorKey = typeof post.authorKey === 'string' ? post.authorKey.trim().toLowerCase() : '';
   const isOwnPostByHostId = Boolean(currentUserId && post.hostId && post.hostId === currentUserId);
-  const isOwnPostByAuthorKey = Boolean(
-    normalizedCurrentUserAuthorKey && normalizedPostAuthorKey && normalizedCurrentUserAuthorKey === normalizedPostAuthorKey,
-  );
   const postAuthorId =
     typeof post.author === 'object' && post.author !== null && typeof post.author.id === 'string' ? post.author.id : null;
   const resolvedAuthorId = typeof resolvedAuthor?.id === 'string' ? resolvedAuthor.id : null;
   const isOwnPostByAuthorId = Boolean(
     currentUserId && (postAuthorId === currentUserId || resolvedAuthorId === currentUserId),
   );
-  const isOwnPost = isOwnPostByHostId || isOwnPostByAuthorKey || isOwnPostByAuthorId;
+  const isOwnPostByAuthorKey = Boolean(
+    !currentUserId && normalizedCurrentUserAuthorKey && normalizedPostAuthorKey && normalizedCurrentUserAuthorKey === normalizedPostAuthorKey,
+  );
+  const isOwnPost = isOwnPostByHostId || isOwnPostByAuthorId || isOwnPostByAuthorKey;
   const isAuthorVerified = isOwnPost && currentUserIsVerified ? true : Boolean(post.isVerified || resolvedAuthor?.isVerified);
   const hasJoinConflict = Boolean(joinConflictMessage && !isOwnPost && !isJoinedTrip);
 
@@ -205,6 +211,15 @@ function TripPost({
             <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">
               {isAuthorVerified ? 'Verified user' : 'Pending Verification'}
             </span>
+            {inferredViewerTripRole ? (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                  isViewerHost ? 'bg-primary/10 text-primary' : 'bg-success/20 text-primary'
+                }`}
+              >
+                {isViewerHost ? 'Host' : 'Member'}
+              </span>
+            ) : null}
             {post.onlyVerifiedUsers ? (
               <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-primary">
                 Verified users only

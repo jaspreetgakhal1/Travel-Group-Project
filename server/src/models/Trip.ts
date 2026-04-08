@@ -1,5 +1,5 @@
 import mongoose, { HydratedDocument, Model, Schema, Types } from 'mongoose';
-import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
+import { getDefaultTripRecordStatus, TRIP_RECORD_STATUS_VALUES } from '../utils/tripRecordStatus.js';
 
 const { model, models } = mongoose;
 const TRAVELER_TYPE_VALUES = [
@@ -55,7 +55,7 @@ export interface ITrip {
   category?: 'Adventure' | 'Luxury' | 'Budget' | 'Nature';
   startDate: Date;
   endDate: Date;
-  status: (typeof TRIP_STATUS_VALUES)[number];
+  status: (typeof TRIP_RECORD_STATUS_VALUES)[number];
   maxParticipants: number;
   participants: Types.ObjectId[];
   suggestions: ITripSuggestion[];
@@ -175,7 +175,6 @@ const tripSchema = new Schema<ITrip, TripModelType, {}, {}, ITripVirtuals>(
     imageUrl: {
       type: String,
       trim: true,
-      maxlength: 2048,
       default: '',
     },
     price: {
@@ -246,9 +245,11 @@ const tripSchema = new Schema<ITrip, TripModelType, {}, {}, ITripVirtuals>(
     },
     status: {
       type: String,
-      enum: TRIP_STATUS_VALUES,
+      enum: TRIP_RECORD_STATUS_VALUES,
       required: true,
-      default: ACTIVE_TRIP_STATUS,
+      default(this: ITrip | null | undefined) {
+        return getDefaultTripRecordStatus(this as Partial<ITrip> | null | undefined);
+      },
       index: true,
     },
     maxParticipants: {

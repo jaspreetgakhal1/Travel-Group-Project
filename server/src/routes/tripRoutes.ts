@@ -10,12 +10,15 @@ import { User } from '../models/User.js';
 import {
   ACTIVE_TRIP_STATUS,
   CANCELLED_TRIP_STATUS,
+  CANCELLED_TRIP_STATUS_VALUES,
   COMPLETED_TRIP_STATUS,
+  COMPLETED_TRIP_STATUS_VALUES,
   TRIP_OVERLAP_ERROR_MESSAGE,
   findTripOverlap,
   toDayEnd,
   toDayStart,
 } from '../utils/tripScheduling.js';
+import { normalizeTripRecordStatus } from '../utils/tripRecordStatus.js';
 import { markPastTripsCompleted } from '../utils/expireTrips.js';
 import { generateTripSuggestions } from '../utils/geminiTripSuggestions.js';
 import { buildTripSettlement } from '../utils/wallet.js';
@@ -27,10 +30,53 @@ type RequestStatus = (typeof REQUEST_STATUSES)[number];
 const isRequestStatus = (value: unknown): value is RequestStatus =>
   typeof value === 'string' && REQUEST_STATUSES.includes(value as RequestStatus);
 const normalizeAuthorKey = (value: string): string => value.trim().toLowerCase();
+const getReferencedUserId = (value: unknown): string => {
+  if (value instanceof Types.ObjectId) {
+    return String(value);
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value && typeof value === 'object') {
+    const candidate = value as { _id?: unknown; id?: unknown };
+    if (candidate._id instanceof Types.ObjectId || typeof candidate._id === 'string') {
+      return String(candidate._id);
+    }
+
+    if (typeof candidate.id === 'string') {
+      return candidate.id;
+    }
+  }
+
+  return '';
+};
 const getParticipantIds = (value: unknown): string[] =>
-  Array.isArray(value) ? value.map((participantId) => String(participantId)) : [];
+  Array.isArray(value) ? value.map((participantId) => getReferencedUserId(participantId)).filter(Boolean) : [];
 const getUniqueTripMemberIds = (organizerId: unknown, participants: unknown): string[] =>
-  Array.from(new Set([String(organizerId), ...getParticipantIds(participants)].filter(Boolean)));
+  Array.from(new Set([getReferencedUserId(organizerId), ...getParticipantIds(participants)].filter(Boolean)));
+const getDisplayName = (user: {
+  firstName?: unknown;
+  lastName?: unknown;
+  userId?: unknown;
+} | null | undefined, fallback = 'Traveler'): string => {
+  const firstName = typeof user?.firstName === 'string' ? user.firstName.trim() : '';
+  const lastName = typeof user?.lastName === 'string' ? user.lastName.trim() : '';
+  const fullName = `${firstName} ${lastName}`.trim();
+
+  if (fullName) {
+    return fullName;
+  }
+
+  if (typeof user?.userId === 'string' && user.userId.trim()) {
+    return user.userId.trim();
+  }
+
+  return fallback;
+};
+const getProfileImageDataUrl = (user: { profileImageDataUrl?: unknown } | null | undefined): string | null =>
+  typeof user?.profileImageDataUrl === 'string' && user.profileImageDataUrl.trim() ? user.profileImageDataUrl.trim() : null;
 const getSpotsFilledPercent = (spotsFilled: number, maxParticipants: number): number => {
   if (!Number.isFinite(maxParticipants) || maxParticipants <= 0) {
     return 0;
@@ -38,7 +84,6 @@ const getSpotsFilledPercent = (spotsFilled: number, maxParticipants: number): nu
 
   return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
 };
-
 const parseTripDate = (value: unknown, fallbackDate: Date): Date => {
   const parsedDate = value instanceof Date ? value : new Date(value as string | number | Date);
   if (Number.isNaN(parsedDate.getTime())) {
@@ -48,17 +93,13 @@ const parseTripDate = (value: unknown, fallbackDate: Date): Date => {
   return parsedDate;
 };
 
-const getTripStatus = (value: unknown): string => {
-  if (value === COMPLETED_TRIP_STATUS) {
-    return COMPLETED_TRIP_STATUS;
-  }
-
-  if (value === CANCELLED_TRIP_STATUS) {
-    return CANCELLED_TRIP_STATUS;
-  }
-
-  return ACTIVE_TRIP_STATUS;
-};
+const getTripStatus = (
+  value: unknown,
+  trip: {
+    startDate?: Date | string | null;
+    endDate?: Date | string | null;
+  } = {},
+): string => normalizeTripRecordStatus(value, trip);
 
 type TripSuggestionContext = {
   tripId: string;
@@ -336,7 +377,7 @@ const findCurrentActiveTripIdForUser = async (userId: string): Promise<string | 
 
   const userObjectId = new Types.ObjectId(userId);
   const activeTrip = await Trip.findOne({
-    status: { $ne: CANCELLED_TRIP_STATUS },
+    status: { $nin: [...CANCELLED_TRIP_STATUS_VALUES, ...COMPLETED_TRIP_STATUS_VALUES] },
     $or: [{ organizerId: userObjectId }, { participants: userObjectId }],
     startDate: { $lte: currentDayEnd },
     endDate: { $gte: currentDayStart },
@@ -455,7 +496,7 @@ const resolveTripForJoinRequest = async (
         },
         startDate,
         endDate,
-        status: getTripStatus(post.status),
+        status: getTripStatus(post.status, { startDate, endDate }),
         maxParticipants,
         participants: [],
       },
@@ -474,21 +515,23 @@ const resolveTripForJoinRequest = async (
 
 router.get('/self', requireAuth, async (req, res) => {
   const authRequest = req as typeof req & { user?: AuthenticatedUser };
-  const hostId = authRequest.user?.id;
+  const userId = authRequest.user?.id;
 
-  if (!hostId || !mongoose.isValidObjectId(hostId)) {
+  if (!userId || !mongoose.isValidObjectId(userId)) {
     return res.status(401).json({ message: 'Unauthorized request.' });
   }
 
   try {
     await markPastTripsCompleted();
-    const hostObjectId = new Types.ObjectId(hostId);
+    const userObjectId = new Types.ObjectId(userId);
     const todayStart = toDayStart(new Date()) ?? new Date();
     const trips = await Trip.find({
-      organizerId: hostObjectId,
+      organizerId: userObjectId,
     })
-      .sort({ startDate: 1, createdAt: 1 })
+      .sort({ startDate: 1 })
       .select('_id organizerId title location expectedBudget startDate endDate status maxParticipants participants createdAt updatedAt')
+      .populate('organizerId', 'firstName lastName userId profileImageDataUrl')
+      .populate('participants', 'firstName lastName userId profileImageDataUrl')
       .lean();
 
     if (trips.length === 0) {
@@ -499,7 +542,7 @@ router.get('/self', requireAuth, async (req, res) => {
     const pendingCounts = await TripJoinRequest.aggregate<{ _id: Types.ObjectId; pendingRequestCount: number }>([
       {
         $match: {
-          hostId: hostObjectId,
+          hostId: userObjectId,
           status: 'pending',
           tripId: { $in: tripObjectIds },
         },
@@ -521,20 +564,74 @@ router.get('/self', requireAuth, async (req, res) => {
         const tripId = String(trip._id);
         const participantIds = getParticipantIds(trip.participants);
         const spotsFilled = participantIds.length;
+        const organizerId = getReferencedUserId(trip.organizerId);
         return {
           id: tripId,
-          hostId: String(trip.organizerId),
+          hostId: organizerId,
+          owner: organizerId
+            ? {
+                id: organizerId,
+                name: getDisplayName(
+                  trip.organizerId as {
+                    firstName?: unknown;
+                    lastName?: unknown;
+                    userId?: unknown;
+                    profileImageDataUrl?: unknown;
+                  },
+                ),
+                profileImageDataUrl: getProfileImageDataUrl(
+                  trip.organizerId as {
+                    profileImageDataUrl?: unknown;
+                  },
+                ),
+              }
+            : null,
+          members: Array.isArray(trip.participants)
+            ? trip.participants
+                .map((participant) => {
+                  const memberId = getReferencedUserId(participant);
+                  if (!memberId) {
+                    return null;
+                  }
+
+                  return {
+                    id: memberId,
+                    name: getDisplayName(
+                      participant as {
+                        firstName?: unknown;
+                        lastName?: unknown;
+                        userId?: unknown;
+                        profileImageDataUrl?: unknown;
+                      },
+                    ),
+                    profileImageDataUrl: getProfileImageDataUrl(
+                      participant as {
+                        profileImageDataUrl?: unknown;
+                      },
+                    ),
+                  };
+                })
+                .filter(
+                  (
+                    member,
+                  ): member is {
+                    id: string;
+                    name: string;
+                    profileImageDataUrl: string | null;
+                  } => Boolean(member),
+                )
+            : [],
           title: trip.title,
           location: trip.location,
           expectedBudget: typeof trip.expectedBudget === 'number' ? Number(trip.expectedBudget.toFixed(2)) : 0,
           startDate: trip.startDate,
           endDate: trip.endDate,
-          status: getTripStatus(trip.status),
+          status: getTripStatus(trip.status, trip),
           maxParticipants: trip.maxParticipants,
           spotsFilled,
           spotsFilledPercent: getSpotsFilledPercent(spotsFilled, trip.maxParticipants),
           participantIds,
-          pendingRequestCount: pendingCountByTripId[tripId] ?? 0,
+          pendingRequestCount: organizerId === userId ? pendingCountByTripId[tripId] ?? 0 : 0,
           createdAt: trip.createdAt,
           updatedAt: trip.updatedAt,
         };
@@ -583,6 +680,23 @@ router.get('/active/settlement', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('GET /api/trips/active/settlement failed', error);
     return res.status(500).json({ message: 'Unable to load your active trip settlement right now.' });
+  }
+});
+
+router.get('/active', requireAuth, async (req, res) => {
+  const authRequest = req as typeof req & { user?: AuthenticatedUser };
+  const requesterId = authRequest.user?.id;
+
+  if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+    return res.status(401).json({ message: 'Unauthorized request.' });
+  }
+
+  try {
+    const activeTripId = await findCurrentActiveTripIdForUser(requesterId);
+    return res.status(200).json({ tripId: activeTripId });
+  } catch (error) {
+    console.error('GET /api/trips/active failed', error);
+    return res.status(500).json({ message: 'Unable to load your active trip right now.' });
   }
 });
 
@@ -911,7 +1025,7 @@ router.get('/:tripId', async (req, res) => {
         },
         startDate: trip.startDate,
         endDate: trip.endDate,
-        status: getTripStatus(trip.status),
+        status: getTripStatus(trip.status, trip),
         maxParticipants: trip.maxParticipants,
         spotsFilled,
         spotsFilledPercent: getSpotsFilledPercent(spotsFilled, trip.maxParticipants),
@@ -1016,7 +1130,7 @@ router.post('/:tripId/join', requireAuth, async (req, res) => {
     }
     const trip = resolvedTrip.trip;
     const participantIds = getParticipantIds(trip.participants);
-    const tripStatus = getTripStatus(trip.status);
+    const tripStatus = getTripStatus(trip.status, trip);
 
     const requesterObjectId = new Types.ObjectId(requesterId);
     const hostObjectId = new Types.ObjectId(String(trip.organizerId));
@@ -1145,7 +1259,7 @@ router.patch('/:requestId/status', requireAuth, async (req, res) => {
         return res.status(404).json({ message: 'Trip not found.' });
       }
 
-      const tripStatus = getTripStatus(trip.status);
+      const tripStatus = getTripStatus(trip.status, trip);
       if (tripStatus === CANCELLED_TRIP_STATUS) {
         return res.status(409).json({ message: 'Trip is cancelled and cannot accept join requests.' });
       }
