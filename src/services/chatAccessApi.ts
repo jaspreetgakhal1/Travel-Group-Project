@@ -1,6 +1,6 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
+import { buildApiUrl } from './apiBaseUrl';
 
-const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
+const buildUrl = (path: string) => buildApiUrl(path);
 
 export const checkTripChatAccess = async (tripId: string, authToken: string): Promise<boolean> => {
   if (!tripId || !authToken) {
@@ -22,4 +22,3 @@ export const checkTripChatAccess = async (tripId: string, authToken: string): Pr
 
   return response.ok;
 };
-

@@ -2681,6 +2681,7 @@ function App() {
   const handleOpenAIExplorer = () => {
     const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId;
     if (!tripId) {
+      setSystemNotice('AI Explorer becomes available after your active trip is loaded.');
       return;
     }
 
@@ -6837,41 +6838,37 @@ function App() {
 	                <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary/70">Workspace</p>
 	                <nav>
 	                  <ul className="space-y-2">
-	                    {navItems
-	                      .filter((item) => item.id !== 'ai-explorer' || Boolean(activeWorkspaceTripId))
-	                      .map((item) => {
-                      const target = sidebarTargetById[item.id] ?? 'dashboard';
-                      return (
-                        <li key={item.id}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (item.id === 'ai-explorer') {
-                                handleOpenAIExplorer();
-                                return;
-                              }
+		                    {navItems.map((item) => {
+	                      const target = sidebarTargetById[item.id] ?? 'dashboard';
+                        const isAIExplorerItem = item.id === 'ai-explorer';
+                        const canOpenAIExplorer = Boolean(activeWorkspaceTripId);
+	                      return (
+	                        <li key={item.id}>
+	                          <button
+	                            type="button"
+                            disabled={isAIExplorerItem && !canOpenAIExplorer}
+	                            onClick={() => {
+	                              if (item.id === 'ai-explorer') {
+	                                handleOpenAIExplorer();
+	                                return;
+	                              }
 
                               handleNavigation(target);
                             }}
-                            className={getSidebarClass(target)}
-                          >
-                            {renderSidebarIcon(item.icon)}
-                            <span>{item.label}</span>
-                          </button>
-	                        </li>
-	                      );
-	                    })}
-                      {!activeWorkspaceTripId && isGlobalActiveTripLoading ? (
-                        <li aria-hidden="true">
-                          <div className="flex animate-pulse items-center gap-3 rounded-card border border-primary/10 bg-primary/5 px-4 py-3">
-                            <span className="h-5 w-5 rounded-full bg-primary/10" />
-                            <span className="h-3 w-24 rounded-full bg-primary/10" />
-                          </div>
-                        </li>
-                      ) : null}
-	                  </ul>
-	                </nav>
-	              </aside>
+	                            className={`${getSidebarClass(target)} ${
+                                isAIExplorerItem && !canOpenAIExplorer ? 'cursor-not-allowed opacity-60' : ''
+                              }`}
+                            title={isAIExplorerItem && !canOpenAIExplorer ? 'AI Explorer requires an active trip' : undefined}
+	                          >
+	                            {renderSidebarIcon(item.icon)}
+	                            <span>{item.label}</span>
+	                          </button>
+			                        </li>
+			                      );
+			                    })}
+		                  </ul>
+		                </nav>
+		              </aside>
 
               <section className="rounded-card bg-white/95 p-5 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
                 <header className="mb-5 border-b border-primary/10 pb-4">
@@ -7033,26 +7030,27 @@ function App() {
                   </span>
                   <span>Wallet</span>
                 </button>
-	                {activeWorkspaceTripId ? (
-	                  <button
-	                    type="button"
-	                    onClick={handleOpenAIExplorer}
-	                    className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
-	                  >
-                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
-                      <Sparkles className="h-5 w-5" />
+	                <button
+	                  type="button"
+	                  onClick={handleOpenAIExplorer}
+                    disabled={!activeWorkspaceTripId}
+	                  className={`interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white ${
+                        activeWorkspaceTripId ? '' : 'cursor-not-allowed opacity-60 hover:border-primary/10 hover:bg-white/80'
+                      }`}
+                      title={activeWorkspaceTripId ? undefined : 'AI Explorer requires an active trip'}
+	                >
+	                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+	                    <Sparkles className="h-5 w-5" />
+	                  </span>
+                    <span className="flex min-w-0 flex-col">
+                      <span>AI Explorer</span>
+                      {!activeWorkspaceTripId ? (
+                        <span className="text-xs font-medium text-primary/65">
+                          {isGlobalActiveTripLoading ? 'Checking your active trip...' : 'Requires an active trip'}
+                        </span>
+                      ) : null}
                     </span>
-	                    <span>AI Explorer</span>
-	                  </button>
-	                ) : isGlobalActiveTripLoading ? (
-                    <div
-                      className="flex animate-pulse items-center gap-3 rounded-2xl border border-primary/10 bg-white/60 px-4 py-3"
-                      aria-hidden="true"
-                    >
-                      <span className="h-9 w-9 rounded-xl bg-primary/10" />
-                      <span className="h-3 w-24 rounded-full bg-primary/10" />
-                    </div>
-                  ) : null}
+	                </button>
                 <button
                   type="button"
                   onClick={() => handleNavigation('onboarding')}

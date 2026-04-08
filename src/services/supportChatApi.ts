@@ -1,4 +1,4 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
+import { buildApiUrl } from './apiBaseUrl';
 
 export type SupportChatHistoryItem = {
   role: 'user' | 'assistant';
@@ -10,7 +10,7 @@ type SupportChatResponse = {
   provider: 'openai' | 'fallback';
 };
 
-const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
+const buildUrl = (path: string) => buildApiUrl(path);
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
   try {
