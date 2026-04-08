@@ -3,7 +3,6 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { User } from '../models/User.js';
-import { Post } from '../models/Post.js';
 import { env } from '../config/env.js';
 
 const router = express.Router();
@@ -25,15 +24,22 @@ const buildTokenPayload = (user) => ({
   sub: user._id.toString(),
   userId: user.userId,
   provider: user.provider,
+  role: user.role === 'admin' ? 'admin' : 'user',
 });
 
 const toVerificationStatus = (user) =>
-  user?.verificationStatus === 'verified' || Boolean(user?.isVerified) ? 'verified' : 'pending';
+  user?.verificationStatus === 'rejected'
+    ? 'rejected'
+    : user?.verificationStatus === 'verified' || Boolean(user?.isVerified)
+      ? 'verified'
+      : 'pending';
 
 const toPublicUser = (user) => ({
   id: user._id.toString(),
   userId: user.userId,
   provider: user.provider,
+  role: user.role === 'admin' ? 'admin' : 'user',
+  isBlocked: Boolean(user.isBlocked),
   isVerified: Boolean(user.isVerified),
   verificationStatus: toVerificationStatus(user),
 });
@@ -71,8 +77,6 @@ const toUserProfile = (user) => ({
 });
 
 const MAX_DOCUMENT_SIZE_BYTES = 5 * 1024 * 1024;
-const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const toExactCaseInsensitiveRegex = (value) => new RegExp(`^${escapeRegExp(value)}$`, 'i');
 
 const getBearerToken = (authorizationHeader) => {
   if (typeof authorizationHeader !== 'string') {
@@ -196,6 +200,10 @@ router.get('/profile', async (request, response) => {
       return response.status(404).json({ message: 'User account not found.' });
     }
 
+    if (user.isBlocked) {
+      return response.status(403).json({ message: 'This account has been blocked by an administrator.' });
+    }
+
     return response.status(200).json({
       profile: toUserProfile(user),
       user: toPublicUser(user),
@@ -265,6 +273,10 @@ router.put('/profile', async (request, response) => {
       return response.status(404).json({ message: 'User account not found.' });
     }
 
+    if (user.isBlocked) {
+      return response.status(403).json({ message: 'This account has been blocked by an administrator.' });
+    }
+
     user.firstName = normalizedFirstName;
     user.lastName = normalizedLastName;
     user.countryCode = normalizedCountryCode;
@@ -296,6 +308,10 @@ router.get('/travel-dna', async (request, response) => {
       return response.status(404).json({ message: 'User account not found.' });
     }
 
+    if (user.isBlocked) {
+      return response.status(403).json({ message: 'This account has been blocked by an administrator.' });
+    }
+
     return response.status(200).json({
       travelDNA: toTravelDNA(user),
     });
@@ -321,6 +337,10 @@ router.put('/travel-dna', async (request, response) => {
     const user = await User.findById(authenticatedUserId);
     if (!user) {
       return response.status(404).json({ message: 'User account not found.' });
+    }
+
+    if (user.isBlocked) {
+      return response.status(403).json({ message: 'This account has been blocked by an administrator.' });
     }
 
     user.travelDNA = validationResult.payload;
@@ -349,6 +369,10 @@ router.post('/login', async (request, response) => {
 
     if (!user) {
       return response.status(401).json({ message: 'Invalid credentials.' });
+    }
+
+    if (user.isBlocked) {
+      return response.status(403).json({ message: 'This account has been blocked by an administrator.' });
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
@@ -413,12 +437,14 @@ router.post('/verify-document', async (request, response) => {
     const updatedUser = await User.findByIdAndUpdate(
       authenticatedUserId,
       {
-        isVerified: true,
-        verificationStatus: 'verified',
+        isVerified: false,
+        verificationStatus: 'pending',
+        verificationDocumentUrl: documentDataUrl,
         verificationDocumentName: normalizedName,
         verificationDocumentMimeType: normalizedMimeType,
         verificationDocumentSize: documentSize,
         verificationUploadedAt: new Date(),
+        rejectionReason: null,
       },
       {
         new: true,
@@ -429,41 +455,12 @@ router.post('/verify-document', async (request, response) => {
       return response.status(404).json({ message: 'User account not found.' });
     }
 
-    const normalizedEmail = typeof updatedUser.email === 'string' ? updatedUser.email.trim().toLowerCase() : '';
-    const normalizedUserId = typeof updatedUser.userId === 'string' ? updatedUser.userId.trim().toLowerCase() : '';
-    const firstName = typeof updatedUser.firstName === 'string' ? updatedUser.firstName.trim() : '';
-    const lastName = typeof updatedUser.lastName === 'string' ? updatedUser.lastName.trim() : '';
-    const fullName = `${firstName} ${lastName}`.trim();
-    const normalizedFullName = fullName.toLowerCase();
-
-    const postMatchConditions = [{ author: updatedUser._id }];
-    if (normalizedEmail) {
-      postMatchConditions.push({ authorKey: normalizedEmail });
-      postMatchConditions.push({ hostName: toExactCaseInsensitiveRegex(normalizedEmail) });
+    if (updatedUser.isBlocked) {
+      return response.status(403).json({ message: 'This account has been blocked by an administrator.' });
     }
-    if (normalizedUserId) {
-      postMatchConditions.push({ authorKey: normalizedUserId });
-      postMatchConditions.push({ hostName: toExactCaseInsensitiveRegex(updatedUser.userId.trim()) });
-    }
-    if (normalizedFullName) {
-      postMatchConditions.push({ authorKey: normalizedFullName });
-      postMatchConditions.push({ hostName: toExactCaseInsensitiveRegex(fullName) });
-    }
-
-    await Post.updateMany(
-      {
-        $or: postMatchConditions,
-      },
-      {
-        $set: {
-          author: updatedUser._id,
-          isVerified: true,
-        },
-      },
-    );
 
     return response.status(200).json({
-      message: 'Document uploaded and profile verified.',
+      message: 'Document uploaded successfully. It is now pending admin review.',
       user: toPublicUser(updatedUser),
     });
   } catch (error) {

@@ -7,7 +7,8 @@ import { Post } from '../models/Post.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
-import { ACTIVE_TRIP_STATUS, CANCELLED_TRIP_STATUS, COMPLETED_TRIP_STATUS, TRIP_OVERLAP_ERROR_MESSAGE, findTripOverlap, toDayEnd, toDayStart, } from '../utils/tripScheduling.js';
+import { CANCELLED_TRIP_STATUS, CANCELLED_TRIP_STATUS_VALUES, COMPLETED_TRIP_STATUS, COMPLETED_TRIP_STATUS_VALUES, TRIP_OVERLAP_ERROR_MESSAGE, findTripOverlap, toDayEnd, toDayStart, } from '../utils/tripScheduling.js';
+import { normalizeTripRecordStatus } from '../utils/tripRecordStatus.js';
 import { markPastTripsCompleted } from '../utils/expireTrips.js';
 import { generateTripSuggestions } from '../utils/geminiTripSuggestions.js';
 import { buildTripSettlement } from '../utils/wallet.js';
@@ -15,8 +16,39 @@ const router = express.Router();
 const REQUEST_STATUSES = ['pending', 'accepted', 'rejected'];
 const isRequestStatus = (value) => typeof value === 'string' && REQUEST_STATUSES.includes(value);
 const normalizeAuthorKey = (value) => value.trim().toLowerCase();
-const getParticipantIds = (value) => Array.isArray(value) ? value.map((participantId) => String(participantId)) : [];
-const getUniqueTripMemberIds = (organizerId, participants) => Array.from(new Set([String(organizerId), ...getParticipantIds(participants)].filter(Boolean)));
+const getReferencedUserId = (value) => {
+    if (value instanceof Types.ObjectId) {
+        return String(value);
+    }
+    if (typeof value === 'string') {
+        return value;
+    }
+    if (value && typeof value === 'object') {
+        const candidate = value;
+        if (candidate._id instanceof Types.ObjectId || typeof candidate._id === 'string') {
+            return String(candidate._id);
+        }
+        if (typeof candidate.id === 'string') {
+            return candidate.id;
+        }
+    }
+    return '';
+};
+const getParticipantIds = (value) => Array.isArray(value) ? value.map((participantId) => getReferencedUserId(participantId)).filter(Boolean) : [];
+const getUniqueTripMemberIds = (organizerId, participants) => Array.from(new Set([getReferencedUserId(organizerId), ...getParticipantIds(participants)].filter(Boolean)));
+const getDisplayName = (user, fallback = 'Traveler') => {
+    const firstName = typeof user?.firstName === 'string' ? user.firstName.trim() : '';
+    const lastName = typeof user?.lastName === 'string' ? user.lastName.trim() : '';
+    const fullName = `${firstName} ${lastName}`.trim();
+    if (fullName) {
+        return fullName;
+    }
+    if (typeof user?.userId === 'string' && user.userId.trim()) {
+        return user.userId.trim();
+    }
+    return fallback;
+};
+const getProfileImageDataUrl = (user) => typeof user?.profileImageDataUrl === 'string' && user.profileImageDataUrl.trim() ? user.profileImageDataUrl.trim() : null;
 const getSpotsFilledPercent = (spotsFilled, maxParticipants) => {
     if (!Number.isFinite(maxParticipants) || maxParticipants <= 0) {
         return 0;
@@ -30,15 +62,7 @@ const parseTripDate = (value, fallbackDate) => {
     }
     return parsedDate;
 };
-const getTripStatus = (value) => {
-    if (value === COMPLETED_TRIP_STATUS) {
-        return COMPLETED_TRIP_STATUS;
-    }
-    if (value === CANCELLED_TRIP_STATUS) {
-        return CANCELLED_TRIP_STATUS;
-    }
-    return ACTIVE_TRIP_STATUS;
-};
+const getTripStatus = (value, trip = {}) => normalizeTripRecordStatus(value, trip);
 const tripSuggestionStreams = new Map();
 let nextTripSuggestionStreamId = 1;
 const getSuggestionTravelerTypeFallback = (category) => {
@@ -198,7 +222,7 @@ const findCurrentActiveTripIdForUser = async (userId) => {
     }
     const userObjectId = new Types.ObjectId(userId);
     const activeTrip = await Trip.findOne({
-        status: { $ne: CANCELLED_TRIP_STATUS },
+        status: { $nin: [...CANCELLED_TRIP_STATUS_VALUES, ...COMPLETED_TRIP_STATUS_VALUES] },
         $or: [{ organizerId: userObjectId }, { participants: userObjectId }],
         startDate: { $lte: currentDayEnd },
         endDate: { $gte: currentDayStart },
@@ -281,7 +305,7 @@ const resolveTripForJoinRequest = async (tripId) => {
             },
             startDate,
             endDate,
-            status: getTripStatus(post.status),
+            status: getTripStatus(post.status, { startDate, endDate }),
             maxParticipants,
             participants: [],
         },
@@ -296,19 +320,21 @@ const resolveTripForJoinRequest = async (tripId) => {
 };
 router.get('/self', requireAuth, async (req, res) => {
     const authRequest = req;
-    const hostId = authRequest.user?.id;
-    if (!hostId || !mongoose.isValidObjectId(hostId)) {
+    const userId = authRequest.user?.id;
+    if (!userId || !mongoose.isValidObjectId(userId)) {
         return res.status(401).json({ message: 'Unauthorized request.' });
     }
     try {
         await markPastTripsCompleted();
-        const hostObjectId = new Types.ObjectId(hostId);
+        const userObjectId = new Types.ObjectId(userId);
         const todayStart = toDayStart(new Date()) ?? new Date();
         const trips = await Trip.find({
-            organizerId: hostObjectId,
+            organizerId: userObjectId,
         })
-            .sort({ startDate: 1, createdAt: 1 })
+            .sort({ startDate: 1 })
             .select('_id organizerId title location expectedBudget startDate endDate status maxParticipants participants createdAt updatedAt')
+            .populate('organizerId', 'firstName lastName userId profileImageDataUrl')
+            .populate('participants', 'firstName lastName userId profileImageDataUrl')
             .lean();
         if (trips.length === 0) {
             return res.status(200).json({ trips: [], upcomingTrips: [], pastTrips: [] });
@@ -317,7 +343,7 @@ router.get('/self', requireAuth, async (req, res) => {
         const pendingCounts = await TripJoinRequest.aggregate([
             {
                 $match: {
-                    hostId: hostObjectId,
+                    hostId: userObjectId,
                     status: 'pending',
                     tripId: { $in: tripObjectIds },
                 },
@@ -337,20 +363,43 @@ router.get('/self', requireAuth, async (req, res) => {
             const tripId = String(trip._id);
             const participantIds = getParticipantIds(trip.participants);
             const spotsFilled = participantIds.length;
+            const organizerId = getReferencedUserId(trip.organizerId);
             return {
                 id: tripId,
-                hostId: String(trip.organizerId),
+                hostId: organizerId,
+                owner: organizerId
+                    ? {
+                        id: organizerId,
+                        name: getDisplayName(trip.organizerId),
+                        profileImageDataUrl: getProfileImageDataUrl(trip.organizerId),
+                    }
+                    : null,
+                members: Array.isArray(trip.participants)
+                    ? trip.participants
+                        .map((participant) => {
+                        const memberId = getReferencedUserId(participant);
+                        if (!memberId) {
+                            return null;
+                        }
+                        return {
+                            id: memberId,
+                            name: getDisplayName(participant),
+                            profileImageDataUrl: getProfileImageDataUrl(participant),
+                        };
+                    })
+                        .filter((member) => Boolean(member))
+                    : [],
                 title: trip.title,
                 location: trip.location,
                 expectedBudget: typeof trip.expectedBudget === 'number' ? Number(trip.expectedBudget.toFixed(2)) : 0,
                 startDate: trip.startDate,
                 endDate: trip.endDate,
-                status: getTripStatus(trip.status),
+                status: getTripStatus(trip.status, trip),
                 maxParticipants: trip.maxParticipants,
                 spotsFilled,
                 spotsFilledPercent: getSpotsFilledPercent(spotsFilled, trip.maxParticipants),
                 participantIds,
-                pendingRequestCount: pendingCountByTripId[tripId] ?? 0,
+                pendingRequestCount: organizerId === userId ? pendingCountByTripId[tripId] ?? 0 : 0,
                 createdAt: trip.createdAt,
                 updatedAt: trip.updatedAt,
             };
@@ -394,6 +443,21 @@ router.get('/active/settlement', requireAuth, async (req, res) => {
     catch (error) {
         console.error('GET /api/trips/active/settlement failed', error);
         return res.status(500).json({ message: 'Unable to load your active trip settlement right now.' });
+    }
+});
+router.get('/active', requireAuth, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    try {
+        const activeTripId = await findCurrentActiveTripIdForUser(requesterId);
+        return res.status(200).json({ tripId: activeTripId });
+    }
+    catch (error) {
+        console.error('GET /api/trips/active failed', error);
+        return res.status(500).json({ message: 'Unable to load your active trip right now.' });
     }
 });
 router.get('/:tripId/settlement', requireAuth, async (req, res) => {
@@ -644,7 +708,7 @@ router.get('/:tripId', async (req, res) => {
                 },
                 startDate: trip.startDate,
                 endDate: trip.endDate,
-                status: getTripStatus(trip.status),
+                status: getTripStatus(trip.status, trip),
                 maxParticipants: trip.maxParticipants,
                 spotsFilled,
                 spotsFilledPercent: getSpotsFilledPercent(spotsFilled, trip.maxParticipants),
@@ -736,7 +800,7 @@ router.post('/:tripId/join', requireAuth, async (req, res) => {
         }
         const trip = resolvedTrip.trip;
         const participantIds = getParticipantIds(trip.participants);
-        const tripStatus = getTripStatus(trip.status);
+        const tripStatus = getTripStatus(trip.status, trip);
         const requesterObjectId = new Types.ObjectId(requesterId);
         const hostObjectId = new Types.ObjectId(String(trip.organizerId));
         if (hostObjectId.equals(requesterObjectId)) {
@@ -840,7 +904,7 @@ router.patch('/:requestId/status', requireAuth, async (req, res) => {
             if (!trip) {
                 return res.status(404).json({ message: 'Trip not found.' });
             }
-            const tripStatus = getTripStatus(trip.status);
+            const tripStatus = getTripStatus(trip.status, trip);
             if (tripStatus === CANCELLED_TRIP_STATUS) {
                 return res.status(409).json({ message: 'Trip is cancelled and cannot accept join requests.' });
             }

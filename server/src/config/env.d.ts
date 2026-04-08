@@ -6,4 +6,6 @@ export const env: {
   allowedOrigins: string[];
   geminiApiKey: string;
   geminiModel: string;
+  adminUserId: string;
+  adminPassword: string;
 };

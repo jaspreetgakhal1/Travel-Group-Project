@@ -3,9 +3,17 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.
 export type JoinRequestStatus = 'pending' | 'accepted' | 'rejected';
 export type RequestSource = 'api' | 'local';
 
+type TripUserSummary = {
+  id: string;
+  name: string;
+  profileImageDataUrl: string | null;
+};
+
 export type HostTripSummary = {
   id: string;
   hostId: string;
+  owner?: TripUserSummary | null;
+  members?: TripUserSummary[];
   title?: string;
   location?: string;
   startDate?: string;
@@ -32,6 +40,8 @@ type SelfTripsResponse = {
   trips: Array<{
     id: string;
     hostId: string;
+    owner?: TripUserSummary | null;
+    members?: TripUserSummary[];
     title?: string;
     location?: string;
     startDate?: string;
@@ -46,6 +56,8 @@ type SelfTripsResponse = {
   upcomingTrips?: Array<{
     id: string;
     hostId: string;
+    owner?: TripUserSummary | null;
+    members?: TripUserSummary[];
     title?: string;
     location?: string;
     startDate?: string;
@@ -60,6 +72,8 @@ type SelfTripsResponse = {
   pastTrips?: Array<{
     id: string;
     hostId: string;
+    owner?: TripUserSummary | null;
+    members?: TripUserSummary[];
     title?: string;
     location?: string;
     startDate?: string;
@@ -171,6 +185,8 @@ export const fetchSelfTrips = async (authToken: string): Promise<HostTripSummary
   return upcomingTrips.map((trip) => ({
     id: trip.id,
     hostId: trip.hostId,
+    owner: trip.owner ?? null,
+    members: trip.members ?? [],
     title: trip.title,
     location: trip.location,
     startDate: trip.startDate,

@@ -11,6 +11,7 @@ export type FeedPostAuthor = {
 export type FeedPost = {
   id: string;
   hostId?: string;
+  viewerRelationship?: 'host' | 'member';
   hostCountryCode?: string;
   hostMobileNumber?: string;
   author?: FeedPostAuthor | string | null;

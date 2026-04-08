@@ -2,12 +2,14 @@ import type { RequestHandler } from 'express';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { env } from '../config/env.js';
+import { User } from '../models/User.js';
 import type { AuthenticatedUser } from '../types/auth.js';
 
 type TokenPayload = JwtPayload & {
   sub?: string;
   userId?: string;
   provider?: string;
+  role?: 'user' | 'admin';
 };
 
 const getBearerToken = (authorizationHeader: string | undefined): string | null => {
@@ -23,7 +25,7 @@ const getBearerToken = (authorizationHeader: string | undefined): string | null 
   return token || null;
 };
 
-export const requireAuth: RequestHandler = (req, res, next) => {
+export const requireAuth: RequestHandler = async (req, res, next) => {
   const authRequest = req as typeof req & { user?: AuthenticatedUser };
   const token = getBearerToken(req.headers.authorization);
   if (!token) {
@@ -36,10 +38,29 @@ export const requireAuth: RequestHandler = (req, res, next) => {
       return res.status(401).json({ message: 'Unauthorized request.' });
     }
 
+    const user = await User.findById(payload.sub)
+      .select('_id userId provider role isBlocked')
+      .lean<{
+        _id: unknown;
+        userId?: string;
+        provider?: string;
+        role?: string;
+        isBlocked?: boolean;
+      } | null>();
+
+    if (!user) {
+      return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+
+    if (user.isBlocked) {
+      return res.status(403).json({ message: 'This account has been blocked by an administrator.' });
+    }
+
     authRequest.user = {
-      id: payload.sub,
-      userId: typeof payload.userId === 'string' ? payload.userId : undefined,
-      provider: typeof payload.provider === 'string' ? payload.provider : undefined,
+      id: String(user._id),
+      userId: typeof user.userId === 'string' ? user.userId : undefined,
+      provider: typeof user.provider === 'string' ? user.provider : undefined,
+      role: user.role === 'admin' ? 'admin' : 'user',
     };
 
     return next();

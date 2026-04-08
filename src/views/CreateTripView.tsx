@@ -51,6 +51,12 @@ type CreateTripViewProps = {
 
 const MAX_POSTER_IMAGES = 4;
 const MAX_PEOPLE_REQUIRED = 20;
+const MAX_TRIP_DURATION_DAYS = 60;
+const MIN_TRIP_TITLE_LENGTH = 3;
+const MAX_TRIP_TITLE_LENGTH = 120;
+const MAX_LOCATION_LENGTH = 160;
+const MAX_EMERGENCY_CONTACT_NAME_LENGTH = 120;
+const MAX_EMERGENCY_CONTACT_PHONE_LENGTH = 40;
 const DEFAULT_EXPECTATION_OPTIONS = [
   'Shared cost transparency',
   'On-time meetup discipline',
@@ -73,8 +79,6 @@ const TRAVELER_TYPE_OPTIONS = [
 const CURRENCY_OPTIONS: TripCurrency[] = ['USD', 'CAD', 'EUR', 'GBP', 'INR', 'AUD', 'JPY'];
 const TRAVELER_TYPE_PLACEHOLDER = 'Select your travel style';
 const SQUARE_PANEL_CLASS_NAME = 'rounded-xl bg-background/80 p-4 ring-1 ring-primary/10';
-const SQUARE_TOGGLE_BUTTON_CLASS_NAME =
-  'interactive-btn rounded-xl border px-4 py-3 text-sm font-semibold transition';
 const FIELD_CONTAINER_IDS: Record<ValidationField, string> = {
   title: 'create-trip-title-field',
   posterImageUrls: 'create-trip-poster-field',
@@ -169,7 +173,6 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
   const [location, setLocation] = useState('');
   const [travelerType, setTravelerType] = useState('');
   const [currency, setCurrency] = useState<TripCurrency>('USD');
-  const [isPrivate, setIsPrivate] = useState(false);
   const [emergencyContactName, setEmergencyContactName] = useState('');
   const [emergencyContactPhone, setEmergencyContactPhone] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<ValidationField, string>>>({});
@@ -227,7 +230,6 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
       ) ?? '',
     );
     setCurrency(CURRENCY_OPTIONS.includes(sourcePayload.currency) ? sourcePayload.currency : 'USD');
-    setIsPrivate(Boolean(sourcePayload.isPrivate));
     setEmergencyContactName(sourcePayload.emergencyContact?.name ?? '');
     setEmergencyContactPhone(sourcePayload.emergencyContact?.phone ?? '');
     setFieldErrors({});
@@ -379,6 +381,10 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
 
     if (!normalizedTitle) {
       nextFieldErrors.title = 'This field is required.';
+    } else if (normalizedTitle.length < MIN_TRIP_TITLE_LENGTH) {
+      nextFieldErrors.title = `Trip title must be at least ${MIN_TRIP_TITLE_LENGTH} characters.`;
+    } else if (normalizedTitle.length > MAX_TRIP_TITLE_LENGTH) {
+      nextFieldErrors.title = `Trip title must be ${MAX_TRIP_TITLE_LENGTH} characters or fewer.`;
     }
 
     if (posterImageDataUrls.length === 0) {
@@ -387,6 +393,8 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
 
     if (!normalizedLocation) {
       nextFieldErrors.location = 'This field is required.';
+    } else if (normalizedLocation.length > MAX_LOCATION_LENGTH) {
+      nextFieldErrors.location = `Destination must be ${MAX_LOCATION_LENGTH} characters or fewer.`;
     }
 
     if (!startJourneyDate) {
@@ -411,10 +419,14 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
 
     if (!normalizedEmergencyContactName) {
       nextFieldErrors.emergencyContactName = 'This field is required.';
+    } else if (normalizedEmergencyContactName.length > MAX_EMERGENCY_CONTACT_NAME_LENGTH) {
+      nextFieldErrors.emergencyContactName = `Emergency contact name must be ${MAX_EMERGENCY_CONTACT_NAME_LENGTH} characters or fewer.`;
     }
 
     if (!normalizedEmergencyContactPhone) {
       nextFieldErrors.emergencyContactPhone = 'This field is required.';
+    } else if (normalizedEmergencyContactPhone.length > MAX_EMERGENCY_CONTACT_PHONE_LENGTH) {
+      nextFieldErrors.emergencyContactPhone = `Emergency contact phone must be ${MAX_EMERGENCY_CONTACT_PHONE_LENGTH} characters or fewer.`;
     }
 
     if (selectedExpectations.length === 0) {
@@ -432,6 +444,15 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
       new Date(`${endJourneyDate}T23:59:59`).getTime() < new Date(`${startJourneyDate}T00:00:00`).getTime()
     ) {
       nextFieldErrors.endJourneyDate = 'End date must be on or after start date.';
+    } else if (startJourneyDate && endJourneyDate) {
+      const startDate = new Date(`${startJourneyDate}T00:00:00`);
+      const endDate = new Date(`${endJourneyDate}T23:59:59`);
+      const millisecondsPerDay = 24 * 60 * 60 * 1000;
+      const durationDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / millisecondsPerDay));
+
+      if (durationDays > MAX_TRIP_DURATION_DAYS) {
+        nextFieldErrors.endJourneyDate = `Trips can be at most ${MAX_TRIP_DURATION_DAYS} days long.`;
+      }
     }
 
     if (Object.keys(nextFieldErrors).length > 0) {
@@ -470,7 +491,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
         location: normalizedLocation,
         travelerType,
         currency,
-        isPrivate,
+        isPrivate: Boolean(initialPayload?.isPrivate),
         emergencyContact: {
           name: normalizedEmergencyContactName,
           phone: normalizedEmergencyContactPhone,
@@ -508,6 +529,8 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
               id="create-trip-title"
               type="text"
               value={tripTitle}
+              minLength={MIN_TRIP_TITLE_LENGTH}
+              maxLength={MAX_TRIP_TITLE_LENGTH}
               disabled={isBusy}
               onChange={(event) => {
                 setTripTitle(event.target.value);
@@ -667,6 +690,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
             <input
               type="text"
               value={location}
+              maxLength={MAX_LOCATION_LENGTH}
               disabled={isBusy}
               onChange={(event) => {
                 setLocation(event.target.value);
@@ -787,6 +811,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
               <input
                 type="text"
                 value={emergencyContactName}
+                maxLength={MAX_EMERGENCY_CONTACT_NAME_LENGTH}
                 disabled={isBusy}
                 onChange={(event) => {
                   setEmergencyContactName(event.target.value);
@@ -814,6 +839,7 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
               <input
                 type="tel"
                 value={emergencyContactPhone}
+                maxLength={MAX_EMERGENCY_CONTACT_PHONE_LENGTH}
                 disabled={isBusy}
                 onChange={(event) => {
                   setEmergencyContactPhone(event.target.value);
@@ -835,39 +861,6 @@ const CreateTripView: React.FC<CreateTripViewProps> = ({
                 <p className="mt-2 text-xs font-medium text-red-600">{fieldErrors.emergencyContactPhone}</p>
               ) : null}
             </label>
-          </div>
-
-          <div className={SQUARE_PANEL_CLASS_NAME}>
-            <p className="text-sm font-semibold text-primary">Trip Privacy</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => setIsPrivate(false)}
-                className={`${SQUARE_TOGGLE_BUTTON_CLASS_NAME} ${
-                  !isPrivate
-                    ? 'border-[#81B29A]/40 bg-[#81B29A]/15 text-primary'
-                    : 'border-primary/15 bg-white text-primary/70'
-                }`}
-              >
-                Public Trip
-              </button>
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => setIsPrivate(true)}
-                className={`${SQUARE_TOGGLE_BUTTON_CLASS_NAME} ${
-                  isPrivate
-                    ? 'border-[#81B29A]/40 bg-[#81B29A]/15 text-primary'
-                    : 'border-primary/15 bg-white text-primary/70'
-                }`}
-              >
-                Private Trip
-              </button>
-            </div>
-            <p className="mt-2 text-xs text-primary/65">
-              {isPrivate ? 'Only invited members will be able to view this trip.' : 'This trip can be discovered publicly.'}
-            </p>
           </div>
 
           <div id={FIELD_CONTAINER_IDS.expectations} className="rounded-card bg-background/80 p-4 ring-1 ring-primary/10">

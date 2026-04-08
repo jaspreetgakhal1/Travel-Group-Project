@@ -1,5 +1,6 @@
 import cors from 'cors';
 import express from 'express';
+import adminRoutes from './routes/adminRoutes.js';
 import { connectDatabase } from './config/database.js';
 import { env } from './config/env.js';
 import authRoutes from './routes/authRoutes.js';
@@ -30,6 +31,7 @@ app.get('/api/health', (_request, response) => {
     response.status(200).json({ status: 'ok' });
 });
 app.use('/api/auth', authRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api/posts', postRoutes);
 app.use('/api/match', matchRoutes);
 app.use('/api/trips', tripRoutes);
@@ -46,6 +48,9 @@ app.use((error, _request, response, _next) => {
     }
     if (parseError.type === 'entity.parse.failed') {
         return response.status(400).json({ message: 'Invalid JSON payload.' });
+    }
+    if (parseError.type === 'entity.too.large') {
+        return response.status(413).json({ message: 'Poster images are too large. Please upload smaller images.' });
     }
     console.error('Unhandled server error', error);
     return response.status(500).json({ message: 'Internal server error.' });

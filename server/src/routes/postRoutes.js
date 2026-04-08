@@ -6,14 +6,17 @@ import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
 import {
-  ACTIVE_TRIP_STATUS,
-  CANCELLED_TRIP_STATUS,
-  COMPLETED_TRIP_STATUS,
   TRIP_OVERLAP_ERROR_MESSAGE,
   findTripOverlap,
   normalizeTripDateRange,
 } from '../utils/tripScheduling.js';
 import { markPastTripsCompleted } from '../utils/expireTrips.js';
+import { normalizeTripRecordStatus } from '../utils/tripRecordStatus.js';
+import {
+  ACTIVE_TRIP_STATUS,
+  CANCELLED_TRIP_STATUS,
+  COMPLETED_TRIP_STATUS,
+} from '../utils/tripStatus.js';
 
 const router = express.Router();
 const TRAVELER_TYPE_VALUES = [
@@ -79,6 +82,30 @@ const getPostStatus = (value) => {
   }
 
   return ACTIVE_TRIP_STATUS;
+};
+const normalizeExplicitPostStatus = (value) => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalizedValue = value.trim().toLowerCase();
+  if (!normalizedValue) {
+    return null;
+  }
+
+  if (normalizedValue === ACTIVE_TRIP_STATUS.toLowerCase()) {
+    return ACTIVE_TRIP_STATUS;
+  }
+
+  if (normalizedValue === COMPLETED_TRIP_STATUS.toLowerCase()) {
+    return COMPLETED_TRIP_STATUS;
+  }
+
+  if (normalizedValue === CANCELLED_TRIP_STATUS.toLowerCase()) {
+    return CANCELLED_TRIP_STATUS;
+  }
+
+  return null;
 };
 
 const getPostAuthorKey = (post) => {
@@ -194,11 +221,35 @@ const calculateExpectedBudgetDefault = (durationDays, participantCount) => {
   return safeDurationDays * safeParticipantCount * 100;
 };
 
+const getMongooseValidationMessage = (error) => {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  if (error.name === 'ValidationError' && error.errors && typeof error.errors === 'object') {
+    const validationMessages = Object.values(error.errors)
+      .map((validationError) =>
+        validationError && typeof validationError === 'object' && typeof validationError.message === 'string'
+          ? validationError.message
+          : '',
+      )
+      .filter(Boolean);
+
+    return validationMessages[0] ?? null;
+  }
+
+  return null;
+};
+
 const syncTripWithPost = async (post, organizerId) => {
   const normalizedDateRange = normalizeTripDateRange(post.startDate, post.endDate);
   if (!normalizedDateRange) {
     throw new Error('Trip dates are invalid.');
   }
+  const syncedTripStatus = normalizeTripRecordStatus(post.status, {
+    startDate: normalizedDateRange.startDate,
+    endDate: normalizedDateRange.endDate,
+  });
 
   return Trip.findOneAndUpdate(
     { _id: post._id },
@@ -231,7 +282,7 @@ const syncTripWithPost = async (post, organizerId) => {
         },
         startDate: normalizedDateRange.startDate,
         endDate: normalizedDateRange.endDate,
-        status: getPostStatus(post.status),
+        status: syncedTripStatus,
         maxParticipants: post.requiredPeople,
       },
       $setOnInsert: {
@@ -441,7 +492,8 @@ const validatePostPayload = (body) => {
     return { isValid: false, message: 'Post author is required.' };
   }
 
-  if (typeof status !== 'undefined' && ![ACTIVE_TRIP_STATUS, COMPLETED_TRIP_STATUS, CANCELLED_TRIP_STATUS].includes(status)) {
+  const normalizedStatus = typeof status === 'undefined' || status === null ? undefined : normalizeExplicitPostStatus(status);
+  if (typeof status !== 'undefined' && status !== null && !normalizedStatus) {
     return { isValid: false, message: 'Post status must be Active, Completed, or Cancelled.' };
   }
 
@@ -474,6 +526,26 @@ const validatePostPayload = (body) => {
     };
   }
 
+  if (normalizedTitle.length < 3 || normalizedTitle.length > 120) {
+    return { isValid: false, message: 'Trip title must be between 3 and 120 characters.' };
+  }
+
+  if (normalizedHostName.length < 2 || normalizedHostName.length > 80) {
+    return { isValid: false, message: 'Host name must be between 2 and 80 characters.' };
+  }
+
+  if (normalizedLocation.length > 160) {
+    return { isValid: false, message: 'Destination must be 160 characters or fewer.' };
+  }
+
+  if (normalizedEmergencyContactName.length > 120) {
+    return { isValid: false, message: 'Emergency contact name must be 120 characters or fewer.' };
+  }
+
+  if (normalizedEmergencyContactPhone.length > 40) {
+    return { isValid: false, message: 'Emergency contact phone must be 40 characters or fewer.' };
+  }
+
   if (!Number.isFinite(cost) || cost < 0) {
     return { isValid: false, message: 'Cost must be a non-negative number.' };
   }
@@ -492,6 +564,10 @@ const validatePostPayload = (body) => {
 
   if (!Number.isInteger(durationDays) || durationDays < 1) {
     return { isValid: false, message: 'Duration days must be a positive integer.' };
+  }
+
+  if (durationDays > 60) {
+    return { isValid: false, message: 'Trips can be at most 60 days long.' };
   }
 
   if (!Number.isInteger(requiredPeople) || requiredPeople < 1) {
@@ -521,7 +597,7 @@ const validatePostPayload = (body) => {
     isValid: true,
     payload: {
       authorKey: normalizedAuthorKey,
-      ...(typeof status === 'string' ? { status } : {}),
+      ...(normalizedStatus ? { status: normalizedStatus } : {}),
       onlyVerifiedUsers: typeof onlyVerifiedUsers === 'boolean' ? onlyVerifiedUsers : false,
       title: normalizedTitle,
       hostName: normalizedHostName,
@@ -726,6 +802,10 @@ router.post('/', async (request, response) => {
     return response.status(201).json(toFeedPost(createdPost, authorUser, syncedTrip));
   } catch (error) {
     console.error('Create post route failed', error);
+    const validationMessage = getMongooseValidationMessage(error);
+    if (validationMessage) {
+      return response.status(400).json({ message: validationMessage });
+    }
     return response.status(500).json({ message: 'Unable to create post right now.' });
   }
 });
@@ -792,6 +872,10 @@ router.put('/:postId', async (request, response) => {
     return response.status(200).json(toFeedPost(post, authorUser, syncedTrip));
   } catch (error) {
     console.error('Update post route failed', error);
+    const validationMessage = getMongooseValidationMessage(error);
+    if (validationMessage) {
+      return response.status(400).json({ message: validationMessage });
+    }
     return response.status(500).json({ message: 'Unable to update post right now.' });
   }
 });
@@ -799,12 +883,13 @@ router.put('/:postId', async (request, response) => {
 router.patch('/:postId/status', async (request, response) => {
   const { postId } = request.params;
   const { authorKey, status } = request.body ?? {};
+  const normalizedStatus = normalizeExplicitPostStatus(status);
 
   if (typeof authorKey !== 'string' || !authorKey.trim()) {
     return response.status(400).json({ message: 'Post author is required.' });
   }
 
-  if (![ACTIVE_TRIP_STATUS, COMPLETED_TRIP_STATUS, CANCELLED_TRIP_STATUS].includes(status)) {
+  if (!normalizedStatus) {
     return response.status(400).json({ message: 'Status must be Active, Completed, or Cancelled.' });
   }
 
@@ -819,7 +904,7 @@ router.patch('/:postId/status', async (request, response) => {
     }
 
     post.authorKey = getPostAuthorKey(post);
-    post.status = status;
+    post.status = normalizedStatus;
     const authorUser = await findUserByLookupKeys(getPostLookupKeys(post));
     post.author = authorUser?._id ?? null;
     post.isVerified = authorUser ? Boolean(authorUser.isVerified) : Boolean(post.isVerified);
@@ -829,7 +914,10 @@ router.patch('/:postId/status', async (request, response) => {
       postId,
       {
         $set: {
-          status: getPostStatus(status),
+          status: normalizeTripRecordStatus(normalizedStatus, {
+            startDate: post.startDate,
+            endDate: post.endDate,
+          }),
         },
       },
       { new: true },
@@ -837,7 +925,7 @@ router.patch('/:postId/status', async (request, response) => {
       .select('_id organizerId maxParticipants participants')
       .lean();
 
-    if (status === CANCELLED_TRIP_STATUS) {
+    if (normalizedStatus === CANCELLED_TRIP_STATUS) {
       await TripJoinRequest.updateMany(
         {
           tripId: post._id,

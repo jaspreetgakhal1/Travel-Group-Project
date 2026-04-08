@@ -1,0 +1,5 @@
+2026/04/08-02:39:45.750 87cc Creating DB D:\Capstone\SplitNGo\tmp-edge-profile\Default\EdgeCoupons/coupons_data.db since it was missing.
+2026/04/08-02:39:45.759 87cc Reusing MANIFEST D:\Capstone\SplitNGo\tmp-edge-profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/04/08-02:39:45.970 3290 Level-0 table #5: started
+2026/04/08-02:39:45.977 3290 Level-0 table #5: 682105 bytes OK
+2026/04/08-02:39:45.980 3290 Delete type=0 #3

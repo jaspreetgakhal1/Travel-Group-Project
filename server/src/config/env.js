@@ -36,5 +36,7 @@ export const env = {
   allowedOrigins: getAllowedOrigins(),
   geminiApiKey: process.env.GEMINI_API_KEY ?? '',
   geminiModel: process.env.GEMINI_MODEL ?? '',
+  adminUserId: process.env.ADMIN_USER_ID?.trim() || 'admin',
+  adminPassword: process.env.ADMIN_PASSWORD?.trim() || 'password',
 };
 
