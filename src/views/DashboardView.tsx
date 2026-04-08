@@ -8,6 +8,7 @@ import FastImage from '../components/FastImage';
 
 type DashboardViewProps = {
   authToken: string | null;
+  onOpenLatestDecision?: (tripId: string, voteId: string) => void;
   onStartFirstJourney: () => void;
   onVerificationStatusSync?: (isVerified: boolean) => void;
 };
@@ -25,6 +26,7 @@ const EMPTY_DASHBOARD_STATS: DashboardStats = {
   completedTripsCount: 0,
   upcomingTripsCount: 0,
   totalTripsCount: 0,
+  latestDecision: null,
 };
 
 const formatCountdown = (targetDate: Date | null, nowMs: number): string => {
@@ -102,7 +104,7 @@ const getDestinationImageUrl = (destination: string | null, backendImageUrl: str
   return `https://source.unsplash.com/1200x700/?${encodeURIComponent(`${destination},travel`)}`;
 };
 
-function DashboardView({ authToken, onStartFirstJourney, onVerificationStatusSync }: DashboardViewProps) {
+function DashboardView({ authToken, onOpenLatestDecision, onStartFirstJourney, onVerificationStatusSync }: DashboardViewProps) {
   const [stats, setStats] = useState<DashboardStats>(EMPTY_DASHBOARD_STATS);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -423,6 +425,36 @@ function DashboardView({ authToken, onStartFirstJourney, onVerificationStatusSyn
                 {hasTrips ? 'No active trip participants yet.' : 'Start a trip to meet your travel buddies.'}
               </p>
               {!hasTrips ? <div className="mt-3">{startTripButton}</div> : null}
+            </div>
+          )}
+        </article>
+
+        <article className="rounded-card border border-primary/20 bg-gradient-to-br from-primary/12 via-white to-[#F4F1DE] p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/60">Decision Made</p>
+          <h3 className="mt-1 text-xl font-black text-primary">
+            {stats.latestDecision ? stats.latestDecision.placeName : 'No itinerary decision yet'}
+          </h3>
+          {stats.latestDecision ? (
+            <>
+              <p className="mt-2 text-sm text-primary/75">
+                {stats.latestDecision.tripTitle} chose {stats.latestDecision.placeName}.
+              </p>
+              <p className="mt-1 text-xs text-primary/60">
+                {stats.latestDecision.decisionMadeAt
+                  ? `Recorded ${new Date(stats.latestDecision.decisionMadeAt).toLocaleString()}`
+                  : stats.latestDecision.tripLocation}
+              </p>
+              <button
+                type="button"
+                onClick={() => onOpenLatestDecision?.(stats.latestDecision!.tripId, stats.latestDecision!.voteId)}
+                className="mt-4 inline-flex items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white shadow-md transition hover:brightness-105"
+              >
+                Open decision
+              </button>
+            </>
+          ) : (
+            <div className="mt-4 rounded-card bg-background px-4 py-5 text-center">
+              <p className="text-sm text-primary/75">Once your group locks a destination, it will appear here.</p>
             </div>
           )}
         </article>

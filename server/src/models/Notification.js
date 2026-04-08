@@ -1,6 +1,10 @@
 import mongoose, { Schema } from 'mongoose';
 const { model, models } = mongoose;
-export const NOTIFICATION_TYPE_VALUES = ['verification_verified', 'verification_rejected'];
+export const NOTIFICATION_TYPE_VALUES = [
+    'verification_verified',
+    'verification_rejected',
+    'trip_vote_decided',
+];
 const notificationSchema = new Schema({
     userId: {
         type: Schema.Types.ObjectId,
@@ -36,6 +40,21 @@ const notificationSchema = new Schema({
                 type: String,
                 default: null,
                 maxlength: 240,
+            },
+            tripId: {
+                type: String,
+                default: null,
+                maxlength: 64,
+            },
+            voteId: {
+                type: String,
+                default: null,
+                maxlength: 64,
+            },
+            placeName: {
+                type: String,
+                default: null,
+                maxlength: 160,
             },
         },
         default: null,

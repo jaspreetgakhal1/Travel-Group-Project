@@ -3,10 +3,12 @@ import mongoose, { Types } from 'mongoose';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { verifyTripAccess } from '../middleware/verifyTripAccess.js';
 import { Participant } from '../models/Participant.js';
+import { Notification } from '../models/Notification.js';
 import { Post } from '../models/Post.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
+import { Vote } from '../models/Vote.js';
 import { CANCELLED_TRIP_STATUS, CANCELLED_TRIP_STATUS_VALUES, COMPLETED_TRIP_STATUS, COMPLETED_TRIP_STATUS_VALUES, TRIP_OVERLAP_ERROR_MESSAGE, findTripOverlap, toDayEnd, toDayStart, } from '../utils/tripScheduling.js';
 import { normalizeTripRecordStatus } from '../utils/tripRecordStatus.js';
 import { markPastTripsCompleted } from '../utils/expireTrips.js';
@@ -65,6 +67,8 @@ const parseTripDate = (value, fallbackDate) => {
 const getTripStatus = (value, trip = {}) => normalizeTripRecordStatus(value, trip);
 const tripSuggestionStreams = new Map();
 let nextTripSuggestionStreamId = 1;
+const voteSessionStreams = new Map();
+let nextVoteSessionStreamId = 1;
 const getSuggestionTravelerTypeFallback = (category) => {
     if (typeof category === 'string' && category.trim()) {
         return `${category.trim()} travelers`;
@@ -72,6 +76,7 @@ const getSuggestionTravelerTypeFallback = (category) => {
     return 'collaborative travelers';
 };
 const normalizePreferenceValue = (value, fallback) => typeof value === 'string' && value.trim() ? value.trim() : fallback;
+const getRequiredVoteCount = (memberCount) => Math.max(1, Math.floor(memberCount / 2) + 1);
 const normalizeStoredSuggestionPreferences = (value) => {
     const preferenceValue = value;
     if (!preferenceValue) {
@@ -152,7 +157,7 @@ const loadTripSuggestionContext = async (tripId) => {
         })),
     };
 };
-const serializeTripSuggestions = (context, viewerUserId) => {
+const serializeTripSuggestions = (context, viewerUserId, voteRoomBySuggestionId) => {
     const highestVoteCount = context.suggestions.reduce((currentHighest, suggestion) => Math.max(currentHighest, suggestion.voteUserIds.length), 0);
     const leaderSuggestionIds = highestVoteCount > 0
         ? context.suggestions
@@ -182,16 +187,52 @@ const serializeTripSuggestions = (context, viewerUserId) => {
                 hasVoted: suggestion.voteUserIds.includes(viewerUserId),
                 isLeader: leaderSuggestionIds.includes(suggestion.id),
                 isWinningSuggestion: winningSuggestionId === suggestion.id,
+                voteRoom: voteRoomBySuggestionId.get(suggestion.id) ?? null,
             };
         }),
     };
+};
+const loadSuggestionVoteRoomSummaries = async (tripId, suggestionIds, totalTravelers) => {
+    if (!suggestionIds.length) {
+        return new Map();
+    }
+    const voteSessions = await Vote.find({
+        tripId: new Types.ObjectId(tripId),
+        sourceSuggestionId: { $in: suggestionIds },
+        status: { $in: ['open', 'decided'] },
+    })
+        .sort({ updatedAt: -1, createdAt: -1 })
+        .select('_id sourceSuggestionId status votes decisionMadeAt')
+        .lean();
+    const summaryBySuggestionId = new Map();
+    voteSessions.forEach((session) => {
+        const sourceSuggestionId = typeof session.sourceSuggestionId === 'string' ? session.sourceSuggestionId.trim() : '';
+        if (!sourceSuggestionId || summaryBySuggestionId.has(sourceSuggestionId)) {
+            return;
+        }
+        const decisionMadeAt = session.decisionMadeAt instanceof Date
+            ? session.decisionMadeAt.toISOString()
+            : session.decisionMadeAt
+                ? new Date(session.decisionMadeAt).toISOString()
+                : null;
+        summaryBySuggestionId.set(sourceSuggestionId, {
+            id: String(session._id),
+            sourceSuggestionId,
+            status: session.status,
+            votedCount: getParticipantIds(session.votes).length,
+            requiredVotes: getRequiredVoteCount(totalTravelers),
+            decisionMadeAt,
+        });
+    });
+    return summaryBySuggestionId;
 };
 const buildTripSuggestionsPayload = async (tripId, viewerUserId) => {
     const context = await loadTripSuggestionContext(tripId);
     if (!context) {
         return null;
     }
-    return serializeTripSuggestions(context, viewerUserId);
+    const voteRoomBySuggestionId = await loadSuggestionVoteRoomSummaries(tripId, context.suggestions.map((suggestion) => suggestion.id), context.totalTravelers);
+    return serializeTripSuggestions(context, viewerUserId, voteRoomBySuggestionId);
 };
 const broadcastTripSuggestions = async (tripId) => {
     const tripClients = tripSuggestionStreams.get(tripId);
@@ -205,14 +246,208 @@ const broadcastTripSuggestions = async (tripId) => {
         }
         return;
     }
+    const voteRoomBySuggestionId = await loadSuggestionVoteRoomSummaries(tripId, context.suggestions.map((suggestion) => suggestion.id), context.totalTravelers);
     for (const [clientId, client] of tripClients.entries()) {
         try {
-            writeSuggestionStreamEvent(client.response, serializeTripSuggestions(context, client.userId));
+            writeSuggestionStreamEvent(client.response, serializeTripSuggestions(context, client.userId, voteRoomBySuggestionId));
         }
         catch {
             removeTripSuggestionStreamClient(tripId, clientId);
         }
     }
+};
+const loadTripVoteBaseContext = async (tripId) => {
+    const trip = await Trip.findById(tripId).select('_id title location imageUrl organizerId participants').lean();
+    if (!trip) {
+        return null;
+    }
+    const organizerId = getReferencedUserId(trip.organizerId);
+    const memberIds = getUniqueTripMemberIds(trip.organizerId, trip.participants);
+    const validMemberIds = memberIds
+        .filter((memberId) => mongoose.isValidObjectId(memberId))
+        .map((memberId) => new Types.ObjectId(memberId));
+    const users = validMemberIds.length
+        ? await User.find({ _id: { $in: validMemberIds } })
+            .select('_id firstName lastName userId profileImageDataUrl')
+            .lean()
+        : [];
+    const userById = new Map();
+    users.forEach((user) => {
+        userById.set(String(user._id), user);
+    });
+    return {
+        tripId: String(trip._id),
+        tripTitle: typeof trip.title === 'string' && trip.title.trim() ? trip.title.trim() : 'Untitled trip',
+        tripLocation: typeof trip.location === 'string' && trip.location.trim() ? trip.location.trim() : 'Destination TBD',
+        tripImageUrl: typeof trip.imageUrl === 'string' ? trip.imageUrl.trim() : '',
+        organizerId,
+        members: memberIds.map((memberId) => {
+            const user = userById.get(memberId);
+            return {
+                id: memberId,
+                name: getDisplayName(user),
+                avatar: getProfileImageDataUrl(user),
+                isHost: memberId === organizerId,
+            };
+        }),
+    };
+};
+const serializeVoteSession = (session, baseContext, viewerUserId) => {
+    const votedUserIds = getParticipantIds(session.votes);
+    const totalMembers = Math.max(1, baseContext.members.length);
+    const requiredVotes = getRequiredVoteCount(totalMembers);
+    const decisionMadeAt = session.decisionMadeAt instanceof Date
+        ? session.decisionMadeAt.toISOString()
+        : session.decisionMadeAt
+            ? new Date(session.decisionMadeAt).toISOString()
+            : null;
+    const createdAt = session.createdAt instanceof Date ? session.createdAt.toISOString() : new Date(session.createdAt ?? Date.now()).toISOString();
+    return {
+        id: String(session._id),
+        trip: {
+            id: baseContext.tripId,
+            title: baseContext.tripTitle,
+            location: baseContext.tripLocation,
+            imageUrl: baseContext.tripImageUrl,
+        },
+        placeName: typeof session.placeName === 'string' && session.placeName.trim() ? session.placeName.trim() : 'Suggested destination',
+        description: typeof session.description === 'string' && session.description.trim()
+            ? session.description.trim()
+            : 'A collaborative pick for the trip.',
+        estimatedCost: typeof session.estimatedCost === 'number' && Number.isFinite(session.estimatedCost)
+            ? Number(session.estimatedCost.toFixed(2))
+            : 0,
+        imageUrl: typeof session.imageUrl === 'string' ? session.imageUrl.trim() : '',
+        status: session.status,
+        votedCount: votedUserIds.length,
+        totalMembers,
+        requiredVotes,
+        majorityReached: votedUserIds.length >= requiredVotes,
+        hasViewerVoted: votedUserIds.includes(viewerUserId),
+        isViewerHost: viewerUserId === baseContext.organizerId,
+        decisionMode: session.decisionMode ?? null,
+        decisionMadeAt,
+        createdAt,
+        members: baseContext.members.map((member) => ({
+            ...member,
+            hasVoted: votedUserIds.includes(member.id),
+        })),
+    };
+};
+const buildVoteSessionPayload = async (tripId, voteId, viewerUserId) => {
+    const [baseContext, voteSession] = await Promise.all([
+        loadTripVoteBaseContext(tripId),
+        Vote.findOne({ _id: new Types.ObjectId(voteId), tripId: new Types.ObjectId(tripId) })
+            .select('_id placeName description estimatedCost imageUrl status votes decisionMode decisionMadeAt createdAt')
+            .lean(),
+    ]);
+    if (!baseContext || !voteSession) {
+        return null;
+    }
+    return serializeVoteSession(voteSession, baseContext, viewerUserId);
+};
+const writeVoteSessionStreamEvent = (response, payload) => {
+    response.write('event: vote-session\n');
+    response.write(`data: ${JSON.stringify(payload)}\n\n`);
+};
+const removeVoteSessionStreamClient = (voteId, clientId) => {
+    const voteClients = voteSessionStreams.get(voteId);
+    const client = voteClients?.get(clientId);
+    if (client) {
+        clearInterval(client.heartbeatId);
+    }
+    voteClients?.delete(clientId);
+    if (voteClients && voteClients.size === 0) {
+        voteSessionStreams.delete(voteId);
+    }
+};
+const broadcastVoteSession = async (tripId, voteId) => {
+    const voteClients = voteSessionStreams.get(voteId);
+    if (!voteClients || voteClients.size === 0) {
+        return;
+    }
+    for (const [clientId, client] of voteClients.entries()) {
+        try {
+            const payload = await buildVoteSessionPayload(tripId, voteId, client.userId);
+            if (!payload) {
+                removeVoteSessionStreamClient(voteId, clientId);
+                continue;
+            }
+            writeVoteSessionStreamEvent(client.response, payload);
+        }
+        catch {
+            removeVoteSessionStreamClient(voteId, clientId);
+        }
+    }
+};
+const createTripVoteDecisionNotifications = async (baseContext, voteId, placeName) => {
+    const notificationUserIds = baseContext.members
+        .map((member) => member.id)
+        .filter((memberId) => mongoose.isValidObjectId(memberId))
+        .map((memberId) => new Types.ObjectId(memberId));
+    if (!notificationUserIds.length) {
+        return;
+    }
+    await Notification.insertMany(notificationUserIds.map((userId) => ({
+        userId,
+        type: 'trip_vote_decided',
+        title: 'Decision Made',
+        message: `${placeName} won the group vote for ${baseContext.tripTitle}.`,
+        metadata: {
+            tripId: baseContext.tripId,
+            voteId,
+            placeName,
+        },
+    })));
+};
+const decideVoteSession = async (tripId, voteId, decidingUserId, decisionMode) => {
+    const baseContext = await loadTripVoteBaseContext(tripId);
+    if (!baseContext) {
+        return;
+    }
+    const otherOpenSessionIds = (await Vote.find({
+        tripId: new Types.ObjectId(tripId),
+        _id: { $ne: new Types.ObjectId(voteId) },
+        status: 'open',
+    })
+        .select('_id')
+        .lean()).map((session) => String(session._id));
+    const decidedVote = await Vote.findOneAndUpdate({
+        _id: new Types.ObjectId(voteId),
+        tripId: new Types.ObjectId(tripId),
+        status: 'open',
+    }, {
+        $set: {
+            status: 'decided',
+            decidedByUserId: new Types.ObjectId(decidingUserId),
+            decisionMode,
+            decisionMadeAt: new Date(),
+            notificationSentAt: new Date(),
+        },
+    }, {
+        new: true,
+    })
+        .select('_id placeName')
+        .lean();
+    if (!decidedVote) {
+        return;
+    }
+    if (otherOpenSessionIds.length) {
+        await Vote.updateMany({
+            tripId: new Types.ObjectId(tripId),
+            _id: { $in: otherOpenSessionIds.map((sessionId) => new Types.ObjectId(sessionId)) },
+        }, {
+            $set: {
+                status: 'archived',
+            },
+        });
+    }
+    await createTripVoteDecisionNotifications(baseContext, String(decidedVote._id), typeof decidedVote.placeName === 'string' && decidedVote.placeName.trim()
+        ? decidedVote.placeName.trim()
+        : 'Your next stop');
+    await broadcastVoteSession(tripId, voteId);
+    await Promise.all(otherOpenSessionIds.map((sessionId) => broadcastVoteSession(tripId, sessionId)));
+    await broadcastTripSuggestions(tripId);
 };
 const findCurrentActiveTripIdForUser = async (userId) => {
     const currentDayStart = toDayStart(new Date());
@@ -670,6 +905,269 @@ router.post('/:tripId/suggestions/:suggestionId/vote', requireAuth, verifyTripAc
     catch (error) {
         console.error('POST /api/trips/:tripId/suggestions/:suggestionId/vote failed', error);
         return res.status(500).json({ message: 'Unable to register this vote right now.' });
+    }
+});
+router.post('/:tripId/votes', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    const requestBody = req.body;
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    try {
+        const trip = await Trip.findById(tripId).select('_id organizerId suggestions').lean();
+        if (!trip) {
+            return res.status(404).json({ message: 'Trip not found.' });
+        }
+        if (getReferencedUserId(trip.organizerId) !== requesterId) {
+            return res.status(403).json({ message: 'Only the host can create a voting room.' });
+        }
+        const suggestionId = typeof requestBody.suggestionId === 'string' ? requestBody.suggestionId.trim() : '';
+        if (!suggestionId) {
+            return res.status(400).json({ message: 'Suggestion id is required.' });
+        }
+        const existingSession = await Vote.findOne({
+            tripId: new Types.ObjectId(tripId),
+            sourceSuggestionId: suggestionId,
+            status: { $in: ['open', 'decided'] },
+        })
+            .sort({ updatedAt: -1, createdAt: -1 })
+            .select('_id')
+            .lean();
+        if (existingSession) {
+            const existingPayload = await buildVoteSessionPayload(tripId, String(existingSession._id), requesterId);
+            if (existingPayload) {
+                return res.status(200).json(existingPayload);
+            }
+        }
+        const matchedSuggestion = (Array.isArray(trip.suggestions) ? trip.suggestions : []).find((suggestion) => String(suggestion._id) === suggestionId);
+        const placeName = typeof matchedSuggestion?.name === 'string' && matchedSuggestion.name.trim()
+            ? matchedSuggestion.name.trim()
+            : normalizePreferenceValue(requestBody.placeName, '');
+        const description = typeof matchedSuggestion?.whyVisit === 'string' && matchedSuggestion.whyVisit.trim()
+            ? matchedSuggestion.whyVisit.trim()
+            : normalizePreferenceValue(requestBody.description, '');
+        const estimatedCost = typeof matchedSuggestion?.estimatedCostPerPerson === 'number' && Number.isFinite(matchedSuggestion.estimatedCostPerPerson)
+            ? Number(matchedSuggestion.estimatedCostPerPerson.toFixed(2))
+            : typeof requestBody.estimatedCost === 'number' && Number.isFinite(requestBody.estimatedCost) && requestBody.estimatedCost >= 0
+                ? Number(requestBody.estimatedCost.toFixed(2))
+                : 0;
+        const imageUrl = typeof matchedSuggestion?.imageUrl === 'string' && matchedSuggestion.imageUrl.trim()
+            ? matchedSuggestion.imageUrl.trim()
+            : normalizePreferenceValue(requestBody.imageUrl, '');
+        if (!placeName || !description) {
+            return res.status(400).json({ message: 'Suggestion details are incomplete for this voting room.' });
+        }
+        const createdVote = await Vote.create({
+            tripId: new Types.ObjectId(tripId),
+            sourceSuggestionId: suggestionId,
+            placeName,
+            description,
+            estimatedCost,
+            imageUrl,
+            votes: [],
+            status: 'open',
+            createdByUserId: new Types.ObjectId(requesterId),
+        });
+        const payload = await buildVoteSessionPayload(tripId, String(createdVote._id), requesterId);
+        if (!payload) {
+            return res.status(404).json({ message: 'Voting room could not be created.' });
+        }
+        await broadcastTripSuggestions(tripId);
+        return res.status(201).json(payload);
+    }
+    catch (error) {
+        console.error('POST /api/trips/:tripId/votes failed', error);
+        return res.status(500).json({ message: 'Unable to create a voting room right now.' });
+    }
+});
+router.get('/:tripId/votes/latest-decision', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    try {
+        const latestDecision = await Vote.findOne({
+            tripId: new Types.ObjectId(tripId),
+            status: 'decided',
+        })
+            .sort({ decisionMadeAt: -1, updatedAt: -1 })
+            .select('_id')
+            .lean();
+        if (!latestDecision) {
+            return res.status(200).json({ decision: null });
+        }
+        const payload = await buildVoteSessionPayload(tripId, String(latestDecision._id), requesterId);
+        return res.status(200).json({
+            decision: payload,
+        });
+    }
+    catch (error) {
+        console.error('GET /api/trips/:tripId/votes/latest-decision failed', error);
+        return res.status(500).json({ message: 'Unable to load the latest trip decision right now.' });
+    }
+});
+router.get('/:tripId/votes/:voteId', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    const voteId = typeof req.params.voteId === 'string' ? req.params.voteId : '';
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    if (!voteId || !mongoose.isValidObjectId(voteId)) {
+        return res.status(400).json({ message: 'Vote id is invalid.' });
+    }
+    try {
+        const payload = await buildVoteSessionPayload(tripId, voteId, requesterId);
+        if (!payload) {
+            return res.status(404).json({ message: 'Voting room not found.' });
+        }
+        return res.status(200).json(payload);
+    }
+    catch (error) {
+        console.error('GET /api/trips/:tripId/votes/:voteId failed', error);
+        return res.status(500).json({ message: 'Unable to load this voting room right now.' });
+    }
+});
+router.get('/:tripId/votes/:voteId/stream', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    const voteId = typeof req.params.voteId === 'string' ? req.params.voteId : '';
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    if (!voteId || !mongoose.isValidObjectId(voteId)) {
+        return res.status(400).json({ message: 'Vote id is invalid.' });
+    }
+    try {
+        const payload = await buildVoteSessionPayload(tripId, voteId, requesterId);
+        if (!payload) {
+            return res.status(404).json({ message: 'Voting room not found.' });
+        }
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.flushHeaders?.();
+        const clientId = nextVoteSessionStreamId++;
+        const heartbeatId = setInterval(() => {
+            res.write('event: ping\n');
+            res.write('data: {}\n\n');
+        }, 15000);
+        if (!voteSessionStreams.has(voteId)) {
+            voteSessionStreams.set(voteId, new Map());
+        }
+        voteSessionStreams.get(voteId)?.set(clientId, {
+            response: res,
+            userId: requesterId,
+            heartbeatId,
+        });
+        writeVoteSessionStreamEvent(res, payload);
+        req.on('close', () => {
+            removeVoteSessionStreamClient(voteId, clientId);
+        });
+    }
+    catch (error) {
+        console.error('GET /api/trips/:tripId/votes/:voteId/stream failed', error);
+        if (!res.headersSent) {
+            return res.status(500).json({ message: 'Unable to open this voting room stream right now.' });
+        }
+        res.end();
+    }
+});
+router.post('/:tripId/votes/:voteId/cast', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    const voteId = typeof req.params.voteId === 'string' ? req.params.voteId : '';
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    if (!voteId || !mongoose.isValidObjectId(voteId)) {
+        return res.status(400).json({ message: 'Vote id is invalid.' });
+    }
+    try {
+        const updatedVote = await Vote.findOneAndUpdate({
+            _id: new Types.ObjectId(voteId),
+            tripId: new Types.ObjectId(tripId),
+            status: 'open',
+        }, {
+            $addToSet: {
+                votes: new Types.ObjectId(requesterId),
+            },
+        }, {
+            new: true,
+        })
+            .select('_id votes status')
+            .lean();
+        if (!updatedVote) {
+            const existingVote = await Vote.findOne({
+                _id: new Types.ObjectId(voteId),
+                tripId: new Types.ObjectId(tripId),
+            })
+                .select('_id status')
+                .lean();
+            if (!existingVote) {
+                return res.status(404).json({ message: 'Voting room not found.' });
+            }
+            const payload = await buildVoteSessionPayload(tripId, voteId, requesterId);
+            return res.status(409).json({
+                message: existingVote.status === 'archived' ? 'This voting room has been archived.' : 'This voting room is already closed.',
+                vote: payload,
+            });
+        }
+        const baseContext = await loadTripVoteBaseContext(tripId);
+        const requiredVotes = getRequiredVoteCount(baseContext?.members.length ?? 1);
+        if (getParticipantIds(updatedVote.votes).length >= requiredVotes) {
+            await decideVoteSession(tripId, voteId, requesterId, 'majority');
+        }
+        else {
+            await Promise.all([broadcastVoteSession(tripId, voteId), broadcastTripSuggestions(tripId)]);
+        }
+        const payload = await buildVoteSessionPayload(tripId, voteId, requesterId);
+        if (!payload) {
+            return res.status(404).json({ message: 'Voting room not found.' });
+        }
+        return res.status(200).json(payload);
+    }
+    catch (error) {
+        console.error('POST /api/trips/:tripId/votes/:voteId/cast failed', error);
+        return res.status(500).json({ message: 'Unable to submit your vote right now.' });
+    }
+});
+router.post('/:tripId/votes/:voteId/close', requireAuth, verifyTripAccess, async (req, res) => {
+    const authRequest = req;
+    const requesterId = authRequest.user?.id;
+    const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+    const voteId = typeof req.params.voteId === 'string' ? req.params.voteId : '';
+    if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+        return res.status(401).json({ message: 'Unauthorized request.' });
+    }
+    if (!voteId || !mongoose.isValidObjectId(voteId)) {
+        return res.status(400).json({ message: 'Vote id is invalid.' });
+    }
+    try {
+        const baseContext = await loadTripVoteBaseContext(tripId);
+        if (!baseContext) {
+            return res.status(404).json({ message: 'Trip not found.' });
+        }
+        if (baseContext.organizerId !== requesterId) {
+            return res.status(403).json({ message: 'Only the host can close this voting room.' });
+        }
+        await decideVoteSession(tripId, voteId, requesterId, 'host_closed');
+        const payload = await buildVoteSessionPayload(tripId, voteId, requesterId);
+        if (!payload) {
+            return res.status(404).json({ message: 'Voting room not found.' });
+        }
+        return res.status(200).json(payload);
+    }
+    catch (error) {
+        console.error('POST /api/trips/:tripId/votes/:voteId/close failed', error);
+        return res.status(500).json({ message: 'Unable to close this voting room right now.' });
     }
 });
 router.get('/:tripId', async (req, res) => {

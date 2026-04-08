@@ -2,7 +2,11 @@ import mongoose, { HydratedDocument, Model, Schema, Types } from 'mongoose';
 
 const { model, models } = mongoose;
 
-export const NOTIFICATION_TYPE_VALUES = ['verification_verified', 'verification_rejected'] as const;
+export const NOTIFICATION_TYPE_VALUES = [
+  'verification_verified',
+  'verification_rejected',
+  'trip_vote_decided',
+] as const;
 
 export interface INotification {
   userId: Types.ObjectId;
@@ -12,6 +16,9 @@ export interface INotification {
   isRead: boolean;
   metadata?: {
     rejectionReason?: string | null;
+    tripId?: string | null;
+    voteId?: string | null;
+    placeName?: string | null;
   } | null;
   createdAt: Date;
   updatedAt: Date;
@@ -56,6 +63,21 @@ const notificationSchema = new Schema<INotification, NotificationModelType>(
           type: String,
           default: null,
           maxlength: 240,
+        },
+        tripId: {
+          type: String,
+          default: null,
+          maxlength: 64,
+        },
+        voteId: {
+          type: String,
+          default: null,
+          maxlength: 64,
+        },
+        placeName: {
+          type: String,
+          default: null,
+          maxlength: 160,
         },
       },
       default: null,
