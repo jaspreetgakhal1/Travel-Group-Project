@@ -1,0 +1,210 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/components/LiquidSplitMeter.tsx");import __vite__cjsImport0_react_jsxDevRuntime from "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=78657ce4"; const jsxDEV = __vite__cjsImport0_react_jsxDevRuntime["jsxDEV"];
+import * as RefreshRuntime from "/@react-refresh";
+const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
+let prevRefreshReg;
+let prevRefreshSig;
+if (import.meta.hot && !inWebWorker) {
+  if (!window.$RefreshReg$) {
+    throw new Error(
+      "@vitejs/plugin-react can't detect preamble. Something is wrong."
+    );
+  }
+  prevRefreshReg = window.$RefreshReg$;
+  prevRefreshSig = window.$RefreshSig$;
+  window.$RefreshReg$ = RefreshRuntime.getRefreshReg("D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx");
+  window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;
+}
+var _s = $RefreshSig$();
+import __vite__cjsImport3_react from "/node_modules/.vite/deps/react.js?v=78657ce4"; const useId = __vite__cjsImport3_react["useId"];
+import { motion, useReducedMotion } from "/node_modules/.vite/deps/framer-motion.js?v=78657ce4";
+const clamp = (value) => Math.min(0.96, Math.max(0, value));
+const LiquidSplitMeter = ({
+  fillRatio,
+  helperText = "Tracks how much of the trip budget has been used so far.",
+  isWarning = false,
+  label,
+  valueLabel
+}) => {
+  _s();
+  const prefersReducedMotion = useReducedMotion();
+  const clipPathId = useId();
+  const gradientId = useId();
+  const normalizedFill = clamp(fillRatio);
+  const liquidY = 12 + (1 - normalizedFill) * 192;
+  const gradientStart = isWarning ? "rgba(224,122,95,0.96)" : "rgba(129,178,154,0.95)";
+  const gradientEnd = isWarning ? "rgba(248,196,183,0.88)" : "rgba(244,241,222,0.88)";
+  const secondaryWaveColor = isWarning ? "rgba(122,45,35,0.14)" : "rgba(61,64,91,0.12)";
+  return /* @__PURE__ */ jsxDEV("div", { className: "flex flex-col items-center gap-3", children: [
+    /* @__PURE__ */ jsxDEV("div", { className: "relative flex h-[216px] w-[138px] items-center justify-center overflow-hidden rounded-[44px] border border-white/55 bg-white/18 shadow-[0_32px_70px_-42px_rgba(27,39,58,0.8)] backdrop-blur-2xl", children: [
+      /* @__PURE__ */ jsxDEV("div", { className: "absolute inset-[8px] rounded-[38px] bg-white/14" }, void 0, false, {
+        fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+        lineNumber: 52,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("svg", { viewBox: "0 0 138 216", className: "absolute inset-0 h-full w-full", fill: "none", "aria-hidden": "true", children: [
+        /* @__PURE__ */ jsxDEV("defs", { children: [
+          /* @__PURE__ */ jsxDEV("clipPath", { id: clipPathId, children: /* @__PURE__ */ jsxDEV("rect", { x: "24", y: "12", width: "90", height: "192", rx: "40" }, void 0, false, {
+            fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+            lineNumber: 56,
+            columnNumber: 15
+          }, this) }, void 0, false, {
+            fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+            lineNumber: 55,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("linearGradient", { id: gradientId, x1: "0%", y1: "100%", x2: "0%", y2: "0%", children: [
+            /* @__PURE__ */ jsxDEV("stop", { offset: "0%", stopColor: gradientStart }, void 0, false, {
+              fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+              lineNumber: 59,
+              columnNumber: 15
+            }, this),
+            /* @__PURE__ */ jsxDEV("stop", { offset: "100%", stopColor: gradientEnd }, void 0, false, {
+              fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+              lineNumber: 60,
+              columnNumber: 15
+            }, this)
+          ] }, void 0, true, {
+            fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+            lineNumber: 58,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+          lineNumber: 54,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("rect", { x: "24", y: "12", width: "90", height: "192", rx: "40", fill: "rgba(255,255,255,0.08)", stroke: "rgba(255,255,255,0.42)" }, void 0, false, {
+          fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+          lineNumber: 64,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("g", { clipPath: `url(#${clipPathId})`, children: /* @__PURE__ */ jsxDEV(
+          motion.g,
+          {
+            initial: false,
+            animate: { y: liquidY },
+            transition: {
+              damping: 22,
+              stiffness: 120,
+              type: "spring"
+            },
+            children: [
+              /* @__PURE__ */ jsxDEV("rect", { x: "24", y: "0", width: "90", height: "192", fill: `url(#${gradientId})` }, void 0, false, {
+                fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+                lineNumber: 76,
+                columnNumber: 15
+              }, this),
+              /* @__PURE__ */ jsxDEV(
+                motion.path,
+                {
+                  d: "M12 32 C28 18 46 18 62 32 C78 46 96 46 114 32 V0 H12 Z",
+                  fill: "rgba(255,255,255,0.34)",
+                  animate: prefersReducedMotion ? void 0 : { x: [-8, 8, -8] },
+                  transition: { duration: 5.5, ease: "easeInOut", repeat: Number.POSITIVE_INFINITY }
+                },
+                void 0,
+                false,
+                {
+                  fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+                  lineNumber: 77,
+                  columnNumber: 15
+                },
+                this
+              ),
+              /* @__PURE__ */ jsxDEV(
+                motion.path,
+                {
+                  d: "M6 40 C22 26 40 26 56 40 C74 54 92 54 120 34 V8 H6 Z",
+                  fill: secondaryWaveColor,
+                  animate: prefersReducedMotion ? void 0 : { x: [10, -10, 10] },
+                  transition: { duration: 7.5, ease: "easeInOut", repeat: Number.POSITIVE_INFINITY }
+                },
+                void 0,
+                false,
+                {
+                  fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+                  lineNumber: 83,
+                  columnNumber: 15
+                },
+                this
+              )
+            ]
+          },
+          void 0,
+          true,
+          {
+            fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+            lineNumber: 67,
+            columnNumber: 13
+          },
+          this
+        ) }, void 0, false, {
+          fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+          lineNumber: 66,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+        lineNumber: 53,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("div", { className: "relative z-10 flex flex-col items-center gap-1 text-center", children: [
+        /* @__PURE__ */ jsxDEV("p", { className: "text-[10px] font-semibold uppercase tracking-[0.32em] text-primary/45", children: "Liquid Split" }, void 0, false, {
+          fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+          lineNumber: 94,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("p", { className: "text-xs font-medium text-primary/55", children: label }, void 0, false, {
+          fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+          lineNumber: 95,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("p", { className: "text-sm font-bold text-primary", children: valueLabel }, void 0, false, {
+          fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+          lineNumber: 96,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+        lineNumber: 93,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+      lineNumber: 51,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { className: "max-w-[140px] text-center text-[11px] font-medium leading-5 text-primary/50", children: helperText }, void 0, false, {
+      fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+      lineNumber: 99,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx",
+    lineNumber: 50,
+    columnNumber: 5
+  }, this);
+};
+_s(LiquidSplitMeter, "bWB5X7+3CpveiTLjsd6IiG0eFLM=", false, function() {
+  return [useReducedMotion];
+});
+_c = LiquidSplitMeter;
+export default LiquidSplitMeter;
+var _c;
+$RefreshReg$(_c, "LiquidSplitMeter");
+if (import.meta.hot && !inWebWorker) {
+  window.$RefreshReg$ = prevRefreshReg;
+  window.$RefreshSig$ = prevRefreshSig;
+}
+if (import.meta.hot && !inWebWorker) {
+  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {
+    RefreshRuntime.registerExportsForReactRefresh("D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx", currentExports);
+    import.meta.hot.accept((nextExports) => {
+      if (!nextExports) return;
+      const invalidateMessage = RefreshRuntime.validateRefreshBoundaryAndEnqueueUpdate("D:/Capstone/SplitNGo/src/components/LiquidSplitMeter.tsx", currentExports, nextExports);
+      if (invalidateMessage) import.meta.hot.invalidate(invalidateMessage);
+    });
+  });
+}
+
+//# sourceMappingURL=data:application/json;base64,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TixlQUFlQTtBQUFpQixJQUFBMEI7QUFBQSxhQUFBQSxJQUFBIiwibmFtZXMiOlsidXNlSWQiLCJtb3Rpb24iLCJ1c2VSZWR1Y2VkTW90aW9uIiwiY2xhbXAiLCJ2YWx1ZSIsIk1hdGgiLCJtaW4iLCJtYXgiLCJMaXF1aWRTcGxpdE1ldGVyIiwiZmlsbFJhdGlvIiwiaGVscGVyVGV4dCIsImlzV2FybmluZyIsImxhYmVsIiwidmFsdWVMYWJlbCIsIl9zIiwicHJlZmVyc1JlZHVjZWRNb3Rpb24iLCJjbGlwUGF0aElkIiwiZ3JhZGllbnRJZCIsIm5vcm1hbGl6ZWRGaWxsIiwibGlxdWlkWSIsImdyYWRpZW50U3RhcnQiLCJncmFkaWVudEVuZCIsInNlY29uZGFyeVdhdmVDb2xvciIsInkiLCJkYW1waW5nIiwic3RpZmZuZXNzIiwidHlwZSIsInVuZGVmaW5lZCIsIngiLCJkdXJhdGlvbiIsImVhc2UiLCJyZXBlYXQiLCJOdW1iZXIiLCJQT1NJVElWRV9JTkZJTklUWSIsIl9jIl0sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIkxpcXVpZFNwbGl0TWV0ZXIudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCBSZWFjdCwgeyB1c2VJZCB9IGZyb20gJ3JlYWN0JztcclxuaW1wb3J0IHsgbW90aW9uLCB1c2VSZWR1Y2VkTW90aW9uIH0gZnJvbSAnZnJhbWVyLW1vdGlvbic7XHJcblxyXG50eXBlIExpcXVpZFNwbGl0TWV0ZXJQcm9wcyA9IHtcbiAgZmlsbFJhdGlvOiBudW1iZXI7XG4gIGhlbHBlclRleHQ/OiBzdHJpbmc7XG4gIGlzV2FybmluZz86IGJvb2xlYW47XG4gIGxhYmVsOiBzdHJpbmc7XG4gIHZhbHVlTGFiZWw6IHN0cmluZztcbn07XG5cclxuY29uc3QgY2xhbXAgPSAodmFsdWU6IG51bWJlcikgPT4gTWF0aC5taW4oMC45NiwgTWF0aC5tYXgoMCwgdmFsdWUpKTtcblxyXG5jb25zdCBMaXF1aWRTcGxpdE1ldGVyOiBSZWFjdC5GQzxMaXF1aWRTcGxpdE1ldGVyUHJvcHM+ID0gKHtcbiAgZmlsbFJhdGlvLFxuICBoZWxwZXJUZXh0ID0gJ1RyYWNrcyBob3cgbXVjaCBvZiB0aGUgdHJpcCBidWRnZXQgaGFzIGJlZW4gdXNlZCBzbyBmYXIuJyxcbiAgaXNXYXJuaW5nID0gZmFsc2UsXG4gIGxhYmVsLFxuICB2YWx1ZUxhYmVsLFxufSkgPT4ge1xuICBjb25zdCBwcmVmZXJzUmVkdWNlZE1vdGlvbiA9IHVzZVJlZHVjZWRNb3Rpb24oKTtcbiAgY29uc3QgY2xpcFBhdGhJZCA9IHVzZUlkKCk7XG4gIGNvbnN0IGdyYWRpZW50SWQgPSB1c2VJZCgpO1xuICBjb25zdCBub3JtYWxpemVkRmlsbCA9IGNsYW1wKGZpbGxSYXRpbyk7XG4gIGNvbnN0IGxpcXVpZFkgPSAxMiArICgxIC0gbm9ybWFsaXplZEZpbGwpICogMTkyO1xuICBjb25zdCBncmFkaWVudFN0YXJ0ID0gaXNXYXJuaW5nID8gJ3JnYmEoMjI0LDEyMiw5NSwwLjk2KScgOiAncmdiYSgxMjksMTc4LDE1NCwwLjk1KSc7XG4gIGNvbnN0IGdyYWRpZW50RW5kID0gaXNXYXJuaW5nID8gJ3JnYmEoMjQ4LDE5NiwxODMsMC44OCknIDogJ3JnYmEoMjQ0LDI0MSwyMjIsMC44OCknO1xuICBjb25zdCBzZWNvbmRhcnlXYXZlQ29sb3IgPSBpc1dhcm5pbmcgPyAncmdiYSgxMjIsNDUsMzUsMC4xNCknIDogJ3JnYmEoNjEsNjQsOTEsMC4xMiknO1xuXG4gIHJldHVybiAoXG4gICAgPGRpdiBjbGFzc05hbWU9XCJmbGV4IGZsZXgtY29sIGl0ZW1zLWNlbnRlciBnYXAtM1wiPlxuICAgICAgPGRpdiBjbGFzc05hbWU9XCJyZWxhdGl2ZSBmbGV4IGgtWzIxNnB4XSB3LVsxMzhweF0gaXRlbXMtY2VudGVyIGp1c3RpZnktY2VudGVyIG92ZXJmbG93LWhpZGRlbiByb3VuZGVkLVs0NHB4XSBib3JkZXIgYm9yZGVyLXdoaXRlLzU1IGJnLXdoaXRlLzE4IHNoYWRvdy1bMF8zMnB4XzcwcHhfLTQycHhfcmdiYSgyNywzOSw1OCwwLjgpXSBiYWNrZHJvcC1ibHVyLTJ4bFwiPlxyXG4gICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiYWJzb2x1dGUgaW5zZXQtWzhweF0gcm91bmRlZC1bMzhweF0gYmctd2hpdGUvMTRcIiAvPlxyXG4gICAgICAgIDxzdmcgdmlld0JveD1cIjAgMCAxMzggMjE2XCIgY2xhc3NOYW1lPVwiYWJzb2x1dGUgaW5zZXQtMCBoLWZ1bGwgdy1mdWxsXCIgZmlsbD1cIm5vbmVcIiBhcmlhLWhpZGRlbj1cInRydWVcIj5cclxuICAgICAgICAgIDxkZWZzPlxyXG4gICAgICAgICAgICA8Y2xpcFBhdGggaWQ9e2NsaXBQYXRoSWR9PlxyXG4gICAgICAgICAgICAgIDxyZWN0IHg9XCIyNFwiIHk9XCIxMlwiIHdpZHRoPVwiOTBcIiBoZWlnaHQ9XCIxOTJcIiByeD1cIjQwXCIgLz5cclxuICAgICAgICAgICAgPC9jbGlwUGF0aD5cbiAgICAgICAgICAgIDxsaW5lYXJHcmFkaWVudCBpZD17Z3JhZGllbnRJZH0geDE9XCIwJVwiIHkxPVwiMTAwJVwiIHgyPVwiMCVcIiB5Mj1cIjAlXCI+XG4gICAgICAgICAgICAgIDxzdG9wIG9mZnNldD1cIjAlXCIgc3RvcENvbG9yPXtncmFkaWVudFN0YXJ0fSAvPlxuICAgICAgICAgICAgICA8c3RvcCBvZmZzZXQ9XCIxMDAlXCIgc3RvcENvbG9yPXtncmFkaWVudEVuZH0gLz5cbiAgICAgICAgICAgIDwvbGluZWFyR3JhZGllbnQ+XG4gICAgICAgICAgPC9kZWZzPlxuXHJcbiAgICAgICAgICA8cmVjdCB4PVwiMjRcIiB5PVwiMTJcIiB3aWR0aD1cIjkwXCIgaGVpZ2h0PVwiMTkyXCIgcng9XCI0MFwiIGZpbGw9XCJyZ2JhKDI1NSwyNTUsMjU1LDAuMDgpXCIgc3Ryb2tlPVwicmdiYSgyNTUsMjU1LDI1NSwwLjQyKVwiIC8+XHJcblxyXG4gICAgICAgICAgPGcgY2xpcFBhdGg9e2B1cmwoIyR7Y2xpcFBhdGhJZH0pYH0+XHJcbiAgICAgICAgICAgIDxtb3Rpb24uZ1xyXG4gICAgICAgICAgICAgIGluaXRpYWw9e2ZhbHNlfVxyXG4gICAgICAgICAgICAgIGFuaW1hdGU9e3sgeTogbGlxdWlkWSB9fVxyXG4gICAgICAgICAgICAgIHRyYW5zaXRpb249e3tcclxuICAgICAgICAgICAgICAgIGRhbXBpbmc6IDIyLFxyXG4gICAgICAgICAgICAgICAgc3RpZmZuZXNzOiAxMjAsXHJcbiAgICAgICAgICAgICAgICB0eXBlOiAnc3ByaW5nJyxcclxuICAgICAgICAgICAgICB9fVxyXG4gICAgICAgICAgICA+XHJcbiAgICAgICAgICAgICAgPHJlY3QgeD1cIjI0XCIgeT1cIjBcIiB3aWR0aD1cIjkwXCIgaGVpZ2h0PVwiMTkyXCIgZmlsbD17YHVybCgjJHtncmFkaWVudElkfSlgfSAvPlxyXG4gICAgICAgICAgICAgIDxtb3Rpb24ucGF0aFxyXG4gICAgICAgICAgICAgICAgZD1cIk0xMiAzMiBDMjggMTggNDYgMTggNjIgMzIgQzc4IDQ2IDk2IDQ2IDExNCAzMiBWMCBIMTIgWlwiXHJcbiAgICAgICAgICAgICAgICBmaWxsPVwicmdiYSgyNTUsMjU1LDI1NSwwLjM0KVwiXHJcbiAgICAgICAgICAgICAgICBhbmltYXRlPXtwcmVmZXJzUmVkdWNlZE1vdGlvbiA/IHVuZGVmaW5lZCA6IHsgeDogWy04LCA4LCAtOF0gfX1cclxuICAgICAgICAgICAgICAgIHRyYW5zaXRpb249e3sgZHVyYXRpb246IDUuNSwgZWFzZTogJ2Vhc2VJbk91dCcsIHJlcGVhdDogTnVtYmVyLlBPU0lUSVZFX0lORklOSVRZIH19XHJcbiAgICAgICAgICAgICAgLz5cclxuICAgICAgICAgICAgICA8bW90aW9uLnBhdGhcbiAgICAgICAgICAgICAgICBkPVwiTTYgNDAgQzIyIDI2IDQwIDI2IDU2IDQwIEM3NCA1NCA5MiA1NCAxMjAgMzQgVjggSDYgWlwiXG4gICAgICAgICAgICAgICAgZmlsbD17c2Vjb25kYXJ5V2F2ZUNvbG9yfVxuICAgICAgICAgICAgICAgIGFuaW1hdGU9e3ByZWZlcnNSZWR1Y2VkTW90aW9uID8gdW5kZWZpbmVkIDogeyB4OiBbMTAsIC0xMCwgMTBdIH19XG4gICAgICAgICAgICAgICAgdHJhbnNpdGlvbj17eyBkdXJhdGlvbjogNy41LCBlYXNlOiAnZWFzZUluT3V0JywgcmVwZWF0OiBOdW1iZXIuUE9TSVRJVkVfSU5GSU5JVFkgfX1cbiAgICAgICAgICAgICAgLz5cbiAgICAgICAgICAgIDwvbW90aW9uLmc+XHJcbiAgICAgICAgICA8L2c+XHJcbiAgICAgICAgPC9zdmc+XHJcblxyXG4gICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicmVsYXRpdmUgei0xMCBmbGV4IGZsZXgtY29sIGl0ZW1zLWNlbnRlciBnYXAtMSB0ZXh0LWNlbnRlclwiPlxyXG4gICAgICAgICAgPHAgY2xhc3NOYW1lPVwidGV4dC1bMTBweF0gZm9udC1zZW1pYm9sZCB1cHBlcmNhc2UgdHJhY2tpbmctWzAuMzJlbV0gdGV4dC1wcmltYXJ5LzQ1XCI+TGlxdWlkIFNwbGl0PC9wPlxyXG4gICAgICAgICAgPHAgY2xhc3NOYW1lPVwidGV4dC14cyBmb250LW1lZGl1bSB0ZXh0LXByaW1hcnkvNTVcIj57bGFiZWx9PC9wPlxyXG4gICAgICAgICAgPHAgY2xhc3NOYW1lPVwidGV4dC1zbSBmb250LWJvbGQgdGV4dC1wcmltYXJ5XCI+e3ZhbHVlTGFiZWx9PC9wPlxyXG4gICAgICAgIDwvZGl2PlxyXG4gICAgICA8L2Rpdj5cbiAgICAgIDxwIGNsYXNzTmFtZT1cIm1heC13LVsxNDBweF0gdGV4dC1jZW50ZXIgdGV4dC1bMTFweF0gZm9udC1tZWRpdW0gbGVhZGluZy01IHRleHQtcHJpbWFyeS81MFwiPlxuICAgICAgICB7aGVscGVyVGV4dH1cbiAgICAgIDwvcD5cbiAgICA8L2Rpdj5cbiAgKTtcbn07XHJcblxyXG5leHBvcnQgZGVmYXVsdCBMaXF1aWRTcGxpdE1ldGVyO1xyXG4iXSwiZmlsZSI6IkQ6L0NhcHN0b25lL1NwbGl0TkdvL3NyYy9jb21wb25lbnRzL0xpcXVpZFNwbGl0TWV0ZXIudHN4In0=

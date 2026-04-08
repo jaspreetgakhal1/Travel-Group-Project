@@ -27,6 +27,7 @@ import ExpenseParticipantChecklist from './components/ExpenseParticipantChecklis
 import FloatingLabelField from './components/FloatingLabelField';
 import LiquidSplitMeter from './components/LiquidSplitMeter';
 import RequestModal from './components/RequestModal';
+import AdminLayout from './components/AdminLayout';
 import Sidebar from './components/Sidebar';
 import DiscoveryFeedView from './views/DiscoveryFeedView';
 import type { FeedPost } from './types/feed';
@@ -38,10 +39,13 @@ import OnboardingQuizView from './views/OnboardingQuizView';
 import ReviewSystemView from './views/ReviewSystemView';
 import TripDetailView from './views/TripDetailView';
 import AIExplorer from './views/AIExplorer';
-import VerificationGateView from './views/VerificationGateView';
+import AdminDashboardView from './views/AdminDashboardView';
+import AdminUsersView from './views/AdminUsersView';
+import AdminTripsView from './views/AdminTripsView';
 import CreateTripView, { type CreateTripPayload } from './views/CreateTripView';
 import AboutUsView from './views/AboutUsView';
 import ContactUsView from './views/ContactUsView';
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import {
   fetchUserProfile,
   loginWithCredentials,
@@ -49,9 +53,11 @@ import {
   updateTravelDNA,
   updateUserProfile,
   uploadVerificationDocument,
+  type AuthenticatedUser as AuthApiUser,
   type UpdateProfileRequest,
   type UserProfile,
 } from './services/authApi';
+import { type AdminUserFilter } from './services/adminApi';
 import { fetchTripDNAMatch, type TripDNAMatch } from './services/matchApi';
 import {
   createFeedPost,
@@ -64,6 +70,7 @@ import {
 } from './services/postApi';
 import {
   deleteTripExpense,
+  fetchActiveTripId,
   fetchActiveTripExpenseSummary,
   fetchTripExpenseSummary,
   fetchWalletSummary,
@@ -80,7 +87,6 @@ import {
   reviewJoinRequest,
   submitJoinRequest,
   type HostTripRequest,
-  type HostTripSummary,
   type JoinRequestStatus,
 } from './services/tripRequestApi';
 import {
@@ -123,10 +129,16 @@ const INTRO_PERIOD_MS =
 
 const AUTH_TOKEN_STORAGE_KEY = 'splitngo_auth_token';
 const USER_SESSION_STORAGE_KEY = 'splitngo_user_session';
+const LAST_VIEWED_TRIP_ID_STORAGE_KEY = 'splitngo_last_viewed_trip_id';
 const POST_AUTH_REDIRECT_STORAGE_KEY = 'splitngo_post_auth_redirect';
 const SYSTEM_NOTICE_AUTO_DISMISS_MS = 3000;
+const ADMIN_PATH = '/admin';
+const ADMIN_USERS_PATH = '/admin/users';
+const ADMIN_TRIPS_PATH = '/admin/trips';
 const TRIP_HISTORY_PATH_PATTERN = /^\/trip\/([^/]+)\/history\/?$/;
 const TRIP_EXPLORER_PATH_PATTERN = /^\/trip\/([^/]+)\/explorer\/?$/;
+const DIRECT_TRIP_EXPLORER_PATH_PATTERN = /^\/explorer\/([^/]+)\/?$/;
+const ADMIN_USER_FILTER_VALUES: AdminUserFilter[] = ['all', 'pending', 'verified', 'blocked', 'deleted'];
 
 type ScreenName =
   | 'home'
@@ -146,6 +158,9 @@ type ScreenName =
   | 'wallet'
   | 'onboarding'
   | 'verification'
+  | 'admin'
+  | 'adminUsers'
+  | 'adminTrips'
   | 'groupChat'
   | 'reviews';
 type AuthMode = 'signin' | 'signup';
@@ -174,8 +189,10 @@ type UserSession = {
   email: string;
   profileImageDataUrl: string | null;
   provider: 'Email' | SocialProvider;
+  role: 'user' | 'admin';
   dna: UserDNA | null;
   isVerified: boolean;
+  verificationStatus: 'pending' | 'verified' | 'rejected';
   toursCompleted: number;
   ratingAverage: number;
   ratingCount: number;
@@ -219,6 +236,28 @@ type HostTripRequestsByTripId = Record<string, HostTripRequest[]>;
 type HostRequestReviewStatus = Extract<JoinRequestStatus, 'accepted' | 'rejected'>;
 type JoinConflictMessageByPostId = Record<string, string>;
 type WalletPanel = 'payables' | 'release' | null;
+type HistoryDebtView = 'list' | 'chart';
+
+type HistoryDebtDirection = 'owe' | 'owed';
+
+type HistoryDebtDetail = {
+  id: string;
+  amount: number;
+  createdAt: string;
+  description: string;
+  direction: HistoryDebtDirection;
+  paidByName: string;
+};
+
+type HistoryDebtCard = {
+  amount: number;
+  avatar: string | null;
+  direction: HistoryDebtDirection;
+  key: string;
+  name: string;
+  userId: string;
+  details: HistoryDebtDetail[];
+};
 
 type TripRuntime = {
   status: TripLifecycleStatus;
@@ -246,16 +285,36 @@ const EMPTY_POST_STATS: PostStats = {
   completedCount: 0,
   totalCount: 0,
 };
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  style: 'currency',
-});
+const currencyFormatterCache = new Map<string, Intl.NumberFormat>();
+const HISTORY_OWED_COLORS = ['#059669', '#10b981', '#34d399', '#6ee7b7'];
+const HISTORY_OWE_COLORS = ['#ea580c', '#f97316', '#fb923c', '#fdba74'];
 
-const formatCurrency = (value: number) => currencyFormatter.format(value);
+const getCurrencyFormatter = (currencyCode = 'USD') => {
+  const normalizedCurrencyCode =
+    typeof currencyCode === 'string' && /^[A-Z]{3}$/i.test(currencyCode.trim()) ? currencyCode.trim().toUpperCase() : 'USD';
+  const existingFormatter = currencyFormatterCache.get(normalizedCurrencyCode);
+
+  if (existingFormatter) {
+    return existingFormatter;
+  }
+
+  const formatter = new Intl.NumberFormat('en-US', {
+    currency: normalizedCurrencyCode,
+    minimumFractionDigits: 2,
+    style: 'currency',
+  });
+
+  currencyFormatterCache.set(normalizedCurrencyCode, formatter);
+  return formatter;
+};
+
+const formatCurrency = (value: number, currencyCode = 'USD') => getCurrencyFormatter(currencyCode).format(value);
 const TRIP_OVERLAP_NOTICE =
   'Logic Error: You are already committed to another trip during these dates. You cannot be in two places at once.';
 const TRIP_OVERLAP_HELPER_TEXT = 'Conflicts with your already booked trip dates.';
+
+const toCurrencyCents = (value: number): number => Math.round(value * 100);
+const fromCurrencyCents = (value: number): number => Number((value / 100).toFixed(2));
 
 const toDayStartTimestamp = (value: string | Date): number | null => {
   const parsedDate = value instanceof Date ? new Date(value) : new Date(value);
@@ -313,22 +372,6 @@ const compareFeedPostsByMostRecentTrip = (
   const leftEnd = toDayEndTimestamp(leftPost.endDate) ?? 0;
   const rightEnd = toDayEndTimestamp(rightPost.endDate) ?? 0;
   return rightEnd - leftEnd;
-};
-
-const compareFeedPostsByUpcomingStartDate = (
-  leftPost: Pick<FeedPost, 'startDate' | 'endDate'>,
-  rightPost: Pick<FeedPost, 'startDate' | 'endDate'>,
-): number => {
-  const leftStart = toDayStartTimestamp(leftPost.startDate) ?? Number.MAX_SAFE_INTEGER;
-  const rightStart = toDayStartTimestamp(rightPost.startDate) ?? Number.MAX_SAFE_INTEGER;
-
-  if (leftStart !== rightStart) {
-    return leftStart - rightStart;
-  }
-
-  const leftEnd = toDayEndTimestamp(leftPost.endDate) ?? Number.MAX_SAFE_INTEGER;
-  const rightEnd = toDayEndTimestamp(rightPost.endDate) ?? Number.MAX_SAFE_INTEGER;
-  return leftEnd - rightEnd;
 };
 
 const isFeedPostUpcomingOrCurrent = (post: Pick<FeedPost, 'endDate'>): boolean => {
@@ -491,6 +534,31 @@ const getRouteLabel = (route: string): string => {
 };
 
 const normalizeAuthorKey = (value: string): string => value.trim().toLowerCase();
+
+const getFeedPostAuthorId = (post: FeedPost): string | null =>
+  typeof post.author === 'object' && post.author !== null && typeof post.author.id === 'string' && post.author.id.trim()
+    ? post.author.id
+    : null;
+
+const isFeedPostHostedByCurrentUser = (
+  post: FeedPost,
+  currentUserId: string | null | undefined,
+  currentAuthorKey: string | null,
+): boolean => {
+  const isOwnPostByHostId = Boolean(currentUserId && post.hostId && post.hostId === currentUserId);
+  const postAuthorId = getFeedPostAuthorId(post);
+  const isOwnPostByAuthorId = Boolean(currentUserId && postAuthorId && postAuthorId === currentUserId);
+
+  if (isOwnPostByHostId || isOwnPostByAuthorId) {
+    return true;
+  }
+
+  if (currentUserId) {
+    return false;
+  }
+
+  return currentAuthorKey !== null && normalizeAuthorKey(post.authorKey) === currentAuthorKey;
+};
 
 const getSessionAuthorKeys = (session: UserSession | null): string[] => {
   if (!session) {
@@ -702,11 +770,17 @@ const profileToForm = (profile: UserProfile): ProfileForm => ({
 const mergeSessionWithProfile = (
   session: UserSession,
   profile: UserProfile,
-  isVerified: boolean,
+  user: Pick<AuthApiUser, 'isVerified' | 'role' | 'verificationStatus'>,
 ): UserSession => {
   const nextFirstName = profile.firstName.trim();
   const nextLastName = profile.lastName.trim();
   const fallbackName = session.name || session.email || session.firstName || 'Traveler';
+  const verificationStatus =
+    user.verificationStatus === 'rejected'
+      ? 'rejected'
+      : user.verificationStatus === 'verified' || user.isVerified
+        ? 'verified'
+        : 'pending';
 
   return {
     ...session,
@@ -717,9 +791,11 @@ const mergeSessionWithProfile = (
     mobileNumber: profile.mobileNumber,
     email: profile.email,
     profileImageDataUrl: profile.profileImageDataUrl,
+    role: user.role === 'admin' ? 'admin' : 'user',
     dna: profile.travelDNA ? normalizeTravelDNA(profile.travelDNA) : session.dna,
-    isVerified,
-  };
+    isVerified: verificationStatus === 'verified',
+    verificationStatus,
+    };
 };
 
 const getStoredUserSession = (): UserSession | null => {
@@ -762,6 +838,13 @@ const getStoredUserSession = (): UserSession | null => {
     const mobileNumber = typeof parsed.mobileNumber === 'string' ? parsed.mobileNumber : '';
     const email = typeof parsed.email === 'string' ? parsed.email : '';
     const profileImageDataUrl = typeof parsed.profileImageDataUrl === 'string' ? parsed.profileImageDataUrl : null;
+    const role = parsed.role === 'admin' ? 'admin' : 'user';
+    const verificationStatus =
+      parsed.verificationStatus === 'rejected'
+        ? 'rejected'
+        : parsed.verificationStatus === 'verified' || Boolean(parsed.isVerified)
+          ? 'verified'
+          : 'pending';
 
     return {
       id,
@@ -773,8 +856,10 @@ const getStoredUserSession = (): UserSession | null => {
       email,
       profileImageDataUrl,
       provider,
+      role,
       dna: parsed.dna ? normalizeTravelDNA(parsed.dna) : null,
-      isVerified: Boolean(parsed.isVerified),
+      isVerified: verificationStatus === 'verified',
+      verificationStatus,
       toursCompleted: typeof parsed.toursCompleted === 'number' ? parsed.toursCompleted : 0,
       ratingAverage: typeof parsed.ratingAverage === 'number' ? parsed.ratingAverage : 0,
       ratingCount: typeof parsed.ratingCount === 'number' ? parsed.ratingCount : 0,
@@ -800,13 +885,54 @@ const createSession = (name: string, provider: 'Email' | SocialProvider): UserSe
     email: '',
     profileImageDataUrl: null,
     provider,
+    role: 'user',
     dna: null,
     isVerified: false,
+    verificationStatus: 'pending',
     toursCompleted: 0,
     ratingAverage: 0,
     ratingCount: 0,
   };
 };
+
+const resolvePostAuthScreen = (
+  redirectTarget: ScreenName | null,
+  session?: Pick<UserSession, 'role'> | null,
+): ScreenName => {
+  if (redirectTarget === 'createTrip') {
+    return 'createTrip';
+  }
+
+  if (redirectTarget === 'admin' && session?.role === 'admin') {
+    return 'admin';
+  }
+
+  if (redirectTarget === 'adminUsers' && session?.role === 'admin') {
+    return 'adminUsers';
+  }
+
+  if (redirectTarget === 'adminTrips' && session?.role === 'admin') {
+    return 'adminTrips';
+  }
+
+  return 'home';
+};
+
+const parseAdminUserFilter = (value: string | null): AdminUserFilter =>
+  value && ADMIN_USER_FILTER_VALUES.includes(value as AdminUserFilter) ? (value as AdminUserFilter) : 'all';
+
+const getAdminUsersPath = (filter: AdminUserFilter): string =>
+  `${ADMIN_USERS_PATH}?filter=${encodeURIComponent(filter)}`;
+
+const getTripExplorerPath = (tripId: string): string => `/explorer/${encodeURIComponent(tripId)}`;
+
+const getExplorerPathMatch = (pathname: string): RegExpMatchArray | null =>
+  pathname.match(TRIP_EXPLORER_PATH_PATTERN) ?? pathname.match(DIRECT_TRIP_EXPLORER_PATH_PATTERN);
+
+const isTripDetailPath = (pathname: string): boolean =>
+  TRIP_HISTORY_PATH_PATTERN.test(pathname) ||
+  TRIP_EXPLORER_PATH_PATTERN.test(pathname) ||
+  DIRECT_TRIP_EXPLORER_PATH_PATTERN.test(pathname);
 
 const clearStoredAuthState = (): void => {
   if (typeof window === 'undefined') {
@@ -815,6 +941,7 @@ const clearStoredAuthState = (): void => {
 
   window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
   window.localStorage.removeItem(USER_SESSION_STORAGE_KEY);
+  window.localStorage.removeItem(LAST_VIEWED_TRIP_ID_STORAGE_KEY);
 };
 
 const createInitialTripRuntime = (): Record<string, TripRuntime> =>
@@ -929,7 +1056,6 @@ function App() {
   const [dnaMatchByPostId, setDnaMatchByPostId] = useState<DNAMatchByPostId>({});
   const [dnaMatchLoadingPostIds, setDnaMatchLoadingPostIds] = useState<string[]>([]);
   const [sentRequestPostIds, setSentRequestPostIds] = useState<string[]>([]);
-  const [selfTripSummaries, setSelfTripSummaries] = useState<HostTripSummary[]>([]);
   const [pendingRequestCountByTripId, setPendingRequestCountByTripId] = useState<Record<string, number>>({});
   const [hostRequestsByTripId, setHostRequestsByTripId] = useState<HostTripRequestsByTripId>({});
   const [activeRequestModalPost, setActiveRequestModalPost] = useState<FeedPost | null>(null);
@@ -965,7 +1091,22 @@ function App() {
   const [walletReleaseEntry, setWalletReleaseEntry] = useState<WalletSummaryEntry | null>(null);
   const [walletReleaseAmount, setWalletReleaseAmount] = useState('');
   const [activeTripHistoryTripId, setActiveTripHistoryTripId] = useState<string | null>(null);
+  const [historyDebtView, setHistoryDebtView] = useState<HistoryDebtView>('list');
   const [activeTripExplorerTripId, setActiveTripExplorerTripId] = useState<string | null>(null);
+  const [globalActiveTripId, setGlobalActiveTripId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    return window.localStorage.getItem(LAST_VIEWED_TRIP_ID_STORAGE_KEY)?.trim() || null;
+  });
+  const [isGlobalActiveTripLoading, setIsGlobalActiveTripLoading] = useState<boolean>(() => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+
+    return Boolean(window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY));
+  });
   const [pendingExplorerExpensePrefill, setPendingExplorerExpensePrefill] = useState<{
     description: string;
     amount: string;
@@ -985,7 +1126,19 @@ function App() {
     }
 
     const storedRedirect = window.sessionStorage.getItem(POST_AUTH_REDIRECT_STORAGE_KEY);
-    return storedRedirect === 'createTrip' ? 'createTrip' : null;
+    return storedRedirect === 'createTrip' ||
+      storedRedirect === 'admin' ||
+      storedRedirect === 'adminUsers' ||
+      storedRedirect === 'adminTrips'
+      ? (storedRedirect as ScreenName)
+      : null;
+  });
+  const [adminUserFilter, setAdminUserFilter] = useState<AdminUserFilter>(() => {
+    if (typeof window === 'undefined') {
+      return 'all';
+    }
+
+    return parseAdminUserFilter(new URLSearchParams(window.location.search).get('filter'));
   });
 
   const [userSession, setUserSession] = useState<UserSession | null>(() => getStoredUserSession());
@@ -1033,55 +1186,31 @@ function App() {
     () => (currentUserAuthorKey ? normalizeAuthorKey(currentUserAuthorKey) : null),
     [currentUserAuthorKey],
   );
-  const selfTripIdSet = useMemo(() => new Set(selfTripSummaries.map((trip) => trip.id)), [selfTripSummaries]);
   const mainFeedPosts = useMemo(() => {
     return feedPosts
       .filter((post) => {
-        if (post.status !== 'Active' || !isFeedPostUpcomingOrCurrent(post)) {
-          return false;
-        }
-
-        const isOwnPostByAuthor =
-          normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
-        const isOwnPostById = selfTripIdSet.has(post.id);
-        const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
-        return !(isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId);
+        return !isFeedPostHostedByCurrentUser(post, userSession?.id, normalizedCurrentUserAuthorKey);
       })
       .sort(compareFeedPostsByMostRecentTrip);
-  }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
+  }, [feedPosts, normalizedCurrentUserAuthorKey, userSession?.id]);
   const myFeedPosts = useMemo(() => {
-    const filteredPosts = feedPosts.filter((post) => {
-      if (post.status !== 'Active' || !isFeedPostUpcomingOrCurrent(post)) {
-        return false;
-      }
-
-      const isOwnPostByAuthor =
-        normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
-      const isOwnPostById = selfTripIdSet.has(post.id);
-      const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
-      return isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
-    });
-
-    return filteredPosts
+    return feedPosts
+      .filter((post) => isFeedPostHostedByCurrentUser(post, userSession?.id, normalizedCurrentUserAuthorKey))
       .map((post) => ({
         ...post,
         pendingRequestCount: pendingRequestCountByTripId[post.id] ?? post.pendingRequestCount ?? 0,
       }))
-      .sort(compareFeedPostsByUpcomingStartDate);
-  }, [feedPosts, normalizedCurrentUserAuthorKey, pendingRequestCountByTripId, selfTripIdSet, userSession?.id]);
+      .sort(compareFeedPostsByMostRecentTrip);
+  }, [feedPosts, normalizedCurrentUserAuthorKey, pendingRequestCountByTripId, userSession?.id]);
   const archivedMyPosts = useMemo(() => {
     return feedPosts
       .filter((post) => {
-        const isOwnPostByAuthor =
-          normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
-        const isOwnPostById = selfTripIdSet.has(post.id);
-        const isOwnPostByHostId = Boolean(userSession?.id && post.hostId && post.hostId === userSession.id);
-        const isOwnPost = isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId;
+        const isOwnPost = isFeedPostHostedByCurrentUser(post, userSession?.id, normalizedCurrentUserAuthorKey);
         const isPastTrip = !isFeedPostUpcomingOrCurrent(post);
         return isOwnPost && (post.status === 'Completed' || isPastTrip);
       })
       .sort(compareFeedPostsByMostRecentTrip);
-  }, [feedPosts, normalizedCurrentUserAuthorKey, selfTripIdSet, userSession?.id]);
+  }, [feedPosts, normalizedCurrentUserAuthorKey, userSession?.id]);
   const bookedTripPosts = useMemo(() => {
     const currentUserId = userSession?.id;
     const currentAuthorKey = normalizedCurrentUserAuthorKey;
@@ -1261,7 +1390,6 @@ function App() {
   const loadSelfTripsForHost = async () => {
     const authToken = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
     if (!authToken) {
-      setSelfTripSummaries([]);
       setPendingRequestCountByTripId({});
       setHostRequestsByTripId({});
       return;
@@ -1269,7 +1397,6 @@ function App() {
 
     try {
       const hostTrips = await fetchSelfTrips(authToken);
-      setSelfTripSummaries(hostTrips);
       setPendingRequestCountByTripId(
         hostTrips.reduce<Record<string, number>>((accumulator, trip) => {
           accumulator[trip.id] = trip.pendingRequestCount;
@@ -1283,11 +1410,7 @@ function App() {
 
   const loadProfileFromDatabase = async (authToken: string, baseSession: UserSession): Promise<UserSession> => {
     const profileResponse = await fetchUserProfile(authToken);
-    return mergeSessionWithProfile(
-      baseSession,
-      profileResponse.profile,
-      Boolean(profileResponse.user.isVerified),
-    );
+    return mergeSessionWithProfile(baseSession, profileResponse.profile, profileResponse.user);
   };
 
   useEffect(() => {
@@ -1319,7 +1442,7 @@ function App() {
     setPostAuthRedirectScreen(null);
     setUserSession(createSession('Google User', 'Google'));
     setActiveView('feed');
-    setCurrentScreen(redirectTarget === 'createTrip' ? 'createTrip' : 'home');
+    setCurrentScreen(resolvePostAuthScreen(redirectTarget, { role: 'user' }));
     setSystemNotice(
       redirectTarget === 'createTrip'
         ? 'Google login successful. Continue creating your trip.'
@@ -1336,12 +1459,20 @@ function App() {
 
     const syncWorkspaceScreenFromPath = () => {
       const historyMatch = window.location.pathname.match(TRIP_HISTORY_PATH_PATTERN);
-      const explorerMatch = window.location.pathname.match(TRIP_EXPLORER_PATH_PATTERN);
+      const explorerMatch = getExplorerPathMatch(window.location.pathname);
+      const isAdminUsersRoute = window.location.pathname === ADMIN_USERS_PATH;
+      const isAdminTripsRoute = window.location.pathname === ADMIN_TRIPS_PATH;
+      const isAdminRoute = window.location.pathname === ADMIN_PATH;
       const nextHistoryTripId = historyMatch ? decodeURIComponent(historyMatch[1]) : null;
       const nextExplorerTripId = explorerMatch ? decodeURIComponent(explorerMatch[1]) : null;
+      const nextAdminUserFilter = parseAdminUserFilter(new URLSearchParams(window.location.search).get('filter'));
 
       setActiveTripHistoryTripId(nextHistoryTripId);
       setActiveTripExplorerTripId(nextExplorerTripId);
+      setAdminUserFilter(nextAdminUserFilter);
+      if ((isAdminRoute || isAdminUsersRoute || isAdminTripsRoute) && !userSession) {
+        setPostAuthRedirectScreen(isAdminUsersRoute ? 'adminUsers' : isAdminTripsRoute ? 'adminTrips' : 'admin');
+      }
       setCurrentScreen((current) => {
         if (nextHistoryTripId) {
           return 'history';
@@ -1351,7 +1482,25 @@ function App() {
           return 'explorer';
         }
 
-        return current === 'history' || current === 'explorer' ? 'wallet' : current;
+        if (isAdminUsersRoute) {
+          return 'adminUsers';
+        }
+
+        if (isAdminTripsRoute) {
+          return 'adminTrips';
+        }
+
+        if (isAdminRoute) {
+          return 'admin';
+        }
+
+        return current === 'history' ||
+          current === 'explorer' ||
+          current === 'admin' ||
+          current === 'adminUsers' ||
+          current === 'adminTrips'
+          ? 'wallet'
+          : current;
       });
     };
 
@@ -1359,7 +1508,7 @@ function App() {
     window.addEventListener('popstate', syncWorkspaceScreenFromPath);
 
     return () => window.removeEventListener('popstate', syncWorkspaceScreenFromPath);
-  }, []);
+  }, [userSession]);
 
   useEffect(() => {
     if (!systemNotice) {
@@ -1485,7 +1634,7 @@ function App() {
 
   useEffect(() => {
     void loadActiveFeedPosts();
-  }, [userSession?.isVerified, userSession?.email, userSession?.name]);
+  }, [userSession?.id, userSession?.isVerified, userSession?.email, userSession?.name]);
 
   useEffect(() => {
     void loadPostStatsFromDatabase(currentUserAuthorKey);
@@ -1498,6 +1647,78 @@ function App() {
 
     void loadSelfTripsForHost();
   }, [activeView, userSession?.id, userSession?.email, userSession?.name]);
+
+  useEffect(() => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (!currentAuthToken) {
+      setGlobalActiveTripId(null);
+      setIsGlobalActiveTripLoading(false);
+      return;
+    }
+
+    if (!userSession?.id) {
+      return;
+    }
+
+    let isActive = true;
+    setIsGlobalActiveTripLoading(true);
+
+    void fetchActiveTripId(currentAuthToken)
+      .then((response) => {
+        if (!isActive) {
+          return;
+        }
+
+        const nextTripId = typeof response.tripId === 'string' && response.tripId.trim() ? response.tripId : null;
+        setGlobalActiveTripId(nextTripId);
+        if (typeof window !== 'undefined') {
+          if (nextTripId) {
+            window.localStorage.setItem(LAST_VIEWED_TRIP_ID_STORAGE_KEY, nextTripId);
+          } else {
+            window.localStorage.removeItem(LAST_VIEWED_TRIP_ID_STORAGE_KEY);
+          }
+        }
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+
+        const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+        if (isUnauthorized) {
+          clearStoredAuthState();
+          setHydratedProfileToken(null);
+          setUserSession(null);
+          setCurrentScreen('auth');
+          setSystemNotice('Your session expired. Please sign in again.');
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsGlobalActiveTripLoading(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [authToken, userSession?.id]);
+
+  useEffect(() => {
+    const nextTripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? null;
+
+    if (!nextTripId) {
+      return;
+    }
+
+    setGlobalActiveTripId((currentTripId) => (currentTripId === nextTripId ? currentTripId : nextTripId));
+
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(LAST_VIEWED_TRIP_ID_STORAGE_KEY, nextTripId);
+    }
+  }, [activeTripExplorerTripId, tripExpenseSummary?.trip.id]);
 
   useEffect(() => {
     const currentAuthToken =
@@ -1558,7 +1779,7 @@ function App() {
   useEffect(() => {
     const currentAuthToken =
       typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
-    const activeTripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? null;
+    const activeTripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId ?? null;
 
     if (currentScreen !== 'explorer' || !currentAuthToken || !activeTripId) {
       setTripSuggestionsSummary(null);
@@ -1629,7 +1850,7 @@ function App() {
       isActive = false;
       unsubscribe();
     };
-  }, [activeTripExplorerTripId, authToken, currentScreen, tripExpenseSummary?.trip.id]);
+  }, [activeTripExplorerTripId, authToken, currentScreen, globalActiveTripId, tripExpenseSummary?.trip.id]);
 
   useEffect(() => {
     const currentAuthToken =
@@ -1937,6 +2158,7 @@ function App() {
           payableEntry: payableEntry ?? null,
         };
       })
+      .filter((entry) => entry.netBalanceAmount > 0)
       .sort((left, right) => right.totalOwesAmount - left.totalOwesAmount);
   }, [selectedTripPaidEntries, tripExpenseSummary, userSession?.id, walletSummary?.releasedEntries]);
   const selectedTripPayableTotal = useMemo(
@@ -1950,13 +2172,163 @@ function App() {
 
     return tripExpenseSummary.balances.find((balance) => balance.userId === userSession.id) ?? null;
   }, [tripExpenseSummary, userSession?.id]);
-  const tripScopedPayableAmount = useMemo(() => {
+  const selectedTripNetPayableTotal = useMemo(() => {
+    if (selectedTripParticipantEntries.length > 0) {
+      return Number(
+        selectedTripParticipantEntries.reduce((total, entry) => total + entry.netBalanceAmount, 0).toFixed(2),
+      );
+    }
+
     if (currentUserTripBalance && currentUserTripBalance.totalOwed > 0) {
       return Number(currentUserTripBalance.totalOwed.toFixed(2));
     }
 
     return selectedTripPayableTotal;
-  }, [currentUserTripBalance, selectedTripPayableTotal]);
+  }, [currentUserTripBalance, selectedTripParticipantEntries, selectedTripPayableTotal]);
+  const activeHistorySummary = useMemo(() => {
+    if (currentScreen !== 'history' || !activeTripHistoryTripId) {
+      return null;
+    }
+
+    return tripExpenseSummary?.trip.id === activeTripHistoryTripId ? tripExpenseSummary : null;
+  }, [activeTripHistoryTripId, currentScreen, tripExpenseSummary]);
+  const activeHistoryFeedPost = useMemo(() => {
+    if (!activeTripHistoryTripId) {
+      return null;
+    }
+
+    return feedPosts.find((post) => post.id === activeTripHistoryTripId) ?? null;
+  }, [activeTripHistoryTripId, feedPosts]);
+  const activeHistoryCurrencyCodes = useMemo(() => {
+    const codes = new Set<string>();
+
+    if (typeof activeHistorySummary?.trip.currency === 'string' && activeHistorySummary.trip.currency.trim()) {
+      codes.add(activeHistorySummary.trip.currency.trim().toUpperCase());
+    }
+
+    if (typeof activeHistoryFeedPost?.currency === 'string' && activeHistoryFeedPost.currency.trim()) {
+      codes.add(activeHistoryFeedPost.currency.trim().toUpperCase());
+    }
+
+    if (codes.size === 0) {
+      codes.add('USD');
+    }
+
+    return Array.from(codes);
+  }, [activeHistoryFeedPost?.currency, activeHistorySummary?.trip.currency]);
+  const activeHistoryPrimaryCurrency = activeHistoryCurrencyCodes[0] ?? 'USD';
+  const historyDebtCards = useMemo(() => {
+    if (!activeHistorySummary || !userSession?.id) {
+      return [];
+    }
+
+    const membersById = new Map(activeHistorySummary.members.map((member) => [member.id, member]));
+    const debtByUserId = new Map<
+      string,
+      {
+        counterpartAvatar: string | null;
+        counterpartName: string;
+        counterpartUserId: string;
+        details: HistoryDebtDetail[];
+        netCents: number;
+      }
+    >();
+
+    activeHistorySummary.expenses.forEach((expense) => {
+      expense.settlements.forEach((settlement) => {
+        let counterpartUserId = '';
+        let direction: HistoryDebtDirection | null = null;
+        let counterpartName = '';
+
+        if (settlement.userId === userSession.id && settlement.owesToUserId !== userSession.id) {
+          counterpartUserId = settlement.owesToUserId;
+          counterpartName = settlement.owesToName;
+          direction = 'owe';
+        } else if (settlement.owesToUserId === userSession.id && settlement.userId !== userSession.id) {
+          counterpartUserId = settlement.userId;
+          counterpartName = settlement.name;
+          direction = 'owed';
+        }
+
+        if (!direction || !counterpartUserId) {
+          return;
+        }
+
+        const counterpartMember = membersById.get(counterpartUserId);
+        const counterpartAvatar = counterpartMember?.avatar ?? settlement.avatar ?? null;
+        const amountCents = toCurrencyCents(settlement.amount);
+        const existingDebt = debtByUserId.get(counterpartUserId) ?? {
+          counterpartAvatar,
+          counterpartName,
+          counterpartUserId,
+          details: [],
+          netCents: 0,
+        };
+
+        existingDebt.netCents += direction === 'owed' ? amountCents : -amountCents;
+        existingDebt.details.push({
+          id: `${expense.id}:${settlement.userId}:${settlement.owesToUserId}:${direction}`,
+          amount: settlement.amount,
+          createdAt: expense.createdAt,
+          description: expense.description,
+          direction,
+          paidByName: expense.paidBy.name,
+        });
+
+        debtByUserId.set(counterpartUserId, existingDebt);
+      });
+    });
+
+    return Array.from(debtByUserId.values())
+      .map((entry) => {
+        if (entry.netCents === 0) {
+          return null;
+        }
+
+        return {
+          amount: fromCurrencyCents(Math.abs(entry.netCents)),
+          avatar: entry.counterpartAvatar,
+          direction: entry.netCents > 0 ? 'owed' : 'owe',
+          key: `history-debt:${entry.counterpartUserId}`,
+          name: entry.counterpartName,
+          userId: entry.counterpartUserId,
+          details: entry.details.sort(
+            (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+          ),
+        } satisfies HistoryDebtCard;
+      })
+      .filter((entry): entry is HistoryDebtCard => Boolean(entry))
+      .sort((left, right) => right.amount - left.amount);
+  }, [activeHistorySummary, userSession?.id]);
+  const historyYouOweCards = useMemo(
+    () => historyDebtCards.filter((entry) => entry.direction === 'owe'),
+    [historyDebtCards],
+  );
+  const historyYouAreOwedCards = useMemo(
+    () => historyDebtCards.filter((entry) => entry.direction === 'owed'),
+    [historyDebtCards],
+  );
+  const historyYouOweTotal = useMemo(
+    () => fromCurrencyCents(historyYouOweCards.reduce((total, entry) => total + toCurrencyCents(entry.amount), 0)),
+    [historyYouOweCards],
+  );
+  const historyYouAreOwedTotal = useMemo(
+    () => fromCurrencyCents(historyYouAreOwedCards.reduce((total, entry) => total + toCurrencyCents(entry.amount), 0)),
+    [historyYouAreOwedCards],
+  );
+  const historyDebtChartData = useMemo(
+    () =>
+      historyDebtCards.map((entry, index) => ({
+        direction: entry.direction,
+        fill:
+          entry.direction === 'owed'
+            ? HISTORY_OWED_COLORS[index % HISTORY_OWED_COLORS.length]
+            : HISTORY_OWE_COLORS[index % HISTORY_OWE_COLORS.length],
+        name: entry.name,
+        value: entry.amount,
+      })),
+    [historyDebtCards],
+  );
   const splitPreviewAmount = useMemo(() => {
     const parsedAmount = Number.parseFloat(splitExpenseAmount);
     return Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : 0;
@@ -2154,6 +2526,9 @@ function App() {
       'wallet',
       'onboarding',
       'verification',
+      'admin',
+      'adminUsers',
+      'adminTrips',
       'groupChat',
       'reviews',
     ];
@@ -2166,17 +2541,32 @@ function App() {
       setEditingFeedPost(null);
     }
 
-    if (targetScreen !== 'auth' && targetScreen !== 'createTrip' && postAuthRedirectScreen === 'createTrip') {
+    if (targetScreen !== 'auth' && targetScreen !== postAuthRedirectScreen && postAuthRedirectScreen) {
       setPostAuthRedirectScreen(null);
     }
 
-    if (
-      typeof window !== 'undefined' &&
-      targetScreen !== 'history' &&
-      targetScreen !== 'explorer' &&
-      (TRIP_HISTORY_PATH_PATTERN.test(window.location.pathname) || TRIP_EXPLORER_PATH_PATTERN.test(window.location.pathname))
-    ) {
-      window.history.replaceState({}, document.title, '/');
+    if (typeof window !== 'undefined') {
+      const isTripDetailRoute = isTripDetailPath(window.location.pathname);
+
+      if (targetScreen === 'admin' && window.location.pathname !== ADMIN_PATH) {
+        window.history.pushState({}, document.title, ADMIN_PATH);
+      } else if (targetScreen === 'adminUsers' && window.location.pathname !== ADMIN_USERS_PATH) {
+        window.history.pushState({}, document.title, getAdminUsersPath(adminUserFilter));
+      } else if (targetScreen === 'adminTrips' && window.location.pathname !== ADMIN_TRIPS_PATH) {
+        window.history.pushState({}, document.title, ADMIN_TRIPS_PATH);
+      } else if (
+        targetScreen !== 'history' &&
+        targetScreen !== 'explorer' &&
+        targetScreen !== 'admin' &&
+        targetScreen !== 'adminUsers' &&
+        targetScreen !== 'adminTrips' &&
+        (isTripDetailRoute ||
+          window.location.pathname === ADMIN_PATH ||
+          window.location.pathname === ADMIN_USERS_PATH ||
+          window.location.pathname === ADMIN_TRIPS_PATH)
+      ) {
+        window.history.replaceState({}, document.title, '/');
+      }
     }
 
     if (targetScreen !== 'history') {
@@ -2199,13 +2589,21 @@ function App() {
       'wallet',
       'onboarding',
       'verification',
+      'admin',
+      'adminUsers',
+      'adminTrips',
       'groupChat',
       'reviews',
     ];
 
     if (requiresSession.includes(targetScreen) && !userSession) {
-      if (targetScreen === 'createTrip') {
-        setPostAuthRedirectScreen('createTrip');
+      if (
+        targetScreen === 'createTrip' ||
+        targetScreen === 'admin' ||
+        targetScreen === 'adminUsers' ||
+        targetScreen === 'adminTrips'
+      ) {
+        setPostAuthRedirectScreen(targetScreen);
         setAuthMode('signin');
         setAuthErrors({});
         setAuthMessage('');
@@ -2232,6 +2630,38 @@ function App() {
     setIsAccountPanelOpen(false);
   };
 
+  const handleOpenAdminDashboard = () => {
+    setAdminUserFilter('all');
+    setCurrentScreen('admin');
+    setIsAccountPanelOpen(false);
+
+    if (typeof window !== 'undefined' && window.location.pathname !== ADMIN_PATH) {
+      window.history.pushState({}, document.title, ADMIN_PATH);
+    }
+  };
+
+  const handleOpenAdminUsers = (filter: AdminUserFilter) => {
+    setAdminUserFilter(filter);
+    setCurrentScreen('adminUsers');
+    setIsAccountPanelOpen(false);
+
+    if (typeof window !== 'undefined') {
+      const nextPath = getAdminUsersPath(filter);
+      if (`${window.location.pathname}${window.location.search}` !== nextPath) {
+        window.history.pushState({}, document.title, nextPath);
+      }
+    }
+  };
+
+  const handleOpenAdminTrips = () => {
+    setCurrentScreen('adminTrips');
+    setIsAccountPanelOpen(false);
+
+    if (typeof window !== 'undefined' && window.location.pathname !== ADMIN_TRIPS_PATH) {
+      window.history.pushState({}, document.title, ADMIN_TRIPS_PATH);
+    }
+  };
+
   const handleOpenTripHistory = () => {
     const tripId = tripExpenseSummary?.trip.id;
     if (!tripId) {
@@ -2239,6 +2669,7 @@ function App() {
     }
 
     setActiveTripHistoryTripId(tripId);
+    setHistoryDebtView('list');
     setCurrentScreen('history');
     setIsAccountPanelOpen(false);
 
@@ -2248,24 +2679,26 @@ function App() {
   };
 
   const handleOpenAIExplorer = () => {
-    const tripId = tripExpenseSummary?.trip.id;
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId;
     if (!tripId) {
       return;
     }
 
     setActiveTripExplorerTripId(tripId);
+    setGlobalActiveTripId(tripId);
     setCurrentScreen('explorer');
     setIsAccountPanelOpen(false);
 
     if (typeof window !== 'undefined') {
-      window.history.pushState({}, document.title, `/trip/${encodeURIComponent(tripId)}/explorer`);
+      window.localStorage.setItem(LAST_VIEWED_TRIP_ID_STORAGE_KEY, tripId);
+      window.history.pushState({}, document.title, getTripExplorerPath(tripId));
     }
   };
 
   const handleGenerateTripSuggestions = async (userPreferences: TripSuggestionPreferences) => {
     const currentAuthToken =
       typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
-    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id;
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId;
 
     if (!currentAuthToken || !tripId) {
       setTripSuggestionsError('Open an active trip to generate AI suggestions.');
@@ -2298,7 +2731,7 @@ function App() {
   const handleVoteForTripSuggestion = async (suggestionId: string) => {
     const currentAuthToken =
       typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
-    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id;
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId;
 
     if (!currentAuthToken || !tripId) {
       setTripSuggestionsError('Open an active trip to vote on group suggestions.');
@@ -2337,7 +2770,7 @@ function App() {
     setActiveTripExplorerTripId(null);
     setSystemNotice(`Sent ${suggestionName} back to Split Expenses with the estimated cost prefilled.`);
 
-    if (typeof window !== 'undefined' && TRIP_EXPLORER_PATH_PATTERN.test(window.location.pathname)) {
+    if (typeof window !== 'undefined' && getExplorerPathMatch(window.location.pathname)) {
       window.history.pushState({}, document.title, '/wallet');
     }
   };
@@ -2624,9 +3057,8 @@ function App() {
 
     const isOwnPostByAuthor =
       normalizedCurrentUserAuthorKey !== null && normalizeAuthorKey(post.authorKey) === normalizedCurrentUserAuthorKey;
-    const isOwnPostById = selfTripIdSet.has(post.id);
     const isOwnPostByHostId = Boolean(userSession.id && post.hostId && post.hostId === userSession.id);
-    if (isOwnPostByAuthor || isOwnPostById || isOwnPostByHostId) {
+    if (isOwnPostByAuthor || isOwnPostByHostId) {
       setSystemNotice('Hosts cannot send join requests to their own posts.');
       return;
     }
@@ -3118,9 +3550,10 @@ function App() {
       if (!clientId) {
         const redirectTarget = postAuthRedirectScreen;
         setPostAuthRedirectScreen(null);
-        setUserSession(createSession('Google User', 'Google'));
+        const nextSession = createSession('Google User', 'Google');
+        setUserSession(nextSession);
         setActiveView('feed');
-        setCurrentScreen(redirectTarget === 'createTrip' ? 'createTrip' : 'home');
+        setCurrentScreen(resolvePostAuthScreen(redirectTarget, nextSession));
         setSystemNotice(
           redirectTarget === 'createTrip'
             ? 'Google demo login successful. Continue creating your trip.'
@@ -3152,9 +3585,10 @@ function App() {
     window.open(providerLoginUrls[provider], '_blank', 'noopener,noreferrer');
     const redirectTarget = postAuthRedirectScreen;
     setPostAuthRedirectScreen(null);
-    setUserSession(createSession(`${provider} User`, provider));
+    const nextSession = createSession(`${provider} User`, provider);
+    setUserSession(nextSession);
     setActiveView('feed');
-    setCurrentScreen(redirectTarget === 'createTrip' ? 'createTrip' : 'home');
+    setCurrentScreen(resolvePostAuthScreen(redirectTarget, nextSession));
     setSystemNotice(
       redirectTarget === 'createTrip'
         ? `${provider} login started. Continue creating your trip.`
@@ -3162,7 +3596,7 @@ function App() {
     );
   };
 
-  const validateAuth = (): boolean => {
+  const validateAuth = (mode: AuthMode): boolean => {
     const errors: AuthErrors = {};
 
     if (!authForm.userId.trim()) {
@@ -3175,7 +3609,7 @@ function App() {
       errors.password = 'Password must be at least 6 characters.';
     }
 
-    if (authMode === 'signup') {
+    if (mode === 'signup') {
       if (!authForm.confirmPassword.trim()) {
         errors.confirmPassword = 'Confirm your password.';
       } else if (authForm.confirmPassword !== authForm.password) {
@@ -3189,7 +3623,17 @@ function App() {
 
   const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!validateAuth()) {
+    const authIntent: AuthMode =
+      currentScreen === 'admin' ||
+      currentScreen === 'adminUsers' ||
+      currentScreen === 'adminTrips' ||
+      postAuthRedirectScreen === 'admin' ||
+      postAuthRedirectScreen === 'adminUsers' ||
+      postAuthRedirectScreen === 'adminTrips'
+        ? 'signin'
+        : authMode;
+
+    if (!validateAuth(authIntent)) {
       setAuthMessage('Please fix the validation errors.');
       return;
     }
@@ -3198,7 +3642,7 @@ function App() {
     setAuthMessage('');
 
     try {
-      if (authMode === 'signin') {
+      if (authIntent === 'signin') {
         const loginResponse = await loginWithCredentials({
           userId: authForm.userId.trim(),
           password: authForm.password,
@@ -3208,7 +3652,14 @@ function App() {
         const baseSession: UserSession = {
           ...createSession(loginResponse.user.userId, 'Email'),
           id: loginResponse.user.id,
+          role: loginResponse.user.role === 'admin' ? 'admin' : 'user',
           isVerified: Boolean(loginResponse.user.isVerified),
+          verificationStatus:
+            loginResponse.user.verificationStatus === 'rejected'
+              ? 'rejected'
+              : loginResponse.user.verificationStatus === 'verified' || loginResponse.user.isVerified
+                ? 'verified'
+                : 'pending',
         };
         let nextSession = baseSession;
         try {
@@ -3223,11 +3674,14 @@ function App() {
         setUserSession(nextSession);
         setAuthForm({ userId: '', password: '', confirmPassword: '' });
         setActiveView('feed');
-        setCurrentScreen(redirectTarget === 'createTrip' ? 'createTrip' : 'home');
+        setCurrentScreen(resolvePostAuthScreen(redirectTarget, nextSession));
         setSystemNotice(
           redirectTarget === 'createTrip'
             ? 'Sign in successful. Continue creating your trip.'
-            : 'Sign in successful. Welcome to your Main Feed.',
+            : (redirectTarget === 'admin' || redirectTarget === 'adminUsers' || redirectTarget === 'adminTrips') &&
+                nextSession.role === 'admin'
+              ? 'Admin sign in successful. Opening the admin panel.'
+              : 'Sign in successful. Welcome to your Main Feed.',
         );
         return;
       }
@@ -3263,7 +3717,6 @@ function App() {
     setDnaMatchByPostId({});
     setDnaMatchLoadingPostIds([]);
     setSentRequestPostIds([]);
-    setSelfTripSummaries([]);
     setPendingRequestCountByTripId({});
     setHostRequestsByTripId({});
     setActiveRequestModalPost(null);
@@ -3306,15 +3759,6 @@ function App() {
     }
   };
 
-  const handleVerificationComplete = () => {
-    const nextAuthorKeys = getSessionAuthorKeys(userSession);
-    const nextUserId = userSession?.id ?? null;
-    setUserSession((previous) => (previous ? { ...previous, isVerified: true } : previous));
-    syncOwnPostsVerificationStatus(nextAuthorKeys, nextUserId, true);
-    setCurrentScreen('home');
-    setSystemNotice('Verification completed. Verified Badge granted.');
-  };
-
   const handleDashboardVerificationStatusSync = (isVerified: boolean) => {
     if (!userSession || userSession.isVerified === isVerified) {
       return;
@@ -3322,7 +3766,15 @@ function App() {
 
     const nextAuthorKeys = getSessionAuthorKeys(userSession);
     const nextUserId = userSession?.id ?? null;
-    setUserSession((previous) => (previous ? { ...previous, isVerified } : previous));
+    setUserSession((previous) =>
+      previous
+        ? {
+            ...previous,
+            isVerified,
+            verificationStatus: isVerified ? 'verified' : previous.verificationStatus === 'verified' ? 'pending' : previous.verificationStatus,
+          }
+        : previous,
+    );
     syncOwnPostsVerificationStatus(nextAuthorKeys, nextUserId, isVerified);
   };
 
@@ -3416,7 +3868,14 @@ function App() {
         previous
           ? {
               ...previous,
+              role: uploadResponse.user.role === 'admin' ? 'admin' : previous.role,
               isVerified: Boolean(uploadResponse.user.isVerified),
+              verificationStatus:
+                uploadResponse.user.verificationStatus === 'rejected'
+                  ? 'rejected'
+                  : uploadResponse.user.verificationStatus === 'verified' || uploadResponse.user.isVerified
+                    ? 'verified'
+                    : 'pending',
             }
           : previous,
       );
@@ -3538,7 +3997,7 @@ function App() {
           ? mergeSessionWithProfile(
               previous,
               profileResponse.profile,
-              Boolean(profileResponse.user.isVerified),
+              profileResponse.user,
             )
           : previous,
       );
@@ -3981,7 +4440,7 @@ function App() {
   const isWorkspaceScreen =
     currentScreen === 'dashboard' || currentScreen === 'expenses' || currentScreen === 'chat' || currentScreen === 'explorer';
 
-  const activeWorkspaceTripId = tripExpenseSummary?.trip.id ?? activeTripExplorerTripId ?? null;
+  const activeWorkspaceTripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId ?? null;
 
   const sidebarTargetById: Record<string, ScreenName> = {
     'my-trips': 'dashboard',
@@ -4030,9 +4489,13 @@ function App() {
               <span className="rounded-full bg-success/20 px-4 py-2 text-sm font-semibold text-primary ring-1 ring-success/40">
                 Verified User
               </span>
+            ) : userSession?.verificationStatus === 'rejected' ? (
+              <span className="rounded-full bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 ring-1 ring-red-200">
+                Verification Rejected
+              </span>
             ) : (
               <span className="rounded-full bg-primary/5 px-4 py-2 text-sm font-semibold text-primary">
-                Pending Verification
+                Verification Pending
               </span>
             )}
           </div>
@@ -4160,10 +4623,19 @@ function App() {
                 <p className="mt-2 rounded-card bg-success/20 px-3 py-2 text-sm font-semibold text-primary ring-1 ring-success/40">
                   Your document is verified.
                 </p>
+              ) : userSession?.verificationStatus === 'rejected' ? (
+                <>
+                  <p className="mt-2 rounded-card bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 ring-1 ring-red-200">
+                    Your last document was rejected. Upload a new document to restart review.
+                  </p>
+                  {verificationDocumentError ? (
+                    <p className="mt-2 text-xs font-medium text-red-600">{verificationDocumentError}</p>
+                  ) : null}
+                </>
               ) : (
                 <>
                   <p className="mt-1 text-xs text-primary/75">
-                    Upload an identity document. Successful upload marks your profile as verified.
+                    Upload an identity document. Once submitted, your verification will stay pending until an admin reviews it.
                   </p>
                   <div className="mt-3 flex flex-wrap items-center gap-3">
                     <input
@@ -4179,11 +4651,16 @@ function App() {
                       disabled={isVerificationUploading || !verificationDocumentFile}
                       className="interactive-btn rounded-card bg-success px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
                     >
-                      {isVerificationUploading ? 'Uploading...' : 'Upload Document'}
+                      {isVerificationUploading ? 'Uploading...' : 'Submit Document'}
                     </button>
                   </div>
                   {verificationDocumentFile ? (
                     <p className="mt-2 text-xs text-primary/80">Selected: {verificationDocumentFile.name}</p>
+                  ) : null}
+                  {userSession?.verificationStatus === 'pending' ? (
+                    <p className="mt-2 text-xs font-medium text-primary/75">
+                      A submitted document will appear here as pending until review is complete.
+                    </p>
                   ) : null}
                   {verificationDocumentError ? (
                     <p className="mt-2 text-xs font-medium text-red-600">{verificationDocumentError}</p>
@@ -4232,8 +4709,8 @@ function App() {
 
   const renderHistoryScreen = () => {
     if (activeTripHistoryTripId) {
-      const historySummary = tripExpenseSummary?.trip.id === activeTripHistoryTripId ? tripExpenseSummary : null;
-      const historyFeedPost = feedPosts.find((post) => post.id === activeTripHistoryTripId) ?? null;
+      const historySummary = activeHistorySummary;
+      const historyFeedPost = activeHistoryFeedPost;
 
       return (
         <section className="mx-auto w-full max-w-7xl px-6 pb-16 pt-8">
@@ -4258,7 +4735,317 @@ function App() {
             </div>
 
             {historySummary ? (
-              <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
+              <div className="mt-8 space-y-6">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div className={glassInsetCardClassName}>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Trip Total</p>
+                    <p className="mt-3 text-2xl font-black text-primary">
+                      {formatCurrency(historySummary.totalExpenses, activeHistoryPrimaryCurrency)}
+                    </p>
+                  </div>
+                  <div className={glassInsetCardClassName}>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Expenses</p>
+                    <p className="mt-3 text-2xl font-black text-primary">{historySummary.expenses.length}</p>
+                  </div>
+                  <div className={glassInsetCardClassName}>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/45">Travelers</p>
+                    <p className="mt-3 text-2xl font-black text-primary">{historySummary.members.length}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-[32px] border border-white/30 bg-white/70 p-5 shadow-[0_28px_70px_-38px_rgba(15,23,42,0.35)] backdrop-blur-2xl sm:p-6">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Debt Summary</p>
+                      <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">Who owes whom right now</h3>
+                      <p className="mt-2 max-w-2xl text-sm text-primary/64">
+                        A netted snapshot of the trip, split into what you owe and what other travelers still owe you.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-start gap-2 lg:justify-end">
+                      <span className="rounded-full bg-primary/6 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/58">
+                        {historyFeedPost?.location ?? historySummary.trip.location}
+                      </span>
+                      <span className="rounded-full bg-white/80 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/58 shadow-sm shadow-slate-950/5">
+                        {activeHistoryCurrencyCodes.length > 1
+                          ? `Multiple Currency ${activeHistoryCurrencyCodes.join(' / ')}`
+                          : `Base Currency ${activeHistoryPrimaryCurrency}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex justify-center">
+                    <div className="inline-flex rounded-full border border-white/30 bg-white/80 p-1 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                      <button
+                        type="button"
+                        onClick={() => setHistoryDebtView('list')}
+                        className={`interactive-btn rounded-full px-4 py-2 text-sm font-semibold transition ${
+                          historyDebtView === 'list' ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-primary/62'
+                        }`}
+                      >
+                        View as List
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHistoryDebtView('chart')}
+                        className={`interactive-btn rounded-full px-4 py-2 text-sm font-semibold transition ${
+                          historyDebtView === 'chart' ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-primary/62'
+                        }`}
+                      >
+                        View Chart
+                      </button>
+                    </div>
+                  </div>
+
+                  {historyDebtView === 'list' ? (
+                    <div className="relative mt-6 rounded-[28px] border border-white/25 bg-white/55 p-3 shadow-inner shadow-white/35 backdrop-blur-md sm:p-4">
+                      <div className="pointer-events-none absolute inset-y-5 left-1/2 hidden w-px -translate-x-1/2 bg-primary/10 lg:block" />
+                      <div className="grid grid-cols-2 gap-4 lg:gap-8">
+                        <div className="space-y-3 lg:pr-4">
+                          <div className="flex items-center justify-between gap-3 px-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-primary/42">You Owe</p>
+                            <span className="text-sm font-black text-orange-600">
+                              {formatCurrency(historyYouOweTotal, activeHistoryPrimaryCurrency)}
+                            </span>
+                          </div>
+
+                          {historyYouOweCards.length > 0 ? (
+                            historyYouOweCards.map((entry) => (
+                              <div
+                                key={entry.key}
+                                className="rounded-[26px] border border-white/35 bg-white/80 p-4 shadow-[0_18px_45px_-32px_rgba(15,23,42,0.4)]"
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-orange-100 text-sm font-bold text-orange-600">
+                                    {entry.avatar ? (
+                                      <img src={entry.avatar} alt={entry.name} className="h-full w-full object-cover" />
+                                    ) : (
+                                      entry.name.charAt(0).toUpperCase()
+                                    )}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-semibold text-orange-600">You owe {entry.name}</p>
+                                    <p className="mt-1 text-[1.65rem] font-black tracking-tight text-primary">
+                                      {formatCurrency(entry.amount, activeHistoryPrimaryCurrency)}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                {entry.details.length > 0 ? (
+                                  <details className="mt-3 rounded-[20px] bg-background/70 px-3.5 py-3">
+                                    <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-[0.18em] text-primary/48">
+                                      {entry.details.length} expense detail{entry.details.length === 1 ? '' : 's'}
+                                    </summary>
+                                    <div className="mt-3 space-y-2">
+                                      {entry.details.map((detail) => (
+                                        <div key={detail.id} className="flex items-start justify-between gap-3 text-sm">
+                                          <div className="min-w-0">
+                                            <p className="truncate text-primary/78">for {detail.description}</p>
+                                            <p className="mt-0.5 text-xs text-primary/45">
+                                              Paid by {detail.paidByName} on {new Date(detail.createdAt).toLocaleDateString()}
+                                            </p>
+                                          </div>
+                                          <span className="shrink-0 font-semibold text-orange-600">
+                                            -{formatCurrency(detail.amount, activeHistoryPrimaryCurrency)}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </details>
+                                ) : null}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="rounded-[24px] border border-dashed border-primary/12 bg-white/72 px-4 py-5 text-sm text-primary/58">
+                              You do not owe anyone for this trip right now.
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="space-y-3 lg:pl-4">
+                          <div className="flex items-center justify-between gap-3 px-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-primary/42">You Are Owed</p>
+                            <span className="text-sm font-black text-emerald-600">
+                              {formatCurrency(historyYouAreOwedTotal, activeHistoryPrimaryCurrency)}
+                            </span>
+                          </div>
+
+                          {historyYouAreOwedCards.length > 0 ? (
+                            historyYouAreOwedCards.map((entry) => (
+                              <div
+                                key={entry.key}
+                                className="rounded-[26px] border border-white/35 bg-white/80 p-4 shadow-[0_18px_45px_-32px_rgba(15,23,42,0.4)]"
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-emerald-100 text-sm font-bold text-emerald-600">
+                                    {entry.avatar ? (
+                                      <img src={entry.avatar} alt={entry.name} className="h-full w-full object-cover" />
+                                    ) : (
+                                      entry.name.charAt(0).toUpperCase()
+                                    )}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-semibold text-emerald-600">{entry.name} owes you</p>
+                                    <p className="mt-1 text-[1.65rem] font-black tracking-tight text-primary">
+                                      {formatCurrency(entry.amount, activeHistoryPrimaryCurrency)}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                {entry.details.length > 0 ? (
+                                  <details className="mt-3 rounded-[20px] bg-background/70 px-3.5 py-3">
+                                    <summary className="cursor-pointer list-none text-xs font-semibold uppercase tracking-[0.18em] text-primary/48">
+                                      {entry.details.length} expense detail{entry.details.length === 1 ? '' : 's'}
+                                    </summary>
+                                    <div className="mt-3 space-y-2">
+                                      {entry.details.map((detail) => (
+                                        <div key={detail.id} className="flex items-start justify-between gap-3 text-sm">
+                                          <div className="min-w-0">
+                                            <p className="truncate text-primary/78">for {detail.description}</p>
+                                            <p className="mt-0.5 text-xs text-primary/45">
+                                              Paid by {detail.paidByName} on {new Date(detail.createdAt).toLocaleDateString()}
+                                            </p>
+                                          </div>
+                                          <span className="shrink-0 font-semibold text-emerald-600">
+                                            +{formatCurrency(detail.amount, activeHistoryPrimaryCurrency)}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </details>
+                                ) : null}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="rounded-[24px] border border-dashed border-primary/12 bg-white/72 px-4 py-5 text-sm text-primary/58">
+                              No one owes you anything for this trip right now.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-6 rounded-[28px] border border-white/25 bg-white/60 p-4 shadow-inner shadow-white/35 backdrop-blur-md sm:p-5">
+                      {historyDebtChartData.length > 0 ? (
+                        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px] lg:items-center">
+                          <div className="h-[280px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <PieChart>
+                                <Pie
+                                  data={historyDebtChartData}
+                                  dataKey="value"
+                                  innerRadius={72}
+                                  outerRadius={108}
+                                  paddingAngle={3}
+                                  stroke="rgba(255,255,255,0.92)"
+                                  strokeWidth={3}
+                                >
+                                  {historyDebtChartData.map((entry) => (
+                                    <Cell key={`${entry.direction}-${entry.name}`} fill={entry.fill} />
+                                  ))}
+                                </Pie>
+                                <Tooltip
+                                  formatter={(value) =>
+                                    formatCurrency(
+                                      Array.isArray(value) ? Number(value[0] ?? 0) : Number(value ?? 0),
+                                      activeHistoryPrimaryCurrency,
+                                    )
+                                  }
+                                  contentStyle={{
+                                    backdropFilter: 'blur(16px)',
+                                    background: 'rgba(255,255,255,0.92)',
+                                    border: '1px solid rgba(148, 163, 184, 0.2)',
+                                    borderRadius: '18px',
+                                    boxShadow: '0 18px 40px -28px rgba(15, 23, 42, 0.45)',
+                                  }}
+                                />
+                              </PieChart>
+                            </ResponsiveContainer>
+                          </div>
+
+                          <div className="space-y-3">
+                            {historyDebtChartData.map((entry) => (
+                              <div
+                                key={`${entry.direction}-${entry.name}`}
+                                className="flex items-center justify-between gap-3 rounded-[22px] border border-white/35 bg-white/82 px-4 py-3"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.fill }} />
+                                    <p className="truncate text-sm font-semibold text-primary">{entry.name}</p>
+                                  </div>
+                                  <p
+                                    className={`mt-1 text-xs font-semibold uppercase tracking-[0.18em] ${
+                                      entry.direction === 'owed' ? 'text-emerald-600' : 'text-orange-600'
+                                    }`}
+                                  >
+                                    {entry.direction === 'owed' ? 'Owes You' : 'You Owe'}
+                                  </p>
+                                </div>
+                                <span
+                                  className={`shrink-0 text-sm font-black ${
+                                    entry.direction === 'owed' ? 'text-emerald-600' : 'text-orange-600'
+                                  }`}
+                                >
+                                  {formatCurrency(entry.value, activeHistoryPrimaryCurrency)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <ExpenseEmptyState
+                          title="No debt distribution yet"
+                          description="Once the trip has unsettled balances, this chart will break down who owes you and who you owe."
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-3xl border border-white/20 bg-white/78 p-5 shadow-lg shadow-slate-950/8 backdrop-blur-md">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Full Ledger</p>
+                      <h3 className="mt-2 text-2xl font-black text-primary">Expense timeline</h3>
+                    </div>
+                    <div className="rounded-full bg-primary/6 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/55">
+                      {historyFeedPost?.location ?? historySummary.trip.location}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 space-y-3">
+                    {historySummary.expenses.map((expense) => (
+                      <div key={expense.id} className="rounded-[26px] border border-white/20 bg-white/82 p-4 shadow-md shadow-slate-950/6">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-primary">{expense.description}</p>
+                            <p className="mt-1 text-xs text-primary/55">
+                              Paid by {expense.paidBy.name} on {new Date(expense.createdAt).toLocaleString()}
+                            </p>
+                          </div>
+                          <div className="rounded-full bg-primary/6 px-3 py-1.5 text-sm font-bold text-primary">
+                            {formatCurrency(expense.amount, activeHistoryPrimaryCurrency)}
+                          </div>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {expense.settlements.map((settlement) => (
+                            <span
+                              key={`${expense.id}-${settlement.userId}-${settlement.owesToUserId}`}
+                              className="rounded-full bg-background/80 px-3 py-1 text-[11px] font-semibold text-primary/60"
+                            >
+                              {settlement.name} owes {settlement.owesToName}{' '}
+                              {formatCurrency(settlement.amount, activeHistoryPrimaryCurrency)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="hidden">
                 <div className="space-y-4">
                   <div className="grid gap-4 sm:grid-cols-3">
                     <div className={glassInsetCardClassName}>
@@ -4340,6 +5127,7 @@ function App() {
                       )}
                     </div>
                   </div>
+                </div>
                 </div>
               </div>
             ) : (
@@ -4649,7 +5437,7 @@ function App() {
                   <WalletCards className="h-4 w-4" />
                   Total Due
                 </div>
-                <AnimatedAmount className="mt-3 block text-2xl font-black" value={tripScopedPayableAmount} />
+                <AnimatedAmount className="mt-3 block text-2xl font-black" value={selectedTripNetPayableTotal} />
               </button>
 
               <AnimatePresence>
@@ -4705,7 +5493,7 @@ function App() {
                   <Coins className="h-4 w-4" />
                   Settle Up
                 </div>
-                <AnimatedAmount className="mt-3 block text-2xl font-black" value={tripScopedPayableAmount} />
+                <AnimatedAmount className="mt-3 block text-2xl font-black" value={selectedTripNetPayableTotal} />
               </button>
 
               <AnimatePresence>
@@ -5413,6 +6201,9 @@ function App() {
           userName={userSession?.firstName || userSession?.name || 'Traveler'}
           profileImageDataUrl={userProfileImageSrc}
           badgeProgress={Math.min(100, Math.round((postStats.activeCount / 6) * 100) || 0)}
+          activeTripId={activeWorkspaceTripId}
+          isActiveTripLoading={isGlobalActiveTripLoading && !activeWorkspaceTripId}
+          onOpenAIExplorer={handleOpenAIExplorer}
           onSettingsClick={() => handleNavigation('profile')}
           onLogoutClick={handleSignOut}
         />
@@ -5427,6 +6218,7 @@ function App() {
             <MainFeed
               mode={activeView === 'myPosts' ? 'mine' : 'main'}
               posts={activeView === 'myPosts' ? myFeedPosts : mainFeedPosts}
+              isShowingHistoryFallback={false}
               sentRequestPostIds={sentRequestPostIds}
               currentUserAuthorKey={currentUserAuthorKey ?? undefined}
               currentUserId={userSession?.id ?? null}
@@ -5455,6 +6247,15 @@ function App() {
   );
 
   const renderAuthScreen = () => {
+    const isAdminAccessRequested =
+      currentScreen === 'admin' ||
+      currentScreen === 'adminUsers' ||
+      currentScreen === 'adminTrips' ||
+      postAuthRedirectScreen === 'admin' ||
+      postAuthRedirectScreen === 'adminUsers' ||
+      postAuthRedirectScreen === 'adminTrips';
+    const isSignedInNonAdmin = Boolean(userSession) && userSession?.role !== 'admin';
+
     return (
       <section className="mx-auto w-full max-w-6xl px-6 pb-16 pt-10">
         <div className="auth-enter relative overflow-hidden rounded-[30px] border border-primary/10 bg-white/90 shadow-2xl backdrop-blur-xl">
@@ -5464,75 +6265,107 @@ function App() {
           <div className="relative grid lg:grid-cols-[1.1fr_0.9fr]">
             <article className="rounded-t-[30px] bg-gradient-to-br from-primary via-primary to-accent p-8 text-white sm:p-10 lg:rounded-l-[30px] lg:rounded-tr-none">
               <p className="inline-block rounded-full bg-white/15 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white/85">
-                SplitNGo Access
+                {isAdminAccessRequested ? 'Admin Access' : 'SplitNGo Access'}
               </p>
               <h2 className="mt-4 text-3xl font-black leading-tight sm:text-4xl">
-                Travel Better With Verified Group Experiences
+                {isAdminAccessRequested ? 'Admin Control Center Login' : 'Travel Better With Verified Group Experiences'}
               </h2>
               <p className="mt-3 text-sm text-white/90 sm:text-base">
-                Continue with Google to access discovery, hosting, and collaboration features in one secure flow.
+                {isAdminAccessRequested
+                  ? 'Sign in with your admin ID and password to review verification documents and monitor trip analytics.'
+                  : 'Continue with Google to access discovery, hosting, and collaboration features in one secure flow.'}
               </p>
 
               <ul className="mt-6 space-y-2 text-sm text-white/90">
-                <li>Smart traveler matching based on trip vibe.</li>
-                <li>Host tools with clear expectations and budget.</li>
-                <li>Verification-aware onboarding and support.</li>
+                {isAdminAccessRequested ? (
+                  <>
+                    <li>Review pending identity documents.</li>
+                    <li>Approve or reject users with tracked reasons.</li>
+                    <li>Monitor platform-wide trip performance.</li>
+                  </>
+                ) : (
+                  <>
+                    <li>Smart traveler matching based on trip vibe.</li>
+                    <li>Host tools with clear expectations and budget.</li>
+                    <li>Verification-aware onboarding and support.</li>
+                  </>
+                )}
               </ul>
             </article>
 
             <article className="rounded-b-[30px] bg-white/95 p-8 sm:p-10 lg:rounded-b-none lg:rounded-r-[30px]">
-              <div className="inline-flex rounded-card border border-primary/15 bg-background/70 p-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthMode('signin');
-                    setAuthErrors({});
-                    setAuthMessage('');
-                  }}
-                  className={
-                    authMode === 'signin'
-                      ? 'rounded-card bg-white px-4 py-2 text-sm font-semibold text-primary shadow-sm'
-                      : 'rounded-card px-4 py-2 text-sm font-semibold text-primary/75'
-                  }
-                >
-                  Sign In
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthMode('signup');
-                    setAuthErrors({});
-                    setAuthMessage('');
-                  }}
-                  className={
-                    authMode === 'signup'
-                      ? 'rounded-card bg-white px-4 py-2 text-sm font-semibold text-primary shadow-sm'
-                      : 'rounded-card px-4 py-2 text-sm font-semibold text-primary/75'
-                  }
-                >
-                  Sign Up
-                </button>
-              </div>
+              {!isAdminAccessRequested ? (
+                <div className="inline-flex rounded-card border border-primary/15 bg-background/70 p-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('signin');
+                      setAuthErrors({});
+                      setAuthMessage('');
+                    }}
+                    className={
+                      authMode === 'signin'
+                        ? 'rounded-card bg-white px-4 py-2 text-sm font-semibold text-primary shadow-sm'
+                        : 'rounded-card px-4 py-2 text-sm font-semibold text-primary/75'
+                    }
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('signup');
+                      setAuthErrors({});
+                      setAuthMessage('');
+                    }}
+                    className={
+                      authMode === 'signup'
+                        ? 'rounded-card bg-white px-4 py-2 text-sm font-semibold text-primary shadow-sm'
+                        : 'rounded-card px-4 py-2 text-sm font-semibold text-primary/75'
+                    }
+                  >
+                    Sign Up
+                  </button>
+                </div>
+              ) : null}
 
               <h3 className="mt-4 text-3xl font-black text-primary">
-                {authMode === 'signin' ? 'Sign In With Email' : 'Create Your Account'}
+                {isAdminAccessRequested ? 'Admin Sign In' : authMode === 'signin' ? 'Sign In With Email' : 'Create Your Account'}
               </h3>
               <p className="mt-2 text-sm text-primary/80">
-                {authMode === 'signin'
-                  ? 'Enter your Email ID and Password to continue.'
-                  : 'Use your Email ID and Password to create your account.'}
+                {isAdminAccessRequested
+                  ? 'Use the local admin credentials to continue to the admin panel.'
+                  : authMode === 'signin'
+                    ? 'Enter your Email ID and Password to continue.'
+                    : 'Use your Email ID and Password to create your account.'}
               </p>
+
+              {isAdminAccessRequested ? (
+                <div className="mt-4 rounded-2xl border border-accent/20 bg-accent/10 px-4 py-3 text-sm text-primary">
+                  <p className="font-semibold">Local admin login</p>
+                  <p className="mt-1">Login ID: `admin`</p>
+                  <p>Password: `password`</p>
+                </div>
+              ) : null}
+
+              {isSignedInNonAdmin && isAdminAccessRequested ? (
+                <p className="mt-4 rounded-card border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+                  This account is signed in but does not have admin access. Sign out, then log in with the admin credentials.
+                </p>
+              ) : null}
 
               <form className="mt-5 space-y-4" onSubmit={handleAuthSubmit} noValidate>
                 <label className="block">
-                  <span className="mb-1 block text-sm font-semibold text-primary">Enter your Email ID</span>
+                  <span className="mb-1 block text-sm font-semibold text-primary">
+                    {isAdminAccessRequested ? 'Enter your Login ID' : 'Enter your Email ID'}
+                  </span>
                   <input
-                    type="email"
+                    type={isAdminAccessRequested ? 'text' : 'email'}
                     value={authForm.userId}
                     onChange={(event) => handleAuthFieldChange('userId', event.target.value)}
                     disabled={isAuthLoading}
                     className="interactive-input w-full rounded-card border border-primary/15 bg-white px-4 py-3 text-sm text-primary outline-none"
-                    placeholder="you@example.com"
+                    placeholder={isAdminAccessRequested ? 'admin' : 'you@example.com'}
                   />
                   {authErrors.userId ? <p className="mt-1 text-xs font-medium text-red-600">{authErrors.userId}</p> : null}
                 </label>
@@ -5550,7 +6383,7 @@ function App() {
                   {authErrors.password ? <p className="mt-1 text-xs font-medium text-red-600">{authErrors.password}</p> : null}
                 </label>
 
-                {authMode === 'signup' ? (
+                {!isAdminAccessRequested && authMode === 'signup' ? (
                   <label className="block">
                     <span className="mb-1 block text-sm font-semibold text-primary">Confirm Password</span>
                     <input
@@ -5592,28 +6425,32 @@ function App() {
                     disabled={isAuthLoading}
                     className="interactive-btn rounded-card bg-accent px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-65"
                   >
-                    {isAuthLoading ? 'Please wait...' : authMode === 'signin' ? 'Sign In' : 'Sign Up'}
+                    {isAuthLoading ? 'Please wait...' : isAdminAccessRequested ? 'Enter Admin Panel' : authMode === 'signin' ? 'Sign In' : 'Sign Up'}
                   </button>
                 </div>
               </form>
 
-              <div className="mt-6 flex items-center gap-3">
-                <div className="h-px flex-1 bg-primary/15" />
-                <span className="text-xs font-semibold uppercase tracking-[0.12em] text-primary/55">Or</span>
-                <div className="h-px flex-1 bg-primary/15" />
-              </div>
+              {!isAdminAccessRequested ? (
+                <>
+                  <div className="mt-6 flex items-center gap-3">
+                    <div className="h-px flex-1 bg-primary/15" />
+                    <span className="text-xs font-semibold uppercase tracking-[0.12em] text-primary/55">Or</span>
+                    <div className="h-px flex-1 bg-primary/15" />
+                  </div>
 
-              <button
-                type="button"
-                onClick={() => handleSocialLogin('Google')}
-                disabled={isAuthLoading}
-                className="interactive-btn mt-4 flex w-full items-center justify-center gap-3 rounded-card border border-primary/15 bg-white px-4 py-3 text-sm font-semibold text-primary shadow-sm transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-65"
-              >
-                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-base font-bold text-primary ring-1 ring-primary/15">
-                  G
-                </span>
-                Continue with Google
-              </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSocialLogin('Google')}
+                    disabled={isAuthLoading}
+                    className="interactive-btn mt-4 flex w-full items-center justify-center gap-3 rounded-card border border-primary/15 bg-white px-4 py-3 text-sm font-semibold text-primary shadow-sm transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-65"
+                  >
+                    <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-base font-bold text-primary ring-1 ring-primary/15">
+                      G
+                    </span>
+                    Continue with Google
+                  </button>
+                </>
+              ) : null}
 
               {authMessage ? (
                 <p
@@ -5678,11 +6515,26 @@ function App() {
           renderAuthScreen()
         );
       case 'verification':
-        return userSession ? (
-          <VerificationGateView isVerified={userSession.isVerified} onVerify={handleVerificationComplete} />
+        return userSession ? renderProfileScreen() : renderAuthScreen();
+      case 'admin':
+        return authToken && userSession?.role === 'admin' ? (
+          <AdminDashboardView authToken={authToken} onOpenUserList={handleOpenAdminUsers} />
         ) : (
           renderAuthScreen()
         );
+      case 'adminUsers':
+        return authToken && userSession?.role === 'admin' ? (
+          <AdminUsersView
+            authToken={authToken}
+            activeFilter={adminUserFilter}
+            onBackToDashboard={handleOpenAdminDashboard}
+            onFilterChange={handleOpenAdminUsers}
+          />
+        ) : (
+          renderAuthScreen()
+        );
+      case 'adminTrips':
+        return authToken && userSession?.role === 'admin' ? <AdminTripsView authToken={authToken} /> : renderAuthScreen();
       case 'groupChat':
         return activeGroupTrip && activeGroupRuntime ? (
           <GroupChatView
@@ -5778,6 +6630,90 @@ function App() {
         );
     }
   };
+
+  const renderSystemNotice = () =>
+    systemNotice ? (
+      <div className="pointer-events-none fixed left-1/2 top-4 z-[140] w-[min(92vw,760px)] -translate-x-1/2 px-2">
+        <div className="pointer-events-auto flex items-start justify-between gap-3 rounded-card border border-slate-700/80 bg-slate-900/95 px-4 py-3 text-sm text-white shadow-2xl ring-1 ring-black/40 backdrop-blur-sm">
+          <p>{systemNotice}</p>
+          <button
+            type="button"
+            onClick={() => setSystemNotice('')}
+            className="interactive-btn rounded-card border border-white/35 bg-white/15 px-2 py-1 text-xs font-semibold text-white hover:bg-white/25"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    ) : null;
+
+  const isAdminRouteScreen =
+    currentScreen === 'admin' || currentScreen === 'adminUsers' || currentScreen === 'adminTrips';
+  const isAdminShellActive = Boolean(authToken && userSession?.role === 'admin' && isAdminRouteScreen);
+  const adminBreadcrumbs = useMemo(() => {
+    if (currentScreen === 'adminUsers') {
+      switch (adminUserFilter) {
+        case 'pending':
+          return ['Admin', 'Verification', 'Pending'];
+        case 'verified':
+          return ['Admin', 'Users', 'Verified'];
+        case 'blocked':
+          return ['Admin', 'Users', 'Blocked'];
+        case 'deleted':
+          return ['Admin', 'Logs', 'Deleted'];
+        case 'all':
+        default:
+          return ['Admin', 'Users', 'All'];
+      }
+    }
+
+    if (currentScreen === 'adminTrips') {
+      return ['Admin', 'Trips', 'Overview'];
+    }
+
+    return ['Admin', 'Dashboard', 'Overview'];
+  }, [adminUserFilter, currentScreen]);
+  const activeAdminNav = useMemo<'dashboard' | 'users' | 'trips' | 'logs'>(() => {
+    if (currentScreen === 'adminTrips') {
+      return 'trips';
+    }
+
+    if (currentScreen === 'adminUsers') {
+      return adminUserFilter === 'deleted' ? 'logs' : 'users';
+    }
+
+    return 'dashboard';
+  }, [adminUserFilter, currentScreen]);
+
+  if (isAdminRouteScreen) {
+    if (isAdminShellActive && userSession) {
+      return (
+        <>
+          {renderSystemNotice()}
+          <AdminLayout
+            adminName={userSession.name}
+            adminEmail={userSession.email}
+            breadcrumbs={adminBreadcrumbs}
+            activeNav={activeAdminNav}
+            onOpenDashboard={handleOpenAdminDashboard}
+            onOpenUsers={() => handleOpenAdminUsers('all')}
+            onOpenTrips={handleOpenAdminTrips}
+            onOpenLogs={() => handleOpenAdminUsers('deleted')}
+            onLogout={handleSignOut}
+          >
+            {renderMainContent()}
+          </AdminLayout>
+        </>
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-slate-50">
+        {renderSystemNotice()}
+        {renderAuthScreen()}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-transparent">
@@ -5889,20 +6825,7 @@ function App() {
         </nav>
       </header>
 
-      {systemNotice ? (
-        <div className="pointer-events-none fixed left-1/2 top-4 z-[140] w-[min(92vw,760px)] -translate-x-1/2 px-2">
-          <div className="pointer-events-auto flex items-start justify-between gap-3 rounded-card border border-slate-700/80 bg-slate-900/95 px-4 py-3 text-sm text-white shadow-2xl ring-1 ring-black/40 backdrop-blur-sm">
-            <p>{systemNotice}</p>
-            <button
-              type="button"
-              onClick={() => setSystemNotice('')}
-              className="interactive-btn rounded-card border border-white/35 bg-white/15 px-2 py-1 text-xs font-semibold text-white hover:bg-white/25"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      ) : null}
+      {renderSystemNotice()}
 
       <main>
         {userSession && isSocialExperienceScreen ? (
@@ -5910,13 +6833,13 @@ function App() {
         ) : isWorkspaceScreen ? (
           <section id="trips" className="mx-auto w-full max-w-7xl px-6 pb-16 pt-6">
             <div className="grid gap-5 lg:grid-cols-[220px_1fr]">
-              <aside className="rounded-card bg-white/95 p-4 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
-                <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary/70">Workspace</p>
-                <nav>
-                  <ul className="space-y-2">
-                    {navItems
-                      .filter((item) => item.id !== 'ai-explorer' || Boolean(activeWorkspaceTripId))
-                      .map((item) => {
+	              <aside className="rounded-card bg-white/95 p-4 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
+	                <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary/70">Workspace</p>
+	                <nav>
+	                  <ul className="space-y-2">
+	                    {navItems
+	                      .filter((item) => item.id !== 'ai-explorer' || Boolean(activeWorkspaceTripId))
+	                      .map((item) => {
                       const target = sidebarTargetById[item.id] ?? 'dashboard';
                       return (
                         <li key={item.id}>
@@ -5935,12 +6858,20 @@ function App() {
                             {renderSidebarIcon(item.icon)}
                             <span>{item.label}</span>
                           </button>
+	                        </li>
+	                      );
+	                    })}
+                      {!activeWorkspaceTripId && isGlobalActiveTripLoading ? (
+                        <li aria-hidden="true">
+                          <div className="flex animate-pulse items-center gap-3 rounded-card border border-primary/10 bg-primary/5 px-4 py-3">
+                            <span className="h-5 w-5 rounded-full bg-primary/10" />
+                            <span className="h-3 w-24 rounded-full bg-primary/10" />
+                          </div>
                         </li>
-                      );
-                    })}
-                  </ul>
-                </nav>
-              </aside>
+                      ) : null}
+	                  </ul>
+	                </nav>
+	              </aside>
 
               <section className="rounded-card bg-white/95 p-5 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
                 <header className="mb-5 border-b border-primary/10 pb-4">
@@ -6056,6 +6987,12 @@ function App() {
                     <Sparkles className="h-3.5 w-3.5" />
                     Elite Traveler
                   </span>
+                  {userSession.role === 'admin' ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-accent/20 px-3 py-1 text-xs font-semibold text-primary ring-1 ring-accent/30">
+                      <LayoutDashboard className="h-3.5 w-3.5" />
+                      Admin Access
+                    </span>
+                  ) : null}
                   {userSession.isVerified ? (
                     <span className="inline-flex items-center gap-1 rounded-full bg-success/20 px-3 py-1 text-xs font-semibold text-primary ring-1 ring-success/40">
                       <BadgeCheck className="h-3.5 w-3.5" />
@@ -6096,18 +7033,26 @@ function App() {
                   </span>
                   <span>Wallet</span>
                 </button>
-                {activeWorkspaceTripId ? (
-                  <button
-                    type="button"
-                    onClick={handleOpenAIExplorer}
-                    className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
-                  >
+	                {activeWorkspaceTripId ? (
+	                  <button
+	                    type="button"
+	                    onClick={handleOpenAIExplorer}
+	                    className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+	                  >
                     <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
                       <Sparkles className="h-5 w-5" />
                     </span>
-                    <span>AI Explorer</span>
-                  </button>
-                ) : null}
+	                    <span>AI Explorer</span>
+	                  </button>
+	                ) : isGlobalActiveTripLoading ? (
+                    <div
+                      className="flex animate-pulse items-center gap-3 rounded-2xl border border-primary/10 bg-white/60 px-4 py-3"
+                      aria-hidden="true"
+                    >
+                      <span className="h-9 w-9 rounded-xl bg-primary/10" />
+                      <span className="h-3 w-24 rounded-full bg-primary/10" />
+                    </div>
+                  ) : null}
                 <button
                   type="button"
                   onClick={() => handleNavigation('onboarding')}
@@ -6138,6 +7083,18 @@ function App() {
                   </span>
                   <span>Dashboard</span>
                 </button>
+                {userSession.role === 'admin' ? (
+                  <button
+                    type="button"
+                    onClick={() => handleNavigation('admin')}
+                    className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
+                  >
+                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+                      <LayoutDashboard className="h-5 w-5" />
+                    </span>
+                    <span>Admin Panel</span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => {

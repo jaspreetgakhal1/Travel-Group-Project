@@ -4,7 +4,13 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
-import { CANCELLED_TRIP_STATUS, isTripCurrentActive } from '../utils/tripStatus.js';
+import {
+  CANCELLED_TRIP_STATUS,
+  COMPLETED_TRIP_STATUS,
+  UPCOMING_TRIP_STATUS,
+  isTripCurrentActive,
+  normalizeTripRecordStatus,
+} from '../utils/tripRecordStatus.js';
 import type { AuthenticatedUser } from '../types/auth.js';
 
 const router = express.Router();
@@ -17,6 +23,10 @@ type DashboardTrip = {
   endDate: Date;
   status?: string;
   participants: unknown;
+};
+
+type DashboardTripWithStatus = DashboardTrip & {
+  normalizedStatus: 'upcoming' | 'active' | 'completed' | 'cancelled';
 };
 
 type DashboardUser = {
@@ -56,19 +66,25 @@ const getDisplayName = (user: DashboardUser): string => {
 const toVerificationStatus = (user: {
   verificationStatus?: string | null;
   isVerified?: boolean;
-}): 'pending' | 'verified' =>
-  user.verificationStatus === 'verified' || Boolean(user.isVerified) ? 'verified' : 'pending';
+}): 'pending' | 'verified' | 'rejected' =>
+  user.verificationStatus === 'rejected'
+    ? 'rejected'
+    : user.verificationStatus === 'verified' || Boolean(user.isVerified)
+      ? 'verified'
+      : 'pending';
 
 const toPublicUser = (user: {
   _id: unknown;
   userId?: string;
   provider?: string;
+  role?: string;
   isVerified?: boolean;
   verificationStatus?: string | null;
 }) => ({
   id: String(user._id),
   userId: typeof user.userId === 'string' ? user.userId : '',
   provider: typeof user.provider === 'string' ? user.provider : 'Email',
+  role: user.role === 'admin' ? 'admin' : 'user',
   isVerified: Boolean(user.isVerified),
   verificationStatus: toVerificationStatus(user),
 });
@@ -83,11 +99,12 @@ router.get('/me', requireAuth, async (req, res) => {
 
   try {
     const user = await User.findById(userId)
-      .select('_id userId provider isVerified verificationStatus')
+      .select('_id userId provider role isVerified verificationStatus')
       .lean<{
         _id: unknown;
         userId?: string;
         provider?: string;
+        role?: string;
         isVerified?: boolean;
         verificationStatus?: string | null;
       } | null>();
@@ -139,38 +156,40 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
       tripById.set(String(trip._id), trip);
     });
 
-    const activeTrips = trips.filter((trip) => {
-      if (trip.status === CANCELLED_TRIP_STATUS) {
+    const tripsWithNormalizedStatus: DashboardTripWithStatus[] = trips.map((trip) => ({
+      ...trip,
+      normalizedStatus: normalizeTripRecordStatus(trip.status, trip, now),
+    }));
+
+    const activeTrips = tripsWithNormalizedStatus.filter((trip) => {
+      if (trip.normalizedStatus === CANCELLED_TRIP_STATUS) {
         return false;
       }
 
       return isTripCurrentActive(trip, now);
     });
 
-    const futureTrips = trips
+    const futureTrips = tripsWithNormalizedStatus
       .map((trip) => {
-        if (trip.status === CANCELLED_TRIP_STATUS) {
+        if (trip.normalizedStatus === CANCELLED_TRIP_STATUS) {
           return null;
         }
 
         const startDate = toDate(trip.startDate);
         return startDate ? { trip, startDate } : null;
       })
-      .filter((entry): entry is { trip: DashboardTrip; startDate: Date } => Boolean(entry))
+      .filter((entry): entry is { trip: DashboardTripWithStatus; startDate: Date } => Boolean(entry))
       .filter((entry) => entry.startDate > now)
       .sort((left, right) => left.startDate.getTime() - right.startDate.getTime());
 
     const nearestFutureTrip = futureTrips[0]?.trip ?? null;
     const totalParticipants = trips.reduce((count, trip) => count + getParticipantIds(trip.participants).length, 0);
-    const completedTripsCount = trips.filter((trip) => {
-      if (trip.status === CANCELLED_TRIP_STATUS) {
-        return false;
-      }
-
-      const endDate = toDate(trip.endDate);
-      return endDate ? endDate <= now : false;
-    }).length;
-    const upcomingTripsCount = futureTrips.length;
+    const completedTripsCount = tripsWithNormalizedStatus.filter(
+      (trip) => trip.normalizedStatus === COMPLETED_TRIP_STATUS,
+    ).length;
+    const upcomingTripsCount = tripsWithNormalizedStatus.filter(
+      (trip) => trip.normalizedStatus === UPCOMING_TRIP_STATUS,
+    ).length;
     const activeTripsCount = activeTrips.length;
 
     const requesterObjectIds = Array.from(

@@ -1,11 +1,7 @@
 // Added by Codex: project documentation comment for src\services\authApi.ts
-import { defaultUserDNA, normalizeTravelDNA, type UserDNA } from '../models/dnaModel';
+import { normalizeTravelDNA, type UserDNA } from '../models/dnaModel';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
-const DUMMY_USER_ID = 'test@gmail.com';
-const DUMMY_PASSWORD = '123456';
-const DUMMY_AUTH_TOKEN = 'splitngo_dummy_auth_token';
-const DUMMY_VERIFIED_STORAGE_KEY = 'splitngo_dummy_verified';
 
 type AuthRequest = {
   userId: string;
@@ -27,7 +23,9 @@ export type AuthenticatedUser = {
   userId: string;
   provider: 'Email';
   isVerified: boolean;
-  verificationStatus?: 'pending' | 'verified';
+  isBlocked?: boolean;
+  role: 'user' | 'admin';
+  verificationStatus?: 'pending' | 'verified' | 'rejected';
 };
 
 export type LoginResponse = {
@@ -76,42 +74,6 @@ export type TravelDNAResponse = {
 };
 
 const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
-
-const isDummyCredentials = (userId: string, password: string): boolean =>
-  userId.trim().toLowerCase() === DUMMY_USER_ID && password === DUMMY_PASSWORD;
-
-const getDummyVerifiedFlag = (): boolean => {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-
-  return window.localStorage.getItem(DUMMY_VERIFIED_STORAGE_KEY) === 'true';
-};
-
-const setDummyVerifiedFlag = (isVerified: boolean): void => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  window.localStorage.setItem(DUMMY_VERIFIED_STORAGE_KEY, isVerified ? 'true' : 'false');
-};
-
-const createDummyUser = (isVerified: boolean = getDummyVerifiedFlag()): AuthenticatedUser => ({
-  id: 'dummy-user',
-  userId: DUMMY_USER_ID,
-  provider: 'Email',
-  isVerified,
-});
-
-const createDummyProfile = (): UserProfile => ({
-  firstName: 'Demo',
-  lastName: 'Traveler',
-  countryCode: '+1',
-  mobileNumber: '',
-  email: DUMMY_USER_ID,
-  profileImageDataUrl: null,
-  travelDNA: defaultUserDNA,
-});
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
   try {
@@ -179,60 +141,32 @@ export const registerWithCredentials = async (requestBody: AuthRequest): Promise
     body: requestBody,
   });
 
-export const loginWithCredentials = async (requestBody: AuthRequest): Promise<LoginResponse> => {
-  if (isDummyCredentials(requestBody.userId, requestBody.password)) {
-    return {
-      token: DUMMY_AUTH_TOKEN,
-      user: createDummyUser(),
-    };
-  }
-
-  return request<LoginResponse>('/api/auth/login', {
+export const loginWithCredentials = async (requestBody: AuthRequest): Promise<LoginResponse> =>
+  request<LoginResponse>('/api/auth/login', {
     method: 'POST',
     body: requestBody,
   });
-};
 
 export const uploadVerificationDocument = async (
   requestBody: VerifyDocumentRequest,
   authToken: string,
-): Promise<VerifyDocumentResponse> => {
-  if (authToken === DUMMY_AUTH_TOKEN) {
-    setDummyVerifiedFlag(true);
-    return {
-      message: 'Document uploaded and profile verified.',
-      user: createDummyUser(true),
-    };
-  }
-
-  return request<VerifyDocumentResponse>('/api/auth/verify-document', {
+): Promise<VerifyDocumentResponse> =>
+  request<VerifyDocumentResponse>('/api/auth/verify-document', {
     method: 'POST',
     body: requestBody,
     authToken,
   });
-};
 
 export const fetchUserProfile = async (authToken: string): Promise<ProfileResponse> => {
-  if (authToken === DUMMY_AUTH_TOKEN) {
-    return {
-      profile: normalizeProfile(createDummyProfile()),
-      user: createDummyUser(),
-    };
-  }
-
   const profileResponse = await request<ProfileResponse>('/api/auth/profile', {
     method: 'GET',
     authToken,
   });
 
   return normalizeProfileResponse(profileResponse);
-};
+}; 
 
 export const fetchCurrentUser = async (authToken: string): Promise<AuthenticatedUser> => {
-  if (authToken === DUMMY_AUTH_TOKEN) {
-    return createDummyUser();
-  }
-
   const response = await request<CurrentUserResponse>('/api/users/me', {
     method: 'GET',
     authToken,
@@ -245,17 +179,6 @@ export const updateUserProfile = async (
   requestBody: UpdateProfileRequest,
   authToken: string,
 ): Promise<ProfileResponse> => {
-  if (authToken === DUMMY_AUTH_TOKEN) {
-    return {
-      message: 'Profile saved successfully.',
-      profile: {
-        ...requestBody,
-        travelDNA: defaultUserDNA,
-      },
-      user: createDummyUser(),
-    };
-  }
-
   const profileResponse = await request<ProfileResponse>('/api/auth/profile', {
     method: 'PUT',
     body: requestBody,
@@ -266,12 +189,6 @@ export const updateUserProfile = async (
 };
 
 export const fetchTravelDNA = async (authToken: string): Promise<TravelDNAResponse> => {
-  if (authToken === DUMMY_AUTH_TOKEN) {
-    return {
-      travelDNA: defaultUserDNA,
-    };
-  }
-
   const response = await request<TravelDNAResponse>('/api/auth/travel-dna', {
     method: 'GET',
     authToken,
@@ -284,13 +201,6 @@ export const fetchTravelDNA = async (authToken: string): Promise<TravelDNARespon
 };
 
 export const updateTravelDNA = async (travelDNA: UserDNA, authToken: string): Promise<TravelDNAResponse> => {
-  if (authToken === DUMMY_AUTH_TOKEN) {
-    return {
-      message: 'Travel DNA saved successfully.',
-      travelDNA: normalizeTravelDNA(travelDNA),
-    };
-  }
-
   const response = await request<TravelDNAResponse>('/api/auth/travel-dna', {
     method: 'PUT',
     body: {

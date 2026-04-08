@@ -4,7 +4,8 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { Participant } from '../models/Participant.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
-import { ACTIVE_TRIP_STATUS, CANCELLED_TRIP_STATUS, COMPLETED_TRIP_STATUS, TRIP_OVERLAP_ERROR_MESSAGE, findTripOverlap, } from '../utils/tripScheduling.js';
+import { CANCELLED_TRIP_STATUS, CANCELLED_TRIP_STATUS_VALUES, COMPLETED_TRIP_STATUS, TRIP_OVERLAP_ERROR_MESSAGE, findTripOverlap, } from '../utils/tripScheduling.js';
+import { normalizeTripRecordStatus } from '../utils/tripRecordStatus.js';
 const router = express.Router();
 const UPDATE_STATUSES = ['accepted', 'rejected'];
 const isValidUpdateStatus = (status) => typeof status === 'string' && UPDATE_STATUSES.includes(status);
@@ -15,15 +16,7 @@ const toSpotsFilledPercent = (spotsFilled, maxParticipants) => {
     }
     return Math.min(100, Math.round((spotsFilled / maxParticipants) * 100));
 };
-const getTripStatus = (value) => {
-    if (value === COMPLETED_TRIP_STATUS) {
-        return COMPLETED_TRIP_STATUS;
-    }
-    if (value === CANCELLED_TRIP_STATUS) {
-        return CANCELLED_TRIP_STATUS;
-    }
-    return ACTIVE_TRIP_STATUS;
-};
+const getTripStatus = (value, trip = {}) => normalizeTripRecordStatus(value, trip);
 router.patch('/:requestId', requireAuth, async (req, res) => {
     const requestId = typeof req.params.requestId === 'string' ? req.params.requestId : '';
     const authRequest = req;
@@ -88,7 +81,7 @@ router.patch('/:requestId', requireAuth, async (req, res) => {
         if (!targetTrip) {
             return res.status(404).json({ message: 'Trip not found.' });
         }
-        const tripStatus = getTripStatus(targetTrip.status);
+        const tripStatus = getTripStatus(targetTrip.status, targetTrip);
         if (tripStatus === CANCELLED_TRIP_STATUS) {
             return res.status(409).json({ message: 'Trip is cancelled and cannot accept join requests.' });
         }
@@ -107,7 +100,7 @@ router.patch('/:requestId', requireAuth, async (req, res) => {
         const updatedTrip = await Trip.findOneAndUpdate({
             _id: joinRequest.tripId,
             participants: { $ne: requesterObjectId },
-            status: { $ne: CANCELLED_TRIP_STATUS },
+            status: { $nin: [...CANCELLED_TRIP_STATUS_VALUES] },
             $expr: {
                 $lt: [{ $size: { $ifNull: ['$participants', []] } }, '$maxParticipants'],
             },
@@ -125,7 +118,7 @@ router.patch('/:requestId', requireAuth, async (req, res) => {
             if (!existingTrip) {
                 return res.status(404).json({ message: 'Trip not found.' });
             }
-            const existingTripStatus = getTripStatus(existingTrip.status);
+            const existingTripStatus = getTripStatus(existingTrip.status, existingTrip);
             if (existingTripStatus === CANCELLED_TRIP_STATUS) {
                 return res.status(409).json({ message: 'Trip is cancelled and cannot accept join requests.' });
             }

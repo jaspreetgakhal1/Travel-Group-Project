@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   LogOut,
   Settings,
+  Sparkles,
 } from 'lucide-react';
 
 type ActiveView = 'feed' | 'myPosts' | 'dashboard';
@@ -21,6 +22,9 @@ type SidebarProps = {
   userName?: string;
   profileImageDataUrl?: string | null;
   badgeProgress?: number;
+  activeTripId?: string | null;
+  isActiveTripLoading?: boolean;
+  onOpenAIExplorer?: () => void;
   onSettingsClick?: () => void;
   onLogoutClick?: () => void;
 };
@@ -46,6 +50,9 @@ function Sidebar({
   userName = 'Traveler',
   profileImageDataUrl = null,
   badgeProgress = 68,
+  activeTripId = null,
+  isActiveTripLoading = false,
+  onOpenAIExplorer,
   onSettingsClick,
   onLogoutClick,
 }: SidebarProps) {
@@ -201,6 +208,61 @@ function Sidebar({
             </motion.button>
           );
         })}
+
+        {isActiveTripLoading ? (
+          <div
+            className={`flex animate-pulse rounded-2xl border border-[#3D405B]/10 bg-white/40 px-3 py-3 ${
+              isIconOnly ? 'justify-center' : 'items-center gap-3'
+            }`}
+            aria-hidden="true"
+          >
+            <span className="h-6 w-6 rounded-xl bg-[#3D405B]/10" />
+            {!isIconOnly ? <span className="h-3 w-24 rounded-full bg-[#3D405B]/10" /> : null}
+          </div>
+        ) : activeTripId && onOpenAIExplorer ? (
+          <motion.button
+            type="button"
+            onClick={onOpenAIExplorer}
+            initial="rest"
+            animate="rest"
+            whileHover="hover"
+            variants={{
+              rest: { scale: 1 },
+              hover: { scale: 1.02 },
+            }}
+            whileTap={{ scale: 0.99 }}
+            className={`group relative flex w-full overflow-hidden rounded-2xl border border-[#81B29A]/30 bg-[#81B29A]/12 px-3 py-3 text-left ${
+              isIconOnly ? 'justify-center' : 'items-center gap-3'
+            }`}
+            style={{ willChange: 'transform' }}
+            transition={{ type: 'spring', stiffness: 300, damping: 20, mass: 0.4 }}
+            whileFocus={{ scale: 1.02 }}
+            title={isIconOnly ? 'AI Explorer' : undefined}
+          >
+            <motion.span
+              className="pointer-events-none absolute inset-0 bg-[#81B29A]/18"
+              style={{ originX: 0 }}
+              variants={{
+                rest: { scaleX: 0, opacity: 0 },
+                hover: { scaleX: 1, opacity: 1 },
+              }}
+              transition={{ type: 'spring', stiffness: 260, damping: 22, mass: 0.45 }}
+            />
+            <span className="relative z-10 flex items-center justify-center text-[#2F6A5A]">
+              <Sparkles className="h-6 w-6" />
+            </span>
+            {!isIconOnly ? (
+              <span className="relative z-10 min-w-0">
+                <p className="truncate text-[15px] font-bold text-[#2F6A5A]" style={{ fontFamily: 'Montserrat, sans-serif' }}>
+                  AI Explorer
+                </p>
+                <p className="truncate text-xs font-medium text-[#2F6A5A]/75" style={{ fontFamily: 'Inter, sans-serif' }}>
+                  Open your active trip assistant
+                </p>
+              </span>
+            ) : null}
+          </motion.button>
+        ) : null}
       </nav>
 
       <div className="mt-auto border-t border-[#3D405B]/10 pt-4">
