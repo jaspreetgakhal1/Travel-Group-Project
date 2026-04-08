@@ -1,5 +1,5 @@
 import { HydratedDocument, Model, Types } from 'mongoose';
-export declare const NOTIFICATION_TYPE_VALUES: readonly ["verification_verified", "verification_rejected"];
+export declare const NOTIFICATION_TYPE_VALUES: readonly ["verification_verified", "verification_rejected", "trip_vote_decided"];
 export interface INotification {
     userId: Types.ObjectId;
     type: (typeof NOTIFICATION_TYPE_VALUES)[number];
@@ -8,6 +8,9 @@ export interface INotification {
     isRead: boolean;
     metadata?: {
         rejectionReason?: string | null;
+        tripId?: string | null;
+        voteId?: string | null;
+        placeName?: string | null;
     } | null;
     createdAt: Date;
     updatedAt: Date;

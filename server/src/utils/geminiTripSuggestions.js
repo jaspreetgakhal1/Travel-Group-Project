@@ -38,6 +38,136 @@ const FALLBACK_SUGGESTION_BLUEPRINTS = [
         buildReason: (input) => `It gives the group a simple shared highlight near the end of the day and keeps the plan practical for mixed travel styles.`,
     },
 ];
+const CURATED_DESTINATION_FALLBACKS = [
+    {
+        aliases: ['toronto', 'toronto canada'],
+        suggestions: [
+            {
+                name: 'Distillery Historic District',
+                imageKeyword: 'distillery historic district toronto',
+                baseCost: 0,
+                vibe: 92,
+                buildReason: (input) => `This Toronto favorite matches a ${input.collectiveMood.toLowerCase()} mood with cobblestone lanes, galleries, cafes, and an easy group walking pace.`,
+            },
+            {
+                name: 'CN Tower and Ripley\'s Aquarium',
+                imageKeyword: 'cn tower ripley aquarium toronto',
+                baseCost: 42,
+                vibe: 88,
+                buildReason: (input) => `It gives the group a high-impact Toronto landmark stop with skyline views and a crowd-pleasing indoor experience that works well for ${input.interest.toLowerCase()} energy.`,
+            },
+            {
+                name: 'Kensington Market',
+                imageKeyword: 'kensington market toronto',
+                baseCost: 18,
+                vibe: 91,
+                buildReason: (input) => `Kensington fits a ${input.food.toLowerCase()} plan with casual local eats, vintage corners, and a social street atmosphere that still feels flexible.`,
+            },
+            {
+                name: 'Toronto Islands',
+                imageKeyword: 'toronto islands waterfront',
+                baseCost: 14,
+                vibe: 89,
+                buildReason: (input) => `The islands are ideal when the group wants ${input.crowds.toLowerCase()} moments, open waterfront views, and a softer break from downtown.`,
+            },
+            {
+                name: 'St. Lawrence Market',
+                imageKeyword: 'st lawrence market toronto',
+                baseCost: 20,
+                vibe: 87,
+                buildReason: (_input) => 'This is one of the easiest Toronto stops for sharing local snacks, picking up quick bites, and keeping the day practical for a group.',
+            },
+        ],
+    },
+    {
+        aliases: ['bali', 'ubud', 'seminyak', 'canggu', 'uluwatu'],
+        suggestions: [
+            {
+                name: 'Tegallalang Rice Terrace',
+                imageKeyword: 'tegallalang rice terrace bali',
+                baseCost: 10,
+                vibe: 91,
+                buildReason: (input) => `This is a strong Bali opener for a ${input.collectiveMood.toLowerCase()} group, with iconic scenery, photo moments, and an easy half-day rhythm.`,
+            },
+            {
+                name: 'Uluwatu Temple',
+                imageKeyword: 'uluwatu temple bali',
+                baseCost: 16,
+                vibe: 90,
+                buildReason: (input) => `Uluwatu blends cliff views and Balinese culture in a way that fits ${input.interest.toLowerCase()} travelers without feeling overly rushed.`,
+            },
+            {
+                name: 'Ubud Art Market and Palace Walk',
+                imageKeyword: 'ubud art market bali',
+                baseCost: 18,
+                vibe: 88,
+                buildReason: (input) => `This stop works well for groups who want shopping, local design, and a central Bali base that still feels authentic and easy to explore together.`,
+            },
+            {
+                name: 'Batu Bolong Beach, Canggu',
+                imageKeyword: 'batu bolong beach canggu bali',
+                baseCost: 12,
+                vibe: 89,
+                buildReason: (input) => `Canggu gives the group a casual Bali social scene with sunset energy, cafe access, and enough space to match a ${input.crowds.toLowerCase()} preference.`,
+            },
+            {
+                name: 'Tirta Empul Temple',
+                imageKeyword: 'tirta empul temple bali',
+                baseCost: 15,
+                vibe: 87,
+                buildReason: (_input) => 'It adds a meaningful cultural stop to the Bali plan and feels memorable without requiring a complicated full-day schedule.',
+            },
+        ],
+    },
+    {
+        aliases: ['thailand', 'bangkok', 'chiang mai', 'phuket', 'krabi'],
+        suggestions: [
+            {
+                name: 'Wat Arun, Bangkok',
+                imageKeyword: 'wat arun bangkok thailand',
+                baseCost: 6,
+                vibe: 90,
+                buildReason: (input) => `Wat Arun is a beautiful Thailand pick for groups who want culture, river views, and a ${input.collectiveMood.toLowerCase()} pace that still feels iconic.`,
+            },
+            {
+                name: 'The Grand Palace, Bangkok',
+                imageKeyword: 'grand palace bangkok thailand',
+                baseCost: 15,
+                vibe: 88,
+                buildReason: (input) => `This stop delivers one of Thailand's strongest landmark experiences and fits ${input.interest.toLowerCase()} travelers who want something unmistakably local.`,
+            },
+            {
+                name: 'Chatuchak Weekend Market',
+                imageKeyword: 'chatuchak market bangkok thailand',
+                baseCost: 18,
+                vibe: 91,
+                buildReason: (input) => `Chatuchak is perfect for a ${input.food.toLowerCase()} and market-heavy day, with low-pressure browsing, snacks, and group-friendly variety.`,
+            },
+            {
+                name: 'Chiang Mai Old City Temples',
+                imageKeyword: 'chiang mai old city thailand',
+                baseCost: 9,
+                vibe: 87,
+                buildReason: (input) => `Chiang Mai offers a calmer Thailand option for groups looking for ${input.crowds.toLowerCase()} experiences without losing the sense of place.`,
+            },
+            {
+                name: 'Railay Beach Viewpoints, Krabi',
+                imageKeyword: 'railay beach krabi thailand',
+                baseCost: 24,
+                vibe: 89,
+                buildReason: (_input) => 'This adds Thailand scenery, beach time, and a memorable visual payoff that feels worth sharing as a group highlight.',
+            },
+        ],
+    },
+];
+const GENERIC_SUGGESTION_NAME_PATTERNS = [
+    /old town walk/i,
+    /arts district stop/i,
+    /local food crawl/i,
+    /garden and quiet corners/i,
+    /sunset viewpoint/i,
+    /suggested stop/i,
+];
 const normalizeSuggestionText = (value, fallback) => {
     if (typeof value !== 'string') {
         return fallback;
@@ -110,6 +240,20 @@ const sanitizeGeneratedSuggestions = (value, destination) => {
         .slice(0, 5);
 };
 const normalizeBudgetLabel = (value) => value.trim().toLowerCase();
+const normalizeDestinationLookup = (value) => value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ');
+const findCuratedDestinationFallback = (destination) => {
+    const normalizedDestination = normalizeDestinationLookup(destination);
+    if (!normalizedDestination) {
+        return null;
+    }
+    return (CURATED_DESTINATION_FALLBACKS.find((entry) => entry.aliases.some((alias) => normalizedDestination.includes(alias) || alias.includes(normalizedDestination))) ?? null);
+};
+const hasOnlyGenericSuggestionNames = (suggestions) => suggestions.length > 0 &&
+    suggestions.every((suggestion) => GENERIC_SUGGESTION_NAME_PATTERNS.some((pattern) => pattern.test(suggestion.name)));
 const getBudgetMultiplier = (budget) => {
     const normalizedBudget = normalizeBudgetLabel(budget);
     if (/(budget|cheap|low|save)/.test(normalizedBudget)) {
@@ -122,6 +266,16 @@ const getBudgetMultiplier = (budget) => {
 };
 const createFallbackSuggestions = (input) => {
     const budgetMultiplier = getBudgetMultiplier(input.budget);
+    const curatedDestinationFallback = findCuratedDestinationFallback(input.destination);
+    if (curatedDestinationFallback) {
+        return curatedDestinationFallback.suggestions.map((suggestion) => ({
+            name: suggestion.name,
+            whyVisit: suggestion.buildReason(input),
+            estimatedCostPerPerson: Number((suggestion.baseCost * budgetMultiplier).toFixed(2)),
+            vibeMatchPercent: suggestion.vibe,
+            imageUrl: buildFallbackUnsplashUrl(suggestion.imageKeyword, input.destination),
+        }));
+    }
     return FALLBACK_SUGGESTION_BLUEPRINTS.map((blueprint, index) => {
         const name = `${input.destination} ${blueprint.nameSuffix}`;
         const estimatedCostPerPerson = Number((blueprint.baseCost * budgetMultiplier).toFixed(2));
@@ -163,6 +317,8 @@ const buildPrompt = (destination, travelerType, preferences) => [
     `The group type is ${travelerType}.`,
     `Based on these 5 specific group preferences: collective mood = ${preferences.collectiveMood}; interest = ${preferences.interest}; budget = ${preferences.budget}; food = ${preferences.food}; crowds = ${preferences.crowds}.`,
     `Suggest exactly 5 specific locations to visit in ${destination}.`,
+    'Use real, named places or districts in the destination, not placeholder labels.',
+    'Do not invent locations and do not use generic names like Old Town Walk, Arts District Stop, or Sunset Viewpoint.',
     'Keep every suggestion practical, distinct, and believable for a real day plan.',
     'Return valid JSON only.',
     'Each item must include:',
@@ -261,6 +417,9 @@ export const generateTripSuggestions = async (input) => {
         const suggestions = sanitizeGeneratedSuggestions(parsedValue, input.destination);
         if (suggestions.length !== 5) {
             throw new Error('Gemini did not return the required 5 suggestions.');
+        }
+        if (hasOnlyGenericSuggestionNames(suggestions)) {
+            return createFallbackSuggestions(input);
         }
         return suggestions;
     }

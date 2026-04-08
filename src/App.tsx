@@ -39,6 +39,7 @@ import OnboardingQuizView from './views/OnboardingQuizView';
 import ReviewSystemView from './views/ReviewSystemView';
 import TripDetailView from './views/TripDetailView';
 import AIExplorer from './views/AIExplorer';
+import TripVoteRoomView from './views/TripVoteRoomView';
 import AdminDashboardView from './views/AdminDashboardView';
 import AdminUsersView from './views/AdminUsersView';
 import AdminTripsView from './views/AdminTripsView';
@@ -98,6 +99,15 @@ import {
   type TripSuggestionsSummary,
 } from './services/tripSuggestionsApi';
 import {
+  castTripVote,
+  closeTripVoteSession,
+  createTripVoteSession,
+  fetchLatestTripDecision,
+  fetchTripVoteSession,
+  subscribeToTripVoteSession,
+  type TripVoteSession,
+} from './services/tripVoteApi';
+import {
   ArrowRight,
   BadgeCheck,
   CalendarDays,
@@ -137,6 +147,7 @@ const ADMIN_USERS_PATH = '/admin/users';
 const ADMIN_TRIPS_PATH = '/admin/trips';
 const TRIP_HISTORY_PATH_PATTERN = /^\/trip\/([^/]+)\/history\/?$/;
 const TRIP_EXPLORER_PATH_PATTERN = /^\/trip\/([^/]+)\/explorer\/?$/;
+const TRIP_VOTE_ROOM_PATH_PATTERN = /^\/trip\/([^/]+)\/vote\/([^/]+)\/?$/;
 const DIRECT_TRIP_EXPLORER_PATH_PATTERN = /^\/explorer\/([^/]+)\/?$/;
 const ADMIN_USER_FILTER_VALUES: AdminUserFilter[] = ['all', 'pending', 'verified', 'blocked', 'deleted'];
 
@@ -155,6 +166,7 @@ type ScreenName =
   | 'profile'
   | 'history'
   | 'explorer'
+  | 'voteRoom'
   | 'wallet'
   | 'onboarding'
   | 'verification'
@@ -925,13 +937,17 @@ const getAdminUsersPath = (filter: AdminUserFilter): string =>
   `${ADMIN_USERS_PATH}?filter=${encodeURIComponent(filter)}`;
 
 const getTripExplorerPath = (tripId: string): string => `/explorer/${encodeURIComponent(tripId)}`;
+const getTripVoteRoomPath = (tripId: string, voteId: string): string =>
+  `/trip/${encodeURIComponent(tripId)}/vote/${encodeURIComponent(voteId)}`;
 
 const getExplorerPathMatch = (pathname: string): RegExpMatchArray | null =>
   pathname.match(TRIP_EXPLORER_PATH_PATTERN) ?? pathname.match(DIRECT_TRIP_EXPLORER_PATH_PATTERN);
+const getVoteRoomPathMatch = (pathname: string): RegExpMatchArray | null => pathname.match(TRIP_VOTE_ROOM_PATH_PATTERN);
 
 const isTripDetailPath = (pathname: string): boolean =>
   TRIP_HISTORY_PATH_PATTERN.test(pathname) ||
   TRIP_EXPLORER_PATH_PATTERN.test(pathname) ||
+  TRIP_VOTE_ROOM_PATH_PATTERN.test(pathname) ||
   DIRECT_TRIP_EXPLORER_PATH_PATTERN.test(pathname);
 
 const clearStoredAuthState = (): void => {
@@ -1073,6 +1089,15 @@ function App() {
   const [isTripSuggestionsLoading, setIsTripSuggestionsLoading] = useState(false);
   const [isTripSuggestionsGenerating, setIsTripSuggestionsGenerating] = useState(false);
   const [activeSuggestionVoteId, setActiveSuggestionVoteId] = useState<string | null>(null);
+  const [activeVoteRoomSuggestionId, setActiveVoteRoomSuggestionId] = useState<string | null>(null);
+  const [activeTripVoteRoomTripId, setActiveTripVoteRoomTripId] = useState<string | null>(null);
+  const [activeTripVoteRoomId, setActiveTripVoteRoomId] = useState<string | null>(null);
+  const [tripVoteRoomSession, setTripVoteRoomSession] = useState<TripVoteSession | null>(null);
+  const [tripVoteRoomError, setTripVoteRoomError] = useState('');
+  const [isTripVoteRoomLoading, setIsTripVoteRoomLoading] = useState(false);
+  const [isTripVoteSubmitting, setIsTripVoteSubmitting] = useState(false);
+  const [isTripVoteClosing, setIsTripVoteClosing] = useState(false);
+  const [latestTripDecision, setLatestTripDecision] = useState<TripVoteSession | null>(null);
   const [tripExpenseError, setTripExpenseError] = useState('');
   const [isTripExpenseLoading, setIsTripExpenseLoading] = useState(false);
   const [isTripExpenseSubmitting, setIsTripExpenseSubmitting] = useState(false);
@@ -1460,15 +1485,20 @@ function App() {
     const syncWorkspaceScreenFromPath = () => {
       const historyMatch = window.location.pathname.match(TRIP_HISTORY_PATH_PATTERN);
       const explorerMatch = getExplorerPathMatch(window.location.pathname);
+      const voteRoomMatch = getVoteRoomPathMatch(window.location.pathname);
       const isAdminUsersRoute = window.location.pathname === ADMIN_USERS_PATH;
       const isAdminTripsRoute = window.location.pathname === ADMIN_TRIPS_PATH;
       const isAdminRoute = window.location.pathname === ADMIN_PATH;
       const nextHistoryTripId = historyMatch ? decodeURIComponent(historyMatch[1]) : null;
       const nextExplorerTripId = explorerMatch ? decodeURIComponent(explorerMatch[1]) : null;
+      const nextVoteRoomTripId = voteRoomMatch ? decodeURIComponent(voteRoomMatch[1]) : null;
+      const nextVoteRoomId = voteRoomMatch ? decodeURIComponent(voteRoomMatch[2]) : null;
       const nextAdminUserFilter = parseAdminUserFilter(new URLSearchParams(window.location.search).get('filter'));
 
       setActiveTripHistoryTripId(nextHistoryTripId);
       setActiveTripExplorerTripId(nextExplorerTripId);
+      setActiveTripVoteRoomTripId(nextVoteRoomTripId);
+      setActiveTripVoteRoomId(nextVoteRoomId);
       setAdminUserFilter(nextAdminUserFilter);
       if ((isAdminRoute || isAdminUsersRoute || isAdminTripsRoute) && !userSession) {
         setPostAuthRedirectScreen(isAdminUsersRoute ? 'adminUsers' : isAdminTripsRoute ? 'adminTrips' : 'admin');
@@ -1480,6 +1510,10 @@ function App() {
 
         if (nextExplorerTripId) {
           return 'explorer';
+        }
+
+        if (nextVoteRoomTripId && nextVoteRoomId) {
+          return 'voteRoom';
         }
 
         if (isAdminUsersRoute) {
@@ -1496,6 +1530,7 @@ function App() {
 
         return current === 'history' ||
           current === 'explorer' ||
+          current === 'voteRoom' ||
           current === 'admin' ||
           current === 'adminUsers' ||
           current === 'adminTrips'
@@ -1851,6 +1886,110 @@ function App() {
       unsubscribe();
     };
   }, [activeTripExplorerTripId, authToken, currentScreen, globalActiveTripId, tripExpenseSummary?.trip.id]);
+
+  useEffect(() => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (currentScreen !== 'voteRoom' || !currentAuthToken || !activeTripVoteRoomTripId || !activeTripVoteRoomId) {
+      setTripVoteRoomSession(null);
+      setTripVoteRoomError('');
+      setIsTripVoteRoomLoading(false);
+      setIsTripVoteSubmitting(false);
+      setIsTripVoteClosing(false);
+      return;
+    }
+
+    let isActive = true;
+    setIsTripVoteRoomLoading(true);
+    setTripVoteRoomError('');
+
+    void fetchTripVoteSession(activeTripVoteRoomTripId, activeTripVoteRoomId, currentAuthToken)
+      .then((session) => {
+        if (isActive) {
+          setTripVoteRoomSession(session);
+          setTripVoteRoomError('');
+        }
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+
+        const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+        if (isUnauthorized) {
+          clearStoredAuthState();
+          setHydratedProfileToken(null);
+          setUserSession(null);
+          setCurrentScreen('auth');
+          setSystemNotice('Your session expired. Please sign in again.');
+          return;
+        }
+
+        setTripVoteRoomSession(null);
+        setTripVoteRoomError(error instanceof Error ? error.message : 'Unable to load this voting room right now.');
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsTripVoteRoomLoading(false);
+        }
+      });
+
+    const unsubscribe = subscribeToTripVoteSession(
+      activeTripVoteRoomTripId,
+      activeTripVoteRoomId,
+      currentAuthToken,
+      (session) => {
+        if (!isActive) {
+          return;
+        }
+
+        setTripVoteRoomSession(session);
+        setTripVoteRoomError('');
+        setIsTripVoteRoomLoading(false);
+      },
+      (error) => {
+        if (!isActive || error.message === 'Unauthorized request.') {
+          return;
+        }
+
+        setTripVoteRoomError((currentValue) => currentValue || 'Live vote-room updates are reconnecting...');
+      },
+    );
+
+    return () => {
+      isActive = false;
+      unsubscribe();
+    };
+  }, [activeTripVoteRoomId, activeTripVoteRoomTripId, authToken, currentScreen]);
+
+  useEffect(() => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (currentScreen !== 'history' || !activeTripHistoryTripId || !currentAuthToken) {
+      setLatestTripDecision(null);
+      return;
+    }
+
+    let isActive = true;
+
+    void fetchLatestTripDecision(activeTripHistoryTripId, currentAuthToken)
+      .then((decision) => {
+        if (isActive) {
+          setLatestTripDecision(decision);
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setLatestTripDecision(null);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [activeTripHistoryTripId, authToken, currentScreen]);
 
   useEffect(() => {
     const currentAuthToken =
@@ -2523,6 +2662,7 @@ function App() {
       'profile',
       'history',
       'explorer',
+      'voteRoom',
       'wallet',
       'onboarding',
       'verification',
@@ -2557,6 +2697,7 @@ function App() {
       } else if (
         targetScreen !== 'history' &&
         targetScreen !== 'explorer' &&
+        targetScreen !== 'voteRoom' &&
         targetScreen !== 'admin' &&
         targetScreen !== 'adminUsers' &&
         targetScreen !== 'adminTrips' &&
@@ -2577,6 +2718,11 @@ function App() {
       setActiveTripExplorerTripId(null);
     }
 
+    if (targetScreen !== 'voteRoom') {
+      setActiveTripVoteRoomTripId(null);
+      setActiveTripVoteRoomId(null);
+    }
+
     const requiresSession: ScreenName[] = [
       'createTrip',
       'editPost',
@@ -2586,6 +2732,7 @@ function App() {
       'profile',
       'history',
       'explorer',
+      'voteRoom',
       'wallet',
       'onboarding',
       'verification',
@@ -2678,12 +2825,7 @@ function App() {
     }
   };
 
-  const handleOpenAIExplorer = () => {
-    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId;
-    if (!tripId) {
-      return;
-    }
-
+  const openAIExplorerForTrip = (tripId: string) => {
     setActiveTripExplorerTripId(tripId);
     setGlobalActiveTripId(tripId);
     setCurrentScreen('explorer');
@@ -2693,6 +2835,16 @@ function App() {
       window.localStorage.setItem(LAST_VIEWED_TRIP_ID_STORAGE_KEY, tripId);
       window.history.pushState({}, document.title, getTripExplorerPath(tripId));
     }
+  };
+
+  const handleOpenAIExplorer = () => {
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId;
+    if (!tripId) {
+      setSystemNotice('AI Explorer becomes available after your active trip is loaded.');
+      return;
+    }
+
+    openAIExplorerForTrip(tripId);
   };
 
   const handleGenerateTripSuggestions = async (userPreferences: TripSuggestionPreferences) => {
@@ -2772,6 +2924,128 @@ function App() {
 
     if (typeof window !== 'undefined' && getExplorerPathMatch(window.location.pathname)) {
       window.history.pushState({}, document.title, '/wallet');
+    }
+  };
+
+  const handleOpenTripVoteRoom = (tripId: string, voteId: string) => {
+    setActiveTripVoteRoomTripId(tripId);
+    setActiveTripVoteRoomId(voteId);
+    setGlobalActiveTripId(tripId);
+    setCurrentScreen('voteRoom');
+    setIsAccountPanelOpen(false);
+
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(LAST_VIEWED_TRIP_ID_STORAGE_KEY, tripId);
+      window.history.pushState({}, document.title, getTripVoteRoomPath(tripId, voteId));
+    }
+  };
+
+  const handleCreateTripVoteRoom = async (suggestion: TripSuggestionsSummary['suggestions'][number]) => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId;
+
+    if (!currentAuthToken || !tripId) {
+      setTripSuggestionsError('Open an active trip before starting a shared vote.');
+      return;
+    }
+
+    setActiveVoteRoomSuggestionId(suggestion.id);
+    setTripSuggestionsError('');
+
+    try {
+      const session = await createTripVoteSession(
+        tripId,
+        {
+          suggestionId: suggestion.id,
+          placeName: suggestion.name,
+          description: suggestion.whyVisit,
+          estimatedCost: suggestion.estimatedCostPerPerson,
+          imageUrl: suggestion.imageUrl,
+        },
+        currentAuthToken,
+      );
+      setTripVoteRoomSession(session);
+      handleOpenTripVoteRoom(tripId, session.id);
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        return;
+      }
+
+      setTripSuggestionsError(error instanceof Error ? error.message : 'Unable to create a voting room right now.');
+    } finally {
+      setActiveVoteRoomSuggestionId(null);
+    }
+  };
+
+  const handleCastTripVote = async () => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (!currentAuthToken || !activeTripVoteRoomTripId || !activeTripVoteRoomId) {
+      setTripVoteRoomError('Open a voting room before submitting your vote.');
+      return;
+    }
+
+    setIsTripVoteSubmitting(true);
+    setTripVoteRoomError('');
+
+    try {
+      const session = await castTripVote(activeTripVoteRoomTripId, activeTripVoteRoomId, currentAuthToken);
+      setTripVoteRoomSession(session);
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        return;
+      }
+
+      setTripVoteRoomError(error instanceof Error ? error.message : 'Unable to submit your vote right now.');
+    } finally {
+      setIsTripVoteSubmitting(false);
+    }
+  };
+
+  const handleCloseTripVoteRoom = async () => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+
+    if (!currentAuthToken || !activeTripVoteRoomTripId || !activeTripVoteRoomId) {
+      setTripVoteRoomError('Open a voting room before closing it.');
+      return;
+    }
+
+    setIsTripVoteClosing(true);
+    setTripVoteRoomError('');
+
+    try {
+      const session = await closeTripVoteSession(activeTripVoteRoomTripId, activeTripVoteRoomId, currentAuthToken);
+      setTripVoteRoomSession(session);
+      setSystemNotice(`${session.placeName} is now the group decision.`);
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        return;
+      }
+
+      setTripVoteRoomError(error instanceof Error ? error.message : 'Unable to close this voting room right now.');
+    } finally {
+      setIsTripVoteClosing(false);
     }
   };
 
@@ -4438,9 +4712,14 @@ function App() {
     currentScreen === 'home' || currentScreen === 'discovery' || currentScreen === 'dashboard';
 
   const isWorkspaceScreen =
-    currentScreen === 'dashboard' || currentScreen === 'expenses' || currentScreen === 'chat' || currentScreen === 'explorer';
+    currentScreen === 'dashboard' ||
+    currentScreen === 'expenses' ||
+    currentScreen === 'chat' ||
+    currentScreen === 'explorer' ||
+    currentScreen === 'voteRoom';
 
-  const activeWorkspaceTripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId ?? null;
+  const activeWorkspaceTripId =
+    activeTripVoteRoomTripId ?? activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId ?? null;
 
   const sidebarTargetById: Record<string, ScreenName> = {
     'my-trips': 'dashboard',
@@ -4752,6 +5031,34 @@ function App() {
                     <p className="mt-3 text-2xl font-black text-primary">{historySummary.members.length}</p>
                   </div>
                 </div>
+
+                {latestTripDecision ? (
+                  <div className="rounded-[32px] border border-success/25 bg-[linear-gradient(135deg,rgba(129,178,154,0.2),rgba(255,255,255,0.94))] p-5 shadow-[0_28px_70px_-38px_rgba(15,23,42,0.28)] backdrop-blur-md sm:p-6">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary/45">Itinerary Pick</p>
+                        <h3 className="mt-2 text-2xl font-black tracking-tight text-primary">{latestTripDecision.placeName}</h3>
+                        <p className="mt-2 max-w-2xl text-sm text-primary/68">
+                          The group locked this destination as the winning stop for the trip.
+                        </p>
+                        {latestTripDecision.decisionMadeAt ? (
+                          <p className="mt-2 text-xs font-medium text-primary/55">
+                            Decided {new Date(latestTripDecision.decisionMadeAt).toLocaleString()}
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenTripVoteRoom(latestTripDecision.trip.id, latestTripDecision.id)}
+                        className="interactive-btn inline-flex items-center justify-center gap-2 rounded-2xl bg-success px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-success/20"
+                      >
+                        <BadgeCheck className="h-4 w-4" />
+                        Open Decision
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="rounded-[32px] border border-white/30 bg-white/70 p-5 shadow-[0_28px_70px_-38px_rgba(15,23,42,0.35)] backdrop-blur-2xl sm:p-6">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -6171,14 +6478,47 @@ function App() {
       tripSummary={tripExpenseSummary}
       suggestionsSummary={tripSuggestionsSummary}
       activeVoteId={activeSuggestionVoteId}
+      activeVoteRoomSuggestionId={activeVoteRoomSuggestionId}
       dateRangeLabel={activeTripDateRangeLabel}
       error={tripSuggestionsError}
+      isHost={Boolean(tripExpenseSummary?.members.find((member) => member.id === userSession?.id)?.isHost)}
       isGenerating={isTripSuggestionsGenerating}
       isLoading={isTripSuggestionsLoading || isTripExpenseLoading}
       onBackToSplit={() => handleNavigation('wallet')}
+      onAddToVote={(suggestion) => void handleCreateTripVoteRoom(suggestion)}
       onGenerate={(userPreferences) => void handleGenerateTripSuggestions(userPreferences)}
+      onOpenVoteRoom={(voteId) => {
+        const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId;
+        if (!tripId) {
+          setTripSuggestionsError('Open an active trip before opening the voting room.');
+          return;
+        }
+
+        handleOpenTripVoteRoom(tripId, voteId);
+      }}
       onSplitCost={handleAddSuggestionToExpenses}
       onVote={(suggestionId) => void handleVoteForTripSuggestion(suggestionId)}
+    />
+  );
+
+  const renderTripVoteRoomScreen = () => (
+    <TripVoteRoomView
+      session={tripVoteRoomSession}
+      error={tripVoteRoomError}
+      isLoading={isTripVoteRoomLoading}
+      isSubmittingVote={isTripVoteSubmitting}
+      isClosingVote={isTripVoteClosing}
+      onBack={() => {
+        const tripId = activeTripVoteRoomTripId ?? tripVoteRoomSession?.trip.id ?? globalActiveTripId;
+        if (!tripId) {
+          handleNavigation('wallet');
+          return;
+        }
+
+        openAIExplorerForTrip(tripId);
+      }}
+      onVote={() => void handleCastTripVote()}
+      onCloseVote={() => void handleCloseTripVoteRoom()}
     />
   );
 
@@ -6211,6 +6551,7 @@ function App() {
           {activeView === 'dashboard' ? (
             <DashboardView
               authToken={authToken}
+              onOpenLatestDecision={handleOpenTripVoteRoom}
               onStartFirstJourney={() => handleNavigation('createTrip')}
               onVerificationStatusSync={handleDashboardVerificationStatusSync}
             />
@@ -6611,6 +6952,8 @@ function App() {
         return renderHistoryScreen();
       case 'explorer':
         return renderAIExplorerScreen();
+      case 'voteRoom':
+        return renderTripVoteRoomScreen();
       case 'wallet':
         return renderWalletScreen();
       case 'dashboard':
@@ -6837,41 +7180,37 @@ function App() {
 	                <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary/70">Workspace</p>
 	                <nav>
 	                  <ul className="space-y-2">
-	                    {navItems
-	                      .filter((item) => item.id !== 'ai-explorer' || Boolean(activeWorkspaceTripId))
-	                      .map((item) => {
-                      const target = sidebarTargetById[item.id] ?? 'dashboard';
-                      return (
-                        <li key={item.id}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (item.id === 'ai-explorer') {
-                                handleOpenAIExplorer();
-                                return;
-                              }
+		                    {navItems.map((item) => {
+	                      const target = sidebarTargetById[item.id] ?? 'dashboard';
+                        const isAIExplorerItem = item.id === 'ai-explorer';
+                        const canOpenAIExplorer = Boolean(activeWorkspaceTripId);
+	                      return (
+	                        <li key={item.id}>
+	                          <button
+	                            type="button"
+                            disabled={isAIExplorerItem && !canOpenAIExplorer}
+	                            onClick={() => {
+	                              if (item.id === 'ai-explorer') {
+	                                handleOpenAIExplorer();
+	                                return;
+	                              }
 
                               handleNavigation(target);
                             }}
-                            className={getSidebarClass(target)}
-                          >
-                            {renderSidebarIcon(item.icon)}
-                            <span>{item.label}</span>
-                          </button>
-	                        </li>
-	                      );
-	                    })}
-                      {!activeWorkspaceTripId && isGlobalActiveTripLoading ? (
-                        <li aria-hidden="true">
-                          <div className="flex animate-pulse items-center gap-3 rounded-card border border-primary/10 bg-primary/5 px-4 py-3">
-                            <span className="h-5 w-5 rounded-full bg-primary/10" />
-                            <span className="h-3 w-24 rounded-full bg-primary/10" />
-                          </div>
-                        </li>
-                      ) : null}
-	                  </ul>
-	                </nav>
-	              </aside>
+	                            className={`${getSidebarClass(target)} ${
+                                isAIExplorerItem && !canOpenAIExplorer ? 'cursor-not-allowed opacity-60' : ''
+                              }`}
+                            title={isAIExplorerItem && !canOpenAIExplorer ? 'AI Explorer requires an active trip' : undefined}
+	                          >
+	                            {renderSidebarIcon(item.icon)}
+	                            <span>{item.label}</span>
+	                          </button>
+			                        </li>
+			                      );
+			                    })}
+		                  </ul>
+		                </nav>
+		              </aside>
 
               <section className="rounded-card bg-white/95 p-5 shadow-lg ring-1 ring-primary/10 backdrop-blur-sm">
                 <header className="mb-5 border-b border-primary/10 pb-4">
@@ -7033,26 +7372,27 @@ function App() {
                   </span>
                   <span>Wallet</span>
                 </button>
-	                {activeWorkspaceTripId ? (
-	                  <button
-	                    type="button"
-	                    onClick={handleOpenAIExplorer}
-	                    className="interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white"
-	                  >
-                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
-                      <Sparkles className="h-5 w-5" />
+	                <button
+	                  type="button"
+	                  onClick={handleOpenAIExplorer}
+                    disabled={!activeWorkspaceTripId}
+	                  className={`interactive-btn group flex w-full items-center gap-3 rounded-2xl border border-primary/10 bg-white/80 px-4 py-3 text-left text-sm font-semibold text-primary hover:border-primary/20 hover:bg-white ${
+                        activeWorkspaceTripId ? '' : 'cursor-not-allowed opacity-60 hover:border-primary/10 hover:bg-white/80'
+                      }`}
+                      title={activeWorkspaceTripId ? undefined : 'AI Explorer requires an active trip'}
+	                >
+	                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
+	                    <Sparkles className="h-5 w-5" />
+	                  </span>
+                    <span className="flex min-w-0 flex-col">
+                      <span>AI Explorer</span>
+                      {!activeWorkspaceTripId ? (
+                        <span className="text-xs font-medium text-primary/65">
+                          {isGlobalActiveTripLoading ? 'Checking your active trip...' : 'Requires an active trip'}
+                        </span>
+                      ) : null}
                     </span>
-	                    <span>AI Explorer</span>
-	                  </button>
-	                ) : isGlobalActiveTripLoading ? (
-                    <div
-                      className="flex animate-pulse items-center gap-3 rounded-2xl border border-primary/10 bg-white/60 px-4 py-3"
-                      aria-hidden="true"
-                    >
-                      <span className="h-9 w-9 rounded-xl bg-primary/10" />
-                      <span className="h-3 w-24 rounded-full bg-primary/10" />
-                    </div>
-                  ) : null}
+	                </button>
                 <button
                   type="button"
                   onClick={() => handleNavigation('onboarding')}

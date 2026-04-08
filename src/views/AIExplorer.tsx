@@ -2,18 +2,22 @@ import { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowLeft, BadgeCheck, CalendarDays, MapPin, Sparkles } from 'lucide-react';
 import type { TripExpenseSummary } from '../services/expenseApi';
-import type { TripSuggestionPreferences, TripSuggestionsSummary } from '../services/tripSuggestionsApi';
+import type { TripSuggestion, TripSuggestionPreferences, TripSuggestionsSummary } from '../services/tripSuggestionsApi';
 
 type AIExplorerProps = {
   tripSummary: TripExpenseSummary | null;
   suggestionsSummary: TripSuggestionsSummary | null;
   activeVoteId: string | null;
+  activeVoteRoomSuggestionId: string | null;
   dateRangeLabel: string;
   error: string;
+  isHost: boolean;
   isGenerating: boolean;
   isLoading: boolean;
   onBackToSplit: () => void;
+  onAddToVote: (suggestion: TripSuggestion) => void;
   onGenerate: (userPreferences: TripSuggestionPreferences) => void;
+  onOpenVoteRoom: (voteId: string) => void;
   onSplitCost: (suggestionName: string, estimatedCost: number) => void;
   onVote: (suggestionId: string) => void;
 };
@@ -101,12 +105,16 @@ function AIExplorer({
   tripSummary,
   suggestionsSummary,
   activeVoteId,
+  activeVoteRoomSuggestionId,
   dateRangeLabel,
   error,
+  isHost,
   isGenerating,
   isLoading,
   onBackToSplit,
+  onAddToVote,
   onGenerate,
+  onOpenVoteRoom,
   onSplitCost,
   onVote,
 }: AIExplorerProps) {
@@ -127,7 +135,7 @@ function AIExplorer({
 
   const currentQuestion = questionSteps[currentQuestionIndex];
   const isQuestionnaireComplete = questionSteps.every((step) => Boolean(userPreferences[step.key]));
-  const shouldShowVoteFeed = hasSubmittedQuestionnaire && Boolean(suggestionsSummary?.suggestions.length);
+  const shouldShowVoteFeed = Boolean(suggestionsSummary?.suggestions.length) || hasSubmittedQuestionnaire;
   const generatedPreferences = suggestionsSummary?.generatedPreferences;
   const questionProgressPercent = ((currentQuestionIndex + 1) / questionSteps.length) * 100;
 
@@ -443,8 +451,12 @@ function AIExplorer({
                               <p className="mt-2 text-2xl font-black">{`$${suggestion.estimatedCostPerPerson.toFixed(2)}`}</p>
                             </div>
                             <div className="rounded-xl bg-gray-100 px-4 py-3 text-center text-primary">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/48">Match</p>
-                              <p className="mt-2 text-2xl font-black">{suggestion.vibeMatchPercent}%</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/48">
+                                {suggestion.voteRoom ? 'Vote Room' : 'Match'}
+                              </p>
+                              <p className="mt-2 text-2xl font-black">
+                                {suggestion.voteRoom ? `${suggestion.voteRoom.votedCount}/${suggestion.voteRoom.requiredVotes}` : `${suggestion.vibeMatchPercent}%`}
+                              </p>
                             </div>
                           </div>
 
@@ -471,6 +483,29 @@ function AIExplorer({
                         </div>
 
                         <div className="flex flex-wrap gap-3 lg:justify-end">
+                          {suggestion.voteRoom ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenVoteRoom(suggestion.voteRoom!.id)}
+                              className={`interactive-btn rounded-[22px] px-5 py-3 text-sm font-semibold shadow-lg transition ${
+                                suggestion.voteRoom.status === 'decided'
+                                  ? 'bg-success text-white shadow-success/20'
+                                  : 'bg-[#F4F1DE] text-primary shadow-slate-950/8'
+                              }`}
+                            >
+                              {suggestion.voteRoom.status === 'decided' ? 'View Decision' : 'Open Voting Room'}
+                            </button>
+                          ) : isHost ? (
+                            <button
+                              type="button"
+                              onClick={() => onAddToVote(suggestion)}
+                              disabled={activeVoteRoomSuggestionId === suggestion.id}
+                              className="interactive-btn rounded-[22px] bg-[#E07A5F] px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-[#E07A5F]/25 transition disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              {activeVoteRoomSuggestionId === suggestion.id ? 'Creating Room...' : 'Add to Vote'}
+                            </button>
+                          ) : null}
+
                           {suggestion.isWinningSuggestion ? (
                             <button
                               type="button"

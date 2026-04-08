@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
+import { Vote } from '../models/Vote.js';
 import { CANCELLED_TRIP_STATUS, COMPLETED_TRIP_STATUS, UPCOMING_TRIP_STATUS, isTripCurrentActive, normalizeTripRecordStatus, } from '../utils/tripRecordStatus.js';
 const router = express.Router();
 const toDate = (value) => {
@@ -66,10 +67,16 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
     try {
         const hostObjectId = toObjectId(userId);
         const now = new Date();
-        const [trips, pendingRequestCount, pendingJoinRequests] = await Promise.all([
+        const [trips, associatedTrips, pendingRequestCount, pendingJoinRequests] = await Promise.all([
             Trip.find({ organizerId: hostObjectId })
                 .sort({ startDate: 1 })
                 .select('_id title location startDate endDate status participants')
+                .lean(),
+            Trip.find({
+                $or: [{ organizerId: hostObjectId }, { participants: hostObjectId }],
+            })
+                .sort({ startDate: 1 })
+                .select('_id title location imageUrl startDate endDate status participants')
                 .lean(),
             TripJoinRequest.countDocuments({
                 hostId: hostObjectId,
@@ -89,6 +96,10 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
             tripById.set(String(trip._id), trip);
         });
         const tripsWithNormalizedStatus = trips.map((trip) => ({
+            ...trip,
+            normalizedStatus: normalizeTripRecordStatus(trip.status, trip, now),
+        }));
+        const associatedTripsWithStatus = associatedTrips.map((trip) => ({
             ...trip,
             normalizedStatus: normalizeTripRecordStatus(trip.status, trip, now),
         }));
@@ -114,6 +125,9 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
         const completedTripsCount = tripsWithNormalizedStatus.filter((trip) => trip.normalizedStatus === COMPLETED_TRIP_STATUS).length;
         const upcomingTripsCount = tripsWithNormalizedStatus.filter((trip) => trip.normalizedStatus === UPCOMING_TRIP_STATUS).length;
         const activeTripsCount = activeTrips.length;
+        const latestDecisionTripIds = associatedTripsWithStatus
+            .filter((trip) => trip.normalizedStatus !== CANCELLED_TRIP_STATUS)
+            .map((trip) => toObjectId(String(trip._id)));
         const requesterObjectIds = Array.from(new Set(pendingJoinRequests
             .map((joinRequest) => String(joinRequest.requesterId))
             .filter((requesterId) => mongoose.isValidObjectId(requesterId)))).map((requesterId) => toObjectId(requesterId));
@@ -132,6 +146,20 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
         users.forEach((user) => {
             userById.set(String(user._id), user);
         });
+        const latestDecision = latestDecisionTripIds.length
+            ? await Vote.findOne({
+                tripId: { $in: latestDecisionTripIds },
+                status: 'decided',
+            })
+                .sort({ decisionMadeAt: -1, updatedAt: -1 })
+                .select('_id tripId placeName imageUrl decisionMadeAt')
+                .lean()
+            : null;
+        const associatedTripById = new Map();
+        associatedTrips.forEach((trip) => {
+            associatedTripById.set(String(trip._id), trip);
+        });
+        const latestDecisionTrip = latestDecision ? associatedTripById.get(String(latestDecision.tripId)) ?? null : null;
         return res.status(200).json({
             activeTripsCount,
             pendingRequests: pendingRequestCount,
@@ -172,6 +200,23 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
             completedTripsCount,
             upcomingTripsCount,
             totalTripsCount: trips.length,
+            latestDecision: latestDecision && latestDecisionTrip
+                ? {
+                    voteId: String(latestDecision._id),
+                    tripId: String(latestDecision.tripId),
+                    tripTitle: latestDecisionTrip.title,
+                    tripLocation: latestDecisionTrip.location,
+                    placeName: typeof latestDecision.placeName === 'string' && latestDecision.placeName.trim()
+                        ? latestDecision.placeName.trim()
+                        : 'Group decision',
+                    imageUrl: typeof latestDecision.imageUrl === 'string' && latestDecision.imageUrl.trim()
+                        ? latestDecision.imageUrl.trim()
+                        : typeof latestDecisionTrip.imageUrl === 'string' && latestDecisionTrip.imageUrl.trim()
+                            ? latestDecisionTrip.imageUrl.trim()
+                            : null,
+                    decisionMadeAt: latestDecision.decisionMadeAt ?? null,
+                }
+                : null,
         });
     }
     catch (error) {

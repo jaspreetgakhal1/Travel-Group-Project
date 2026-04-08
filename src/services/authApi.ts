@@ -1,7 +1,6 @@
 // Added by Codex: project documentation comment for src\services\authApi.ts
 import { normalizeTravelDNA, type UserDNA } from '../models/dnaModel';
-
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
+import { buildApiUrl } from './apiBaseUrl';
 
 type AuthRequest = {
   userId: string;
@@ -73,7 +72,7 @@ export type TravelDNAResponse = {
   travelDNA: UserDNA;
 };
 
-const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
+const buildUrl = (path: string) => buildApiUrl(path);
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
   try {

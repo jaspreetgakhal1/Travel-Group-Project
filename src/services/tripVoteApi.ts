@@ -1,43 +1,43 @@
 import { buildApiUrl } from './apiBaseUrl';
 
-export type TripSuggestion = {
+export type VoteRoomStatus = 'open' | 'decided' | 'archived';
+export type VoteDecisionMode = 'majority' | 'host_closed' | null;
+
+export type TripVoteMember = {
   id: string;
   name: string;
-  whyVisit: string;
-  estimatedCostPerPerson: number;
-  vibeMatchPercent: number;
-  imageUrl: string;
-  voteCount: number;
-  votePercent: number;
+  avatar: string | null;
+  isHost: boolean;
   hasVoted: boolean;
-  isLeader: boolean;
-  isWinningSuggestion: boolean;
-  voteRoom: {
+};
+
+export type TripVoteSession = {
+  id: string;
+  trip: {
     id: string;
-    status: 'open' | 'decided';
-    votedCount: number;
-    requiredVotes: number;
-    decisionMadeAt: string | null;
-  } | null;
+    title: string;
+    location: string;
+    imageUrl: string;
+  };
+  placeName: string;
+  description: string;
+  estimatedCost: number;
+  imageUrl: string;
+  status: VoteRoomStatus;
+  votedCount: number;
+  totalMembers: number;
+  requiredVotes: number;
+  majorityReached: boolean;
+  hasViewerVoted: boolean;
+  isViewerHost: boolean;
+  decisionMode: VoteDecisionMode;
+  decisionMadeAt: string | null;
+  createdAt: string;
+  members: TripVoteMember[];
 };
 
-export type TripSuggestionPreferences = {
-  collectiveMood: string;
-  interest: string;
-  budget: string;
-  food: string;
-  crowds: string;
-};
-
-export type TripSuggestionsSummary = {
-  tripId: string;
-  title: string;
-  destination: string;
-  travelerType: string;
-  totalTravelers: number;
-  generatedPreferences: TripSuggestionPreferences | null;
-  generatedAt: string | null;
-  suggestions: TripSuggestion[];
+export type TripLatestDecisionResponse = {
+  decision: TripVoteSession | null;
 };
 
 const buildUrl = (path: string) => buildApiUrl(path);
@@ -68,7 +68,7 @@ const request = async <T>(path: string, init: RequestInit, authToken: string): P
       },
     });
   } catch {
-    throw new Error('Unable to connect to the trip suggestions API.');
+    throw new Error('Unable to connect to the trip voting API.');
   }
 
   if (!response.ok) {
@@ -78,9 +78,9 @@ const request = async <T>(path: string, init: RequestInit, authToken: string): P
   return (await response.json()) as T;
 };
 
-const parseSuggestionEventData = (rawValue: string): TripSuggestionsSummary | null => {
+const parseVoteSessionEventData = (rawValue: string): TripVoteSession | null => {
   try {
-    return JSON.parse(rawValue) as TripSuggestionsSummary;
+    return JSON.parse(rawValue) as TripVoteSession;
   } catch {
     return null;
   }
@@ -91,32 +91,44 @@ const delay = (durationMs: number): Promise<void> =>
     window.setTimeout(resolve, durationMs);
   });
 
-export const fetchTripSuggestions = async (tripId: string, authToken: string): Promise<TripSuggestionsSummary> =>
-  request<TripSuggestionsSummary>(`/api/trips/${encodeURIComponent(tripId)}/suggestions`, { method: 'GET' }, authToken);
-
-export const getSmartSuggestions = fetchTripSuggestions;
-
-export const generateTripSuggestions = async (
+export const createTripVoteSession = async (
   tripId: string,
-  userPreferences: TripSuggestionPreferences,
+  payload: {
+    suggestionId: string;
+    placeName: string;
+    description: string;
+    estimatedCost: number;
+    imageUrl: string;
+  },
   authToken: string,
-): Promise<TripSuggestionsSummary> =>
-  request<TripSuggestionsSummary>(
-    `/api/trips/${encodeURIComponent(tripId)}/generate-suggestions`,
+): Promise<TripVoteSession> =>
+  request<TripVoteSession>(
+    `/api/trips/${encodeURIComponent(tripId)}/votes`,
     {
       method: 'POST',
-      body: JSON.stringify({ userPreferences }),
+      body: JSON.stringify(payload),
     },
     authToken,
   );
 
-export const voteForTripSuggestion = async (
+export const fetchTripVoteSession = async (
   tripId: string,
-  suggestionId: string,
+  voteId: string,
   authToken: string,
-): Promise<TripSuggestionsSummary> =>
-  request<TripSuggestionsSummary>(
-    `/api/trips/${encodeURIComponent(tripId)}/suggestions/${encodeURIComponent(suggestionId)}/vote`,
+): Promise<TripVoteSession> =>
+  request<TripVoteSession>(
+    `/api/trips/${encodeURIComponent(tripId)}/votes/${encodeURIComponent(voteId)}`,
+    { method: 'GET' },
+    authToken,
+  );
+
+export const castTripVote = async (
+  tripId: string,
+  voteId: string,
+  authToken: string,
+): Promise<TripVoteSession> =>
+  request<TripVoteSession>(
+    `/api/trips/${encodeURIComponent(tripId)}/votes/${encodeURIComponent(voteId)}/cast`,
     {
       method: 'POST',
       body: JSON.stringify({}),
@@ -124,10 +136,35 @@ export const voteForTripSuggestion = async (
     authToken,
   );
 
-export const subscribeToTripSuggestions = (
+export const closeTripVoteSession = async (
   tripId: string,
+  voteId: string,
   authToken: string,
-  onUpdate: (summary: TripSuggestionsSummary) => void,
+): Promise<TripVoteSession> =>
+  request<TripVoteSession>(
+    `/api/trips/${encodeURIComponent(tripId)}/votes/${encodeURIComponent(voteId)}/close`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+    authToken,
+  );
+
+export const fetchLatestTripDecision = async (tripId: string, authToken: string): Promise<TripVoteSession | null> => {
+  const response = await request<TripLatestDecisionResponse>(
+    `/api/trips/${encodeURIComponent(tripId)}/votes/latest-decision`,
+    { method: 'GET' },
+    authToken,
+  );
+
+  return response.decision;
+};
+
+export const subscribeToTripVoteSession = (
+  tripId: string,
+  voteId: string,
+  authToken: string,
+  onUpdate: (session: TripVoteSession) => void,
   onError?: (error: Error) => void,
 ): (() => void) => {
   const abortController = new AbortController();
@@ -135,20 +172,23 @@ export const subscribeToTripSuggestions = (
   const connect = async (): Promise<void> => {
     while (!abortController.signal.aborted) {
       try {
-        const response = await fetch(buildUrl(`/api/trips/${encodeURIComponent(tripId)}/suggestions/stream`), {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${authToken}`,
+        const response = await fetch(
+          buildUrl(`/api/trips/${encodeURIComponent(tripId)}/votes/${encodeURIComponent(voteId)}/stream`),
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${authToken}`,
+            },
+            signal: abortController.signal,
           },
-          signal: abortController.signal,
-        });
+        );
 
         if (!response.ok) {
           throw new Error(await parseErrorMessage(response));
         }
 
         if (!response.body) {
-          throw new Error('Live updates are not available right now.');
+          throw new Error('Live vote-room updates are not available right now.');
         }
 
         const reader = response.body.getReader();
@@ -163,8 +203,8 @@ export const subscribeToTripSuggestions = (
             return;
           }
 
-          if (currentEventName === 'suggestions') {
-            const payload = parseSuggestionEventData(currentDataLines.join('\n'));
+          if (currentEventName === 'vote-session') {
+            const payload = parseVoteSessionEventData(currentDataLines.join('\n'));
             if (payload) {
               onUpdate(payload);
             }
@@ -210,7 +250,7 @@ export const subscribeToTripSuggestions = (
           break;
         }
 
-        onError?.(error instanceof Error ? error : new Error('Live trip voting disconnected.'));
+        onError?.(error instanceof Error ? error : new Error('Live vote-room updates disconnected.'));
       }
 
       if (!abortController.signal.aborted) {

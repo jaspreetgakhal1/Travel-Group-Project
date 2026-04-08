@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
+import { Vote } from '../models/Vote.js';
 import {
   CANCELLED_TRIP_STATUS,
   COMPLETED_TRIP_STATUS,
@@ -35,6 +36,14 @@ type DashboardUser = {
   lastName?: string;
   userId?: string;
   profileImageDataUrl?: string | null;
+};
+
+type DashboardVote = {
+  _id: unknown;
+  tripId: unknown;
+  placeName?: string;
+  imageUrl?: string | null;
+  decisionMadeAt?: Date | null;
 };
 
 const toDate = (value: unknown): Date | null => {
@@ -132,11 +141,17 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
     const hostObjectId = toObjectId(userId);
     const now = new Date();
 
-    const [trips, pendingRequestCount, pendingJoinRequests] = await Promise.all([
+    const [trips, associatedTrips, pendingRequestCount, pendingJoinRequests] = await Promise.all([
       Trip.find({ organizerId: hostObjectId })
         .sort({ startDate: 1 })
         .select('_id title location startDate endDate status participants')
         .lean<DashboardTrip[]>(),
+      Trip.find({
+        $or: [{ organizerId: hostObjectId }, { participants: hostObjectId }],
+      })
+        .sort({ startDate: 1 })
+        .select('_id title location imageUrl startDate endDate status participants')
+        .lean<Array<DashboardTrip & { imageUrl?: string | null }>>(),
       TripJoinRequest.countDocuments({
         hostId: hostObjectId,
         status: 'pending',
@@ -157,6 +172,10 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
     });
 
     const tripsWithNormalizedStatus: DashboardTripWithStatus[] = trips.map((trip) => ({
+      ...trip,
+      normalizedStatus: normalizeTripRecordStatus(trip.status, trip, now),
+    }));
+    const associatedTripsWithStatus = associatedTrips.map((trip) => ({
       ...trip,
       normalizedStatus: normalizeTripRecordStatus(trip.status, trip, now),
     }));
@@ -191,6 +210,9 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
       (trip) => trip.normalizedStatus === UPCOMING_TRIP_STATUS,
     ).length;
     const activeTripsCount = activeTrips.length;
+    const latestDecisionTripIds = associatedTripsWithStatus
+      .filter((trip) => trip.normalizedStatus !== CANCELLED_TRIP_STATUS)
+      .map((trip) => toObjectId(String(trip._id)));
 
     const requesterObjectIds = Array.from(
       new Set(
@@ -221,6 +243,21 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
     users.forEach((user) => {
       userById.set(String(user._id), user);
     });
+
+    const latestDecision = latestDecisionTripIds.length
+      ? await Vote.findOne({
+          tripId: { $in: latestDecisionTripIds },
+          status: 'decided',
+        })
+          .sort({ decisionMadeAt: -1, updatedAt: -1 })
+          .select('_id tripId placeName imageUrl decisionMadeAt')
+          .lean<DashboardVote | null>()
+      : null;
+    const associatedTripById = new Map<string, (typeof associatedTrips)[number]>();
+    associatedTrips.forEach((trip) => {
+      associatedTripById.set(String(trip._id), trip);
+    });
+    const latestDecisionTrip = latestDecision ? associatedTripById.get(String(latestDecision.tripId)) ?? null : null;
 
     return res.status(200).json({
       activeTripsCount,
@@ -263,6 +300,26 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
       completedTripsCount,
       upcomingTripsCount,
       totalTripsCount: trips.length,
+      latestDecision:
+        latestDecision && latestDecisionTrip
+          ? {
+              voteId: String(latestDecision._id),
+              tripId: String(latestDecision.tripId),
+              tripTitle: latestDecisionTrip.title,
+              tripLocation: latestDecisionTrip.location,
+              placeName:
+                typeof latestDecision.placeName === 'string' && latestDecision.placeName.trim()
+                  ? latestDecision.placeName.trim()
+                  : 'Group decision',
+              imageUrl:
+                typeof latestDecision.imageUrl === 'string' && latestDecision.imageUrl.trim()
+                  ? latestDecision.imageUrl.trim()
+                  : typeof latestDecisionTrip.imageUrl === 'string' && latestDecisionTrip.imageUrl.trim()
+                    ? latestDecisionTrip.imageUrl.trim()
+                    : null,
+              decisionMadeAt: latestDecision.decisionMadeAt ?? null,
+            }
+          : null,
     });
   } catch (error) {
     console.error('GET /api/users/dashboard-stats failed', error);
