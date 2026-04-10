@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowLeft, BadgeCheck, CalendarDays, MapPin, Sparkles } from 'lucide-react';
+import { ArrowLeft, BadgeCheck, CalendarDays, LoaderCircle, MapPin, Sparkles } from 'lucide-react';
+import FastImage from '../components/FastImage';
 import type { TripExpenseSummary } from '../services/expenseApi';
 import type { TripSuggestion, TripSuggestionPreferences, TripSuggestionsSummary } from '../services/tripSuggestionsApi';
 
@@ -14,10 +15,12 @@ type AIExplorerProps = {
   isHost: boolean;
   isGenerating: boolean;
   isLoading: boolean;
+  isResetting: boolean;
   onBackToSplit: () => void;
   onAddToVote: (suggestion: TripSuggestion) => void;
   onGenerate: (userPreferences: TripSuggestionPreferences) => void;
   onOpenVoteRoom: (voteId: string) => void;
+  onReset: () => void;
   onSplitCost: (suggestionName: string, estimatedCost: number) => void;
   onVote: (suggestionId: string) => void;
 };
@@ -86,18 +89,48 @@ const questionSteps: QuestionStep[] = [
   },
 ];
 
+const fallbackImageUrls = [
+  'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee',
+  'https://images.unsplash.com/photo-1526772662000-3f88f10405ff',
+  'https://images.unsplash.com/photo-1469474968028-56623f02e42e',
+  'https://images.unsplash.com/photo-1488085061387-422e29b40080',
+  'https://images.unsplash.com/photo-1537953773345-d172ccf13cf1',
+] as const;
+
+const getStableImageIndex = (value: string): number => {
+  const hash = Array.from(value).reduce((currentHash, character) => {
+    return (currentHash * 31 + character.charCodeAt(0)) % fallbackImageUrls.length;
+  }, 0);
+
+  return Math.abs(hash);
+};
+
 const buildFallbackImageUrl = (placeName: string, destination: string): string => {
-  const query = encodeURIComponent(`${placeName} ${destination}`);
-  return `https://source.unsplash.com/featured/800x600/?${query}`;
+  const url = new URL(fallbackImageUrls[getStableImageIndex(`${placeName} ${destination}`)]);
+  url.searchParams.set('auto', 'format');
+  url.searchParams.set('fit', 'crop');
+  url.searchParams.set('w', '900');
+  url.searchParams.set('q', '75');
+  return url.toString();
 };
 
 const ImageSkeleton = () => (
-  <div className="absolute inset-0 overflow-hidden rounded-none bg-slate-200/80">
+  <div
+    className="absolute inset-0 overflow-hidden rounded-none bg-[linear-gradient(135deg,rgba(226,232,240,0.96),rgba(248,250,252,0.9),rgba(209,213,219,0.92))]"
+    role="status"
+    aria-label="Loading image"
+  >
     <motion.div
       className="absolute inset-y-0 -left-1/3 w-1/3 bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.65),transparent)]"
       animate={{ x: ['0%', '320%'] }}
       transition={{ duration: 1.2, ease: 'linear', repeat: Number.POSITIVE_INFINITY }}
     />
+    <div className="absolute inset-0 flex items-center justify-center">
+      <div className="inline-flex items-center gap-2 rounded-md bg-white/88 px-4 py-2 text-sm font-semibold text-primary shadow-lg shadow-slate-950/10 ring-1 ring-white/70">
+        <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+        Loading image
+      </div>
+    </div>
   </div>
 );
 
@@ -111,10 +144,12 @@ function AIExplorer({
   isHost,
   isGenerating,
   isLoading,
+  isResetting,
   onBackToSplit,
   onAddToVote,
   onGenerate,
   onOpenVoteRoom,
+  onReset,
   onSplitCost,
   onVote,
 }: AIExplorerProps) {
@@ -189,6 +224,16 @@ function AIExplorer({
       food: '',
       crowds: '',
     });
+  };
+
+  const handleResetSuggestions = () => {
+    const shouldReset = window.confirm('Reset the saved AI suggestions and start again?');
+    if (!shouldReset) {
+      return;
+    }
+
+    handleRestartQuestionnaire();
+    onReset();
   };
 
   const markImageLoaded = (suggestionId: string) => {
@@ -381,13 +426,23 @@ function AIExplorer({
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleRestartQuestionnaire}
-                  className="interactive-btn rounded-[22px] bg-white px-4 py-3 text-sm font-semibold text-primary shadow-lg shadow-slate-950/8"
-                >
-                  Start Over
-                </button>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={handleRestartQuestionnaire}
+                    className="interactive-btn rounded-[22px] bg-white px-4 py-3 text-sm font-semibold text-primary shadow-lg shadow-slate-950/8"
+                  >
+                    Start Over
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResetSuggestions}
+                    disabled={isResetting || isGenerating || isLoading}
+                    className="interactive-btn rounded-[22px] bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 shadow-lg shadow-red-100/70 ring-1 ring-red-200/70 disabled:cursor-not-allowed disabled:opacity-55"
+                  >
+                    {isResetting ? 'Resetting...' : 'Reset Suggestions'}
+                  </button>
+                </div>
               </div>
 
               {suggestionsSummary.generatedAt ? (
@@ -399,7 +454,8 @@ function AIExplorer({
               ) : null}
 
               {suggestionsSummary.suggestions.map((suggestion, index) => {
-                const imageUrl = suggestion.imageUrl || buildFallbackImageUrl(suggestion.name, destinationLabel);
+                const fallbackImageUrl = buildFallbackImageUrl(suggestion.name, destinationLabel);
+                const imageUrl = suggestion.imageUrl || fallbackImageUrl;
                 const isImageLoaded = Boolean(loadedImageIds[suggestion.id]);
 
                 return (
@@ -411,13 +467,13 @@ function AIExplorer({
                   >
                     <div className="relative h-[260px] overflow-hidden sm:h-[320px]">
                       {!isImageLoaded ? <ImageSkeleton /> : null}
-                      <img
+                      <FastImage
                         src={imageUrl}
+                        fallbackSrc={fallbackImageUrl}
                         alt={suggestion.name}
                         className={`h-full w-full object-cover transition duration-500 ${isImageLoaded ? 'opacity-100' : 'opacity-0'}`}
                         loading="lazy"
                         onLoad={() => markImageLoaded(suggestion.id)}
-                        onError={() => markImageLoaded(suggestion.id)}
                       />
                       <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(16,24,40,0.06),rgba(16,24,40,0.78))]" />
 

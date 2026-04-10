@@ -1,12 +1,13 @@
 // Added by Codex: project documentation comment for src\components\Navbar.tsx
 import React from 'react';
+import SplitNGoLogo from './SplitNGoLogo';
 
 const Navbar: React.FC = () => {
   return (
     <header className="sticky top-0 z-50 bg-background/90 backdrop-blur-md">
       <nav className="mx-auto flex w-full max-w-7xl items-center justify-between px-6 py-4 text-primary">
-        <a href="#" className="text-xl font-bold tracking-tight">
-          SocialTravel
+        <a href="#" className="inline-flex items-center">
+          <SplitNGoLogo className="h-10 w-auto" />
         </a>
 
         <ul className="hidden items-center gap-8 text-sm font-medium md:flex">

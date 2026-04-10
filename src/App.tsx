@@ -29,6 +29,7 @@ import LiquidSplitMeter from './components/LiquidSplitMeter';
 import RequestModal from './components/RequestModal';
 import AdminLayout from './components/AdminLayout';
 import Sidebar from './components/Sidebar';
+import SplitNGoLogo from './components/SplitNGoLogo';
 import DiscoveryFeedView from './views/DiscoveryFeedView';
 import type { FeedPost } from './types/feed';
 import ExpenseTrackerView from './views/ExpenseTrackerView';
@@ -93,6 +94,7 @@ import {
 import {
   generateTripSuggestions,
   getSmartSuggestions,
+  resetTripSuggestions,
   subscribeToTripSuggestions,
   voteForTripSuggestion,
   type TripSuggestionPreferences,
@@ -1088,6 +1090,7 @@ function App() {
   const [tripSuggestionsError, setTripSuggestionsError] = useState('');
   const [isTripSuggestionsLoading, setIsTripSuggestionsLoading] = useState(false);
   const [isTripSuggestionsGenerating, setIsTripSuggestionsGenerating] = useState(false);
+  const [isTripSuggestionsResetting, setIsTripSuggestionsResetting] = useState(false);
   const [activeSuggestionVoteId, setActiveSuggestionVoteId] = useState<string | null>(null);
   const [activeVoteRoomSuggestionId, setActiveVoteRoomSuggestionId] = useState<string | null>(null);
   const [activeTripVoteRoomTripId, setActiveTripVoteRoomTripId] = useState<string | null>(null);
@@ -2877,6 +2880,44 @@ function App() {
       setTripSuggestionsError(error instanceof Error ? error.message : 'Unable to generate AI suggestions right now.');
     } finally {
       setIsTripSuggestionsGenerating(false);
+    }
+  };
+
+  const handleResetTripSuggestions = async () => {
+    const currentAuthToken =
+      typeof window === 'undefined' ? authToken : window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim() || authToken;
+    const tripId = activeTripExplorerTripId ?? tripExpenseSummary?.trip.id ?? globalActiveTripId;
+
+    if (!currentAuthToken || !tripId) {
+      setTripSuggestionsError('Open an active trip to reset AI suggestions.');
+      return;
+    }
+
+    setIsTripSuggestionsResetting(true);
+    setTripSuggestionsError('');
+    setActiveSuggestionVoteId(null);
+    setActiveVoteRoomSuggestionId(null);
+    setTripVoteRoomSession(null);
+    setLatestTripDecision(null);
+
+    try {
+      const summary = await resetTripSuggestions(tripId, currentAuthToken);
+      setTripSuggestionsSummary(summary);
+      setSystemNotice('AI suggestions reset. Answer the questions again to generate a fresh list.');
+    } catch (error) {
+      const isUnauthorized = error instanceof Error && error.message === 'Unauthorized request.';
+      if (isUnauthorized) {
+        clearStoredAuthState();
+        setHydratedProfileToken(null);
+        setUserSession(null);
+        setCurrentScreen('auth');
+        setSystemNotice('Your session expired. Please sign in again.');
+        return;
+      }
+
+      setTripSuggestionsError(error instanceof Error ? error.message : 'Unable to reset AI suggestions right now.');
+    } finally {
+      setIsTripSuggestionsResetting(false);
     }
   };
 
@@ -6484,6 +6525,7 @@ function App() {
       isHost={Boolean(tripExpenseSummary?.members.find((member) => member.id === userSession?.id)?.isHost)}
       isGenerating={isTripSuggestionsGenerating}
       isLoading={isTripSuggestionsLoading || isTripExpenseLoading}
+      isResetting={isTripSuggestionsResetting}
       onBackToSplit={() => handleNavigation('wallet')}
       onAddToVote={(suggestion) => void handleCreateTripVoteRoom(suggestion)}
       onGenerate={(userPreferences) => void handleGenerateTripSuggestions(userPreferences)}
@@ -6496,6 +6538,7 @@ function App() {
 
         handleOpenTripVoteRoom(tripId, voteId);
       }}
+      onReset={() => void handleResetTripSuggestions()}
       onSplitCost={handleAddSuggestionToExpenses}
       onVote={(suggestionId) => void handleVoteForTripSuggestion(suggestionId)}
     />
@@ -7065,9 +7108,9 @@ function App() {
           <button
             type="button"
             onClick={() => handleNavigation('home')}
-            className="text-xl font-black tracking-tight"
+            className="inline-flex items-center"
           >
-            SocialTravel
+            <SplitNGoLogo className="h-10 w-auto" />
           </button>
 
           <div className="hidden items-center gap-8 text-sm font-medium md:flex">
