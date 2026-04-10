@@ -4,7 +4,8 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { Trip } from '../models/Trip.js';
 import { TripJoinRequest } from '../models/TripJoinRequest.js';
 import { User } from '../models/User.js';
-import { CANCELLED_TRIP_STATUS, isTripCurrentActive } from '../utils/tripStatus.js';
+import { Vote } from '../models/Vote.js';
+import { CANCELLED_TRIP_STATUS, COMPLETED_TRIP_STATUS, UPCOMING_TRIP_STATUS, isTripCurrentActive, normalizeTripRecordStatus, } from '../utils/tripRecordStatus.js';
 const router = express.Router();
 const toDate = (value) => {
     const parsedDate = value instanceof Date ? value : new Date(value);
@@ -24,11 +25,16 @@ const getDisplayName = (user) => {
     }
     return 'Traveler';
 };
-const toVerificationStatus = (user) => user.verificationStatus === 'verified' || Boolean(user.isVerified) ? 'verified' : 'pending';
+const toVerificationStatus = (user) => user.verificationStatus === 'rejected'
+    ? 'rejected'
+    : user.verificationStatus === 'verified' || Boolean(user.isVerified)
+        ? 'verified'
+        : 'pending';
 const toPublicUser = (user) => ({
     id: String(user._id),
     userId: typeof user.userId === 'string' ? user.userId : '',
     provider: typeof user.provider === 'string' ? user.provider : 'Email',
+    role: user.role === 'admin' ? 'admin' : 'user',
     isVerified: Boolean(user.isVerified),
     verificationStatus: toVerificationStatus(user),
 });
@@ -40,7 +46,7 @@ router.get('/me', requireAuth, async (req, res) => {
     }
     try {
         const user = await User.findById(userId)
-            .select('_id userId provider isVerified verificationStatus')
+            .select('_id userId provider role isVerified verificationStatus')
             .lean();
         if (!user) {
             return res.status(404).json({ message: 'User account not found.' });
@@ -61,10 +67,16 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
     try {
         const hostObjectId = toObjectId(userId);
         const now = new Date();
-        const [trips, pendingRequestCount, pendingJoinRequests] = await Promise.all([
+        const [trips, associatedTrips, pendingRequestCount, pendingJoinRequests] = await Promise.all([
             Trip.find({ organizerId: hostObjectId })
                 .sort({ startDate: 1 })
                 .select('_id title location startDate endDate status participants')
+                .lean(),
+            Trip.find({
+                $or: [{ organizerId: hostObjectId }, { participants: hostObjectId }],
+            })
+                .sort({ startDate: 1 })
+                .select('_id title location imageUrl startDate endDate status participants')
                 .lean(),
             TripJoinRequest.countDocuments({
                 hostId: hostObjectId,
@@ -83,15 +95,23 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
         trips.forEach((trip) => {
             tripById.set(String(trip._id), trip);
         });
-        const activeTrips = trips.filter((trip) => {
-            if (trip.status === CANCELLED_TRIP_STATUS) {
+        const tripsWithNormalizedStatus = trips.map((trip) => ({
+            ...trip,
+            normalizedStatus: normalizeTripRecordStatus(trip.status, trip, now),
+        }));
+        const associatedTripsWithStatus = associatedTrips.map((trip) => ({
+            ...trip,
+            normalizedStatus: normalizeTripRecordStatus(trip.status, trip, now),
+        }));
+        const activeTrips = tripsWithNormalizedStatus.filter((trip) => {
+            if (trip.normalizedStatus === CANCELLED_TRIP_STATUS) {
                 return false;
             }
             return isTripCurrentActive(trip, now);
         });
-        const futureTrips = trips
+        const futureTrips = tripsWithNormalizedStatus
             .map((trip) => {
-            if (trip.status === CANCELLED_TRIP_STATUS) {
+            if (trip.normalizedStatus === CANCELLED_TRIP_STATUS) {
                 return null;
             }
             const startDate = toDate(trip.startDate);
@@ -102,15 +122,12 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
             .sort((left, right) => left.startDate.getTime() - right.startDate.getTime());
         const nearestFutureTrip = futureTrips[0]?.trip ?? null;
         const totalParticipants = trips.reduce((count, trip) => count + getParticipantIds(trip.participants).length, 0);
-        const completedTripsCount = trips.filter((trip) => {
-            if (trip.status === CANCELLED_TRIP_STATUS) {
-                return false;
-            }
-            const endDate = toDate(trip.endDate);
-            return endDate ? endDate <= now : false;
-        }).length;
-        const upcomingTripsCount = futureTrips.length;
+        const completedTripsCount = tripsWithNormalizedStatus.filter((trip) => trip.normalizedStatus === COMPLETED_TRIP_STATUS).length;
+        const upcomingTripsCount = tripsWithNormalizedStatus.filter((trip) => trip.normalizedStatus === UPCOMING_TRIP_STATUS).length;
         const activeTripsCount = activeTrips.length;
+        const latestDecisionTripIds = associatedTripsWithStatus
+            .filter((trip) => trip.normalizedStatus !== CANCELLED_TRIP_STATUS)
+            .map((trip) => toObjectId(String(trip._id)));
         const requesterObjectIds = Array.from(new Set(pendingJoinRequests
             .map((joinRequest) => String(joinRequest.requesterId))
             .filter((requesterId) => mongoose.isValidObjectId(requesterId)))).map((requesterId) => toObjectId(requesterId));
@@ -129,6 +146,20 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
         users.forEach((user) => {
             userById.set(String(user._id), user);
         });
+        const latestDecision = latestDecisionTripIds.length
+            ? await Vote.findOne({
+                tripId: { $in: latestDecisionTripIds },
+                status: 'decided',
+            })
+                .sort({ decisionMadeAt: -1, updatedAt: -1 })
+                .select('_id tripId placeName imageUrl decisionMadeAt')
+                .lean()
+            : null;
+        const associatedTripById = new Map();
+        associatedTrips.forEach((trip) => {
+            associatedTripById.set(String(trip._id), trip);
+        });
+        const latestDecisionTrip = latestDecision ? associatedTripById.get(String(latestDecision.tripId)) ?? null : null;
         return res.status(200).json({
             activeTripsCount,
             pendingRequests: pendingRequestCount,
@@ -169,6 +200,23 @@ router.get('/dashboard-stats', requireAuth, async (req, res) => {
             completedTripsCount,
             upcomingTripsCount,
             totalTripsCount: trips.length,
+            latestDecision: latestDecision && latestDecisionTrip
+                ? {
+                    voteId: String(latestDecision._id),
+                    tripId: String(latestDecision.tripId),
+                    tripTitle: latestDecisionTrip.title,
+                    tripLocation: latestDecisionTrip.location,
+                    placeName: typeof latestDecision.placeName === 'string' && latestDecision.placeName.trim()
+                        ? latestDecision.placeName.trim()
+                        : 'Group decision',
+                    imageUrl: typeof latestDecision.imageUrl === 'string' && latestDecision.imageUrl.trim()
+                        ? latestDecision.imageUrl.trim()
+                        : typeof latestDecisionTrip.imageUrl === 'string' && latestDecisionTrip.imageUrl.trim()
+                            ? latestDecisionTrip.imageUrl.trim()
+                            : null,
+                    decisionMadeAt: latestDecision.decisionMadeAt ?? null,
+                }
+                : null,
         });
     }
     catch (error) {

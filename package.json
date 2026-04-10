@@ -1,11 +1,11 @@
 {
-  "name": "socialtravel",
+  "name": "splitngo",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:client": "vite",
+    "dev": "vite --force",
+    "dev:client": "vite --force",
     "dev:server": "tsx watch server/src/index.ts",
     "server": "node server/src/index.js",
     "test:server": "node server/src/models/Trip.test.js",

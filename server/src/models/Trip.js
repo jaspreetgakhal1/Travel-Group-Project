@@ -1,5 +1,5 @@
 import mongoose, { Schema } from 'mongoose';
-import { ACTIVE_TRIP_STATUS, TRIP_STATUS_VALUES } from '../utils/tripStatus.js';
+import { getDefaultTripRecordStatus, TRIP_RECORD_STATUS_VALUES } from '../utils/tripRecordStatus.js';
 const { model, models } = mongoose;
 const TRAVELER_TYPE_VALUES = [
     'Budget Backpacker',
@@ -103,7 +103,6 @@ const tripSchema = new Schema({
     imageUrl: {
         type: String,
         trim: true,
-        maxlength: 2048,
         default: '',
     },
     price: {
@@ -174,9 +173,11 @@ const tripSchema = new Schema({
     },
     status: {
         type: String,
-        enum: TRIP_STATUS_VALUES,
+        enum: TRIP_RECORD_STATUS_VALUES,
         required: true,
-        default: ACTIVE_TRIP_STATUS,
+        default() {
+            return getDefaultTripRecordStatus(this);
+        },
         index: true,
     },
     maxParticipants: {

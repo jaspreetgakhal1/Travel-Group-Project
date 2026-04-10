@@ -75,6 +75,26 @@ const userSchema = new mongoose.Schema(
       enum: ['Email'],
       default: 'Email',
     },
+    role: {
+      type: String,
+      enum: ['user', 'admin'],
+      default: 'user',
+      index: true,
+    },
+    isBlocked: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    blockedAt: {
+      type: Date,
+      default: null,
+    },
+    blockedReason: {
+      type: String,
+      default: null,
+      maxlength: 240,
+    },
     firstName: {
       type: String,
       default: '',
@@ -133,8 +153,12 @@ const userSchema = new mongoose.Schema(
     },
     verificationStatus: {
       type: String,
-      enum: ['pending', 'verified'],
+      enum: ['pending', 'verified', 'rejected'],
       default: 'pending',
+    },
+    verificationDocumentUrl: {
+      type: String,
+      default: null,
     },
     verificationDocumentName: {
       type: String,
@@ -151,6 +175,11 @@ const userSchema = new mongoose.Schema(
     verificationUploadedAt: {
       type: Date,
       default: null,
+    },
+    rejectionReason: {
+      type: String,
+      default: null,
+      maxlength: 240,
     },
   },
   {

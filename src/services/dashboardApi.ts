@@ -1,4 +1,4 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
+import { buildApiUrl } from './apiBaseUrl';
 
 type DashboardRequestOptions = {
   authToken: string;
@@ -29,6 +29,16 @@ export type DashboardTripSummary = {
   imageUrl: string | null;
 };
 
+export type DashboardLatestDecision = {
+  voteId: string;
+  tripId: string;
+  tripTitle: string;
+  tripLocation: string;
+  placeName: string;
+  imageUrl: string | null;
+  decisionMadeAt: string | null;
+};
+
 export type DashboardStats = {
   activeTripsCount: number;
   pendingRequests: number;
@@ -40,9 +50,10 @@ export type DashboardStats = {
   completedTripsCount: number;
   upcomingTripsCount: number;
   totalTripsCount: number;
+  latestDecision: DashboardLatestDecision | null;
 };
 
-const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
+const buildUrl = (path: string) => buildApiUrl(path);
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
   try {

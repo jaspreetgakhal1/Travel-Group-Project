@@ -2,7 +2,7 @@
 // Added by Codex: project documentation comment for src\services\postApi.ts
 import type { FeedPost, FeedPostAuthor, FeedPostStatus } from '../types/feed';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
+import { buildApiUrl } from './apiBaseUrl';
 
 export type CreateFeedPostPayload = {
   authorKey: string;
@@ -35,7 +35,7 @@ export type PostStats = {
   totalCount: number;
 };
 
-const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
+const buildUrl = (path: string) => buildApiUrl(path);
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
   try {

@@ -1,4 +1,4 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
+import { buildApiUrl } from './apiBaseUrl';
 
 export type TripSuggestion = {
   id: string;
@@ -12,6 +12,13 @@ export type TripSuggestion = {
   hasVoted: boolean;
   isLeader: boolean;
   isWinningSuggestion: boolean;
+  voteRoom: {
+    id: string;
+    status: 'open' | 'decided';
+    votedCount: number;
+    requiredVotes: number;
+    decisionMadeAt: string | null;
+  } | null;
 };
 
 export type TripSuggestionPreferences = {
@@ -33,7 +40,7 @@ export type TripSuggestionsSummary = {
   suggestions: TripSuggestion[];
 };
 
-const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
+const buildUrl = (path: string) => buildApiUrl(path);
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
   try {
@@ -113,6 +120,15 @@ export const voteForTripSuggestion = async (
     {
       method: 'POST',
       body: JSON.stringify({}),
+    },
+    authToken,
+  );
+
+export const resetTripSuggestions = async (tripId: string, authToken: string): Promise<TripSuggestionsSummary> =>
+  request<TripSuggestionsSummary>(
+    `/api/trips/${encodeURIComponent(tripId)}/suggestions`,
+    {
+      method: 'DELETE',
     },
     authToken,
   );

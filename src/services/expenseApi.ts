@@ -1,4 +1,4 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
+import { buildApiUrl } from './apiBaseUrl';
 
 type ExpenseMember = {
   id: string;
@@ -109,7 +109,11 @@ export type WalletSummary = {
   releasedEntries: WalletSummaryEntry[];
 };
 
-const buildUrl = (path: string) => `${API_BASE_URL}${path}`;
+export type ActiveTripResponse = {
+  tripId: string | null;
+};
+
+const buildUrl = (path: string) => buildApiUrl(path);
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
   try {
@@ -149,6 +153,9 @@ const request = async <T>(path: string, init: RequestInit, authToken: string): P
 
 export const fetchActiveTripExpenseSummary = async (authToken: string): Promise<TripExpenseSummary> =>
   request<TripExpenseSummary>('/api/trips/active/settlement', { method: 'GET' }, authToken);
+
+export const fetchActiveTripId = async (authToken: string): Promise<ActiveTripResponse> =>
+  request<ActiveTripResponse>('/api/trips/active', { method: 'GET' }, authToken);
 
 export const fetchTripExpenseSummary = async (tripId: string, authToken: string): Promise<TripExpenseSummary> =>
   request<TripExpenseSummary>(`/api/trips/${encodeURIComponent(tripId)}/settlement`, { method: 'GET' }, authToken);
