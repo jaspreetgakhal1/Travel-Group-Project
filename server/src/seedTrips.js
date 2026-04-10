@@ -8,7 +8,7 @@ import { User } from './models/User.js';
 
 dotenv.config();
 
-const mongoUri = process.env.MONGO_URI ?? 'mongodb://127.0.0.1:27017/socialtravel';
+const mongoUri = process.env.MONGO_URI ?? 'mongodb://127.0.0.1:27017/splitngo';
 const targetEmail = 'test1@gmail.com';
 const legacySeedUserEmails = ['test1@gmail.com', 'hiren@gmail.com'];
 const legacyTripTitles = [

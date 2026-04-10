@@ -1,5 +1,5 @@
 import type { ImgHTMLAttributes } from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 type FastImageProps = ImgHTMLAttributes<HTMLImageElement> & {
   fallbackSrc?: string;
@@ -7,6 +7,10 @@ type FastImageProps = ImgHTMLAttributes<HTMLImageElement> & {
 
 function FastImage({ src, alt, className, fallbackSrc, loading, decoding, fetchPriority, onError, ...rest }: FastImageProps) {
   const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [fallbackSrc, src]);
 
   const resolvedSrc = useMemo(() => {
     if (!hasError) {

@@ -124,6 +124,15 @@ export const voteForTripSuggestion = async (
     authToken,
   );
 
+export const resetTripSuggestions = async (tripId: string, authToken: string): Promise<TripSuggestionsSummary> =>
+  request<TripSuggestionsSummary>(
+    `/api/trips/${encodeURIComponent(tripId)}/suggestions`,
+    {
+      method: 'DELETE',
+    },
+    authToken,
+  );
+
 export const subscribeToTripSuggestions = (
   tripId: string,
   authToken: string,

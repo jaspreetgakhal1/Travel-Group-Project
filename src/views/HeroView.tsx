@@ -102,7 +102,7 @@ const HeroView: React.FC<HeroViewProps> = ({ onExploreTrip, onHostTrip }) => {
         <div className="grid h-full w-full gap-8 bg-gradient-to-r from-primary/85 via-primary/55 to-primary/30 px-8 py-10 sm:px-14 lg:grid-cols-[1.25fr_0.75fr] lg:items-start">
           <div className="self-center">
             <p className="mb-3 inline-block rounded-full bg-white/20 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white">
-              SocialTravel Marketplace
+              SplitNGo Marketplace
             </p>
             <h1 className="max-w-3xl text-3xl font-black leading-tight text-white sm:text-5xl">
               Don&apos;t just dream it. Split the cost. Share the adventure.

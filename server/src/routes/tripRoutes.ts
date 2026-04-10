@@ -1340,6 +1340,53 @@ router.post('/:tripId/generate-suggestions', requireAuth, verifyTripAccess, asyn
   }
 });
 
+router.delete('/:tripId/suggestions', requireAuth, verifyTripAccess, async (req, res) => {
+  const authRequest = req as typeof req & { user?: AuthenticatedUser };
+  const requesterId = authRequest.user?.id;
+  const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
+
+  if (!requesterId || !mongoose.isValidObjectId(requesterId)) {
+    return res.status(401).json({ message: 'Unauthorized request.' });
+  }
+
+  if (!mongoose.isValidObjectId(tripId)) {
+    return res.status(400).json({ message: 'Trip id is invalid.' });
+  }
+
+  try {
+    const updateResult = await Trip.updateOne(
+      { _id: new Types.ObjectId(tripId) },
+      {
+        $set: {
+          suggestions: [],
+          suggestionPreferences: null,
+          suggestionsGeneratedAt: null,
+        },
+      },
+    );
+
+    if (updateResult.matchedCount === 0) {
+      return res.status(404).json({ message: 'Trip not found.' });
+    }
+
+    await Vote.deleteMany({
+      tripId: new Types.ObjectId(tripId),
+      sourceSuggestionId: { $ne: '' },
+    });
+
+    const payload = await buildTripSuggestionsPayload(tripId, requesterId);
+    if (!payload) {
+      return res.status(404).json({ message: 'Trip not found.' });
+    }
+
+    await broadcastTripSuggestions(tripId);
+    return res.status(200).json(payload);
+  } catch (error) {
+    console.error('DELETE /api/trips/:tripId/suggestions failed', error);
+    return res.status(500).json({ message: 'Unable to reset AI trip suggestions right now.' });
+  }
+});
+
 router.post('/:tripId/suggestions/:suggestionId/vote', requireAuth, verifyTripAccess, async (req, res) => {
   const authRequest = req as typeof req & { user?: AuthenticatedUser };
   const requesterId = authRequest.user?.id;
