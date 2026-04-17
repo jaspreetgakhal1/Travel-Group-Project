@@ -19,6 +19,23 @@ const TRAVEL_DNA_FIELDS = [
   'cleanliness',
 ];
 const DEFAULT_TRAVEL_DNA_VALUE = 5;
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const normalizeAuthIdentifier = (value) => {
+  const trimmedValue = sanitizeUserId(value);
+  return EMAIL_PATTERN.test(trimmedValue) ? trimmedValue.toLowerCase() : trimmedValue;
+};
+const buildUserLookupQuery = (identifier) => {
+  if (!EMAIL_PATTERN.test(identifier)) {
+    return { userId: identifier };
+  }
+
+  return {
+    $or: [
+      { email: identifier.toLowerCase() },
+      { userId: new RegExp(`^${escapeRegExp(identifier)}$`, 'i') },
+    ],
+  };
+};
 
 const buildTokenPayload = (user) => ({
   sub: user._id.toString(),
@@ -154,7 +171,7 @@ router.post('/register', async (request, response) => {
       return response.status(400).json({ message: 'User ID and password are required.' });
     }
 
-    const normalizedUserId = sanitizeUserId(userId);
+    const normalizedUserId = normalizeAuthIdentifier(userId);
     if (!normalizedUserId || normalizedUserId.length < 3) {
       return response.status(400).json({ message: 'User ID must be at least 3 characters.' });
     }
@@ -166,7 +183,7 @@ router.post('/register', async (request, response) => {
       return response.status(400).json({ message: 'Password must be at least 6 characters.' });
     }
 
-    const existingUser = await User.findOne({ userId: normalizedUserId });
+    const existingUser = await User.findOne(buildUserLookupQuery(normalizedUserId));
     if (existingUser) {
       return response.status(409).json({ message: 'User ID already exists.' });
     }
@@ -364,8 +381,8 @@ router.post('/login', async (request, response) => {
       return response.status(400).json({ message: 'User ID and password are required.' });
     }
 
-    const normalizedUserId = sanitizeUserId(userId);
-    const user = await User.findOne({ userId: normalizedUserId });
+    const normalizedUserId = normalizeAuthIdentifier(userId);
+    const user = await User.findOne(buildUserLookupQuery(normalizedUserId));
 
     if (!user) {
       return response.status(401).json({ message: 'Invalid credentials.' });

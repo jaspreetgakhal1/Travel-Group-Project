@@ -38,6 +38,19 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
 });
 
+const formatDisplayDate = (value: string | null | undefined): string => {
+  if (typeof value !== 'string' || !value.trim()) {
+    return 'Date TBD';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return 'Date TBD';
+  }
+
+  return dateFormatter.format(parsed);
+};
+
 function TripPost({
   post,
   viewerTripRole,
@@ -84,6 +97,8 @@ function TripPost({
   const hasAcceptedParticipants = post.participantIds.length > 0;
   const hostName = resolvedAuthor?.name ?? post.hostName;
   const hostAvatar = resolvedAuthor?.avatar ?? post.hostProfileImageDataUrl ?? null;
+  const safeHostName = typeof hostName === 'string' && hostName.trim() ? hostName.trim() : 'Traveler';
+  const safeTitle = typeof post.title === 'string' && post.title.trim() ? post.title.trim() : 'Untitled trip';
   const normalizedCurrentUserAuthorKey =
     typeof currentUserAuthorKey === 'string' && currentUserAuthorKey.trim()
       ? currentUserAuthorKey.trim().toLowerCase()
@@ -105,8 +120,8 @@ function TripPost({
 
   const formattedDates = useMemo(
     () => ({
-      start: dateFormatter.format(new Date(post.startDate)),
-      end: dateFormatter.format(new Date(post.endDate)),
+      start: formatDisplayDate(post.startDate),
+      end: formatDisplayDate(post.endDate),
     }),
     [post.endDate, post.startDate],
   );
@@ -197,17 +212,17 @@ function TripPost({
           {hostAvatar ? (
             <img
               src={hostAvatar}
-              alt={`${hostName} profile`}
+              alt={`${safeHostName} profile`}
               className="h-full w-full object-cover"
               loading="lazy"
             />
           ) : (
-            (hostName.charAt(0) || '?').toUpperCase()
+            (safeHostName.charAt(0) || '?').toUpperCase()
           )}
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-bold text-primary">{hostName}</p>
+            <p className="truncate text-sm font-bold text-primary">{safeHostName}</p>
             <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">
               {isAuthorVerified ? 'Verified user' : 'Pending Verification'}
             </span>
@@ -273,7 +288,7 @@ function TripPost({
               </span>
             ) : null}
           </div>
-          <p className="truncate text-xs text-primary/70">{post.title}</p>
+          <p className="truncate text-xs text-primary/70">{safeTitle}</p>
         </div>
         {canManagePost ? (
           <div className="relative ml-auto">
@@ -353,7 +368,7 @@ function TripPost({
       </header>
 
       <div className="relative mt-4 overflow-hidden rounded-card border border-primary/10">
-        <FastImage src={post.imageUrl} alt={post.title} className="h-56 w-full object-cover sm:h-64" />
+        <FastImage src={post.imageUrl} alt={safeTitle} className="h-56 w-full object-cover sm:h-64" />
         <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/60 via-black/20 to-transparent px-3 py-3 sm:px-4">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-white/35 bg-white/88 px-3 py-1.5 text-xs font-bold text-slate-900 shadow-lg shadow-black/20 backdrop-blur-md">
