@@ -97,7 +97,7 @@ app.use((error: Error, _request: express.Request, response: express.Response, _n
 
 const startServer = async (): Promise<void> => {
   await connectDatabase();
-  const server = app.listen(env.port, () => {
+  const server = app.listen(env.port,  "0.0.0.0", () => {
     if (isProductionStart && !hasBuiltClient) {
       console.warn(`Production frontend build not found at ${clientIndexPath}. Run "npm run build" before "npm run start:prod".`);
     }
