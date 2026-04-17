@@ -1,5 +1,7 @@
 import cors from 'cors';
 import express from 'express';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import adminRoutes from './routes/adminRoutes.js';
 import { connectDatabase } from './config/database.js';
 import { env } from './config/env.js';
@@ -14,9 +16,19 @@ import tripRoutes from './routes/tripRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import walletRoutes from './routes/walletRoutes.js';
 const app = express();
+const clientDistPath = fileURLToPath(new URL('../../dist', import.meta.url));
+const clientIndexPath = fileURLToPath(new URL('../../dist/index.html', import.meta.url));
+const isProductionStart = process.env.npm_lifecycle_event === 'start:prod';
+const hasBuiltClient = isProductionStart && existsSync(clientIndexPath);
 app.use(cors({
     origin(origin, callback) {
         if (!origin) {
+            return callback(null, true);
+        }
+        // When the built frontend is served by this Express server in production,
+        // browser API calls come from the deployed app origin instead of the Vite
+        // dev origin. Allow that origin so single-port AWS deployments keep working.
+        if (hasBuiltClient) {
             return callback(null, true);
         }
         if (env.allowedOrigins.includes(origin)) {
@@ -41,6 +53,16 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/expenses', expenseRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/wallet', walletRoutes);
+if (hasBuiltClient) {
+    // Production-only frontend hosting for AWS EC2: serve the built Vite app from Express
+    // so the browser UI and API can share the same public port without changing dev setup.
+    app.use(express.static(clientDistPath));
+    // Return the built SPA entry for any non-API route so client-side routing works after
+    // direct refreshes or deep links in a single-server deployment on AWS.
+    app.get(/^(?!\/api(?:\/|$)).*/, (_request, response) => {
+        response.sendFile(clientIndexPath);
+    });
+}
 app.use((error, _request, response, _next) => {
     const parseError = error;
     if (error.message === 'Origin not allowed by CORS') {
@@ -58,6 +80,13 @@ app.use((error, _request, response, _next) => {
 const startServer = async () => {
     await connectDatabase();
     const server = app.listen(env.port, () => {
+        if (isProductionStart && !hasBuiltClient) {
+            console.warn(`Production frontend build not found at ${clientIndexPath}. Run "npm run build" before "npm run start:prod".`);
+        }
+        if (hasBuiltClient) {
+            console.log(`SplitNGo production server running on http://localhost:${env.port}`);
+            return;
+        }
         console.log(`Auth API running on http://localhost:${env.port}`);
     });
     server.on('error', (error) => {

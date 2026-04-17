@@ -11,6 +11,7 @@
     "test:server": "node server/src/models/Trip.test.js",
     "seed:trips": "node server/src/seedTrips.js",
     "build": "tsc -b && vite build",
+    "start:prod": "node server/src/index.js",
     "preview": "vite preview"
   },
   "dependencies": {
