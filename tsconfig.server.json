@@ -1,16 +1,43 @@
 {
   "compilerOptions": {
+    "composite": true,
     "target": "ES2020",
-    "module": "ESNext",
+    "module": "commonjs",
     "moduleResolution": "node",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "allowJs": true,
+    "checkJs": false,
     "skipLibCheck": true,
-    "outDir": "./",
+    "types": ["node"],
+    "outDir": "dist",
     "rootDir": "./",
     "declaration": true,
-    "declarationMap": true
+    "declarationMap": false
   },
   "include": ["server/src/**/*"],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "dist",
+    "node_modules",
+    "server/src/index.js",
+    "server/src/middleware/isAdmin.js",
+    "server/src/middleware/requireAuth.js",
+    "server/src/middleware/verifyTripAccess.js",
+    "server/src/models/Expense.js",
+    "server/src/models/Notification.js",
+    "server/src/models/Participant.js",
+    "server/src/models/Trip.js",
+    "server/src/models/TripJoinRequest.js",
+    "server/src/models/Vote.js",
+    "server/src/routes/adminRoutes.js",
+    "server/src/routes/chatRoutes.js",
+    "server/src/routes/expenseRoutes.js",
+    "server/src/routes/joinRequestRoutes.js",
+    "server/src/routes/notificationRoutes.js",
+    "server/src/routes/tripRoutes.js",
+    "server/src/routes/userRoutes.js",
+    "server/src/types/auth.js",
+    "server/src/utils/geminiTripSuggestions.js",
+    "server/src/utils/tripRecordStatus.js"
+  ]
 }

@@ -1,7 +1,7 @@
 import cors from 'cors';
-import express from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import adminRoutes from './routes/adminRoutes.js';
 import { connectDatabase } from './config/database.js';
 import { env } from './config/env.js';
@@ -17,10 +17,10 @@ import userRoutes from './routes/userRoutes.js';
 import walletRoutes from './routes/walletRoutes.js';
 
 const app = express();
-const clientDistPath = fileURLToPath(new URL('../../dist', import.meta.url));
-const clientIndexPath = fileURLToPath(new URL('../../dist/index.html', import.meta.url));
-const isProductionStart = process.env.npm_lifecycle_event === 'start:prod';
-const hasBuiltClient = isProductionStart && existsSync(clientIndexPath);
+const port = Number(process.env.PORT || 5000);
+const clientDistPath = path.resolve(process.cwd(), 'dist');
+const clientIndexPath = path.join(clientDistPath, 'index.html');
+const hasBuiltClient = existsSync(clientIndexPath);
 
 app.use(
   cors({
@@ -48,7 +48,7 @@ app.use(
 
 app.use(express.json({ limit: '6mb' }));
 
-app.get('/api/health', (_request, response) => {
+app.get('/api/health', (_request: Request, response: Response) => {
   response.status(200).json({ status: 'ok' });
 });
 
@@ -71,12 +71,12 @@ if (hasBuiltClient) {
 
   // Return the built SPA entry for any non-API route so client-side routing works after
   // direct refreshes or deep links in a single-server deployment on AWS.
-  app.get(/^(?!\/api(?:\/|$)).*/, (_request, response) => {
+  app.get(/^(?!\/api(?:\/|$)).*/, (_request: Request, response: Response) => {
     response.sendFile(clientIndexPath);
   });
 }
 
-app.use((error: Error, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+app.use((error: Error, _request: Request, response: Response, _next: NextFunction) => {
   const parseError = error as Error & { type?: string };
 
   if (error.message === 'Origin not allowed by CORS') {
@@ -97,22 +97,22 @@ app.use((error: Error, _request: express.Request, response: express.Response, _n
 
 const startServer = async (): Promise<void> => {
   await connectDatabase();
-  const server = app.listen(env.port,  "0.0.0.0", () => {
-    if (isProductionStart && !hasBuiltClient) {
-      console.warn(`Production frontend build not found at ${clientIndexPath}. Run "npm run build" before "npm run start:prod".`);
+  const server = app.listen(port, '0.0.0.0', () => {
+    if (!hasBuiltClient) {
+      console.warn(`Production frontend build not found at ${clientIndexPath}. Run "npm run build" before opening the app in a browser.`);
     }
 
     if (hasBuiltClient) {
-      console.log(`SplitNGo production server running on http://localhost:${env.port}`);
+      console.log(`SplitNGo production server running on http://localhost:${port}`);
       return;
     }
 
-    console.log(`Auth API running on http://localhost:${env.port}`);
+    console.log(`Auth API running on http://localhost:${port}`);
   });
 
   server.on('error', (error: NodeJS.ErrnoException) => {
     if (error.code === 'EADDRINUSE') {
-      console.log(`Port ${env.port} is busy. Attempting to kill the existing process or try another port.`);
+      console.log(`Port ${port} is busy. Attempting to kill the existing process or try another port.`);
     } else {
       console.error('Server error:', error);
     }
