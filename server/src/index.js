@@ -3,7 +3,7 @@ import express from 'express';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import adminRoutes from './routes/adminRoutes.js';
-import { connectDatabase } from './config/database.js';
+import { connectDatabase, getDatabaseHealth } from './config/database.js';
 import { env } from './config/env.js';
 import authRoutes from './routes/authRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
@@ -20,6 +20,31 @@ const clientDistPath = fileURLToPath(new URL('../../dist', import.meta.url));
 const clientIndexPath = fileURLToPath(new URL('../../dist/index.html', import.meta.url));
 const isProductionStart = process.env.npm_lifecycle_event === 'start:prod';
 const hasBuiltClient = isProductionStart && existsSync(clientIndexPath);
+const databaseRetryDelayMs = 10000;
+const buildHealthPayload = () => {
+    const database = getDatabaseHealth();
+    return {
+        status: database.connected ? 'ok' : 'degraded',
+        uptimeSeconds: Math.round(process.uptime()),
+        database: {
+            state: database.state,
+            connected: database.connected,
+            ...(database.lastError ? { lastError: database.lastError } : {}),
+        },
+        hasBuiltClient,
+    };
+};
+const connectDatabaseWithRetry = async () => {
+    try {
+        await connectDatabase();
+    }
+    catch (error) {
+        console.error(`MongoDB connection failed. Retrying in ${databaseRetryDelayMs / 1000} seconds.`, error);
+        setTimeout(() => {
+            void connectDatabaseWithRetry();
+        }, databaseRetryDelayMs).unref();
+    }
+};
 app.use(cors({
     origin(origin, callback) {
         if (!origin) {
@@ -40,7 +65,25 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '6mb' }));
 app.get('/api/health', (_request, response) => {
+    response.status(200).json(buildHealthPayload());
+});
+app.get('/api/health/live', (_request, response) => {
     response.status(200).json({ status: 'ok' });
+});
+app.get('/api/health/ready', (_request, response) => {
+    const payload = buildHealthPayload();
+    response.status(payload.database.connected ? 200 : 503).json(payload);
+});
+app.get('/', (_request, response) => {
+    if (hasBuiltClient) {
+        response.sendFile(clientIndexPath);
+        return;
+    }
+    response.status(200).json({
+        status: 'ok',
+        message: 'SplitNGo API server is running.',
+        health: '/api/health',
+    });
 });
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
@@ -78,7 +121,6 @@ app.use((error, _request, response, _next) => {
     return response.status(500).json({ message: 'Internal server error.' });
 });
 const startServer = async () => {
-    await connectDatabase();
     const server = app.listen(env.port, "0.0.0.0", () => {
         if (isProductionStart && !hasBuiltClient) {
             console.warn(`Production frontend build not found at ${clientIndexPath}. Run "npm run build" before "npm run start:prod".`);
@@ -89,6 +131,7 @@ const startServer = async () => {
         }
         console.log(`Auth API running on http://localhost:${env.port}`);
     });
+    void connectDatabaseWithRetry();
     server.on('error', (error) => {
         if (error.code === 'EADDRINUSE') {
             console.log(`Port ${env.port} is busy. Attempting to kill the existing process or try another port.`);
