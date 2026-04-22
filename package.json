@@ -9,11 +9,11 @@
     "dev:server": "tsx watch server/src/index.ts",
     "build:server": "tsc -p tsconfig.server.json && npm run build:server:meta",
     "build:server:meta": "node -e \"const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/package.json', JSON.stringify({ type: 'commonjs' }, null, 2) + '\\n');\"",
-    "prestart:prod": "npm run build",
     "server": "node server/src/index.js",
     "test:server": "node server/src/models/Trip.test.js",
     "seed:trips": "node server/src/seedTrips.js",
     "build": "vite build && npm run build:server",
+    "start:prod:build": "npm run build && npm run start:prod",
     "start:prod": "node dist/server/src/index.js",
     "preview": "vite preview"
   },

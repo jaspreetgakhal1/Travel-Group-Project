@@ -4,6 +4,16 @@ import mongoose from 'mongoose';
 import { env } from './env.js';
 import { User } from '../models/User.js';
 
+const CONNECTION_STATE_LABELS = {
+  0: 'disconnected',
+  1: 'connected',
+  2: 'connecting',
+  3: 'disconnecting',
+};
+
+let activeConnectionPromise = null;
+let lastConnectionError = null;
+
 const ensureAdminAccount = async () => {
   const normalizedAdminUserId = env.adminUserId.trim();
   const normalizedAdminPassword = env.adminPassword;
@@ -48,16 +58,53 @@ const ensureAdminAccount = async () => {
   await adminUser.save();
 };
 
+const getConnectionState = () => CONNECTION_STATE_LABELS[mongoose.connection.readyState] ?? 'unknown';
+
+export const getDatabaseHealth = () => ({
+  connected: mongoose.connection.readyState === 1,
+  readyState: mongoose.connection.readyState,
+  state: getConnectionState(),
+  lastError: lastConnectionError,
+});
+
+mongoose.connection.on('connected', () => {
+  lastConnectionError = null;
+  console.log('MongoDB connection established');
+});
+
+mongoose.connection.on('error', (error) => {
+  lastConnectionError = error instanceof Error ? error.message : String(error);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.warn('MongoDB connection is disconnected');
+});
+
 export const connectDatabase = async () => {
-  try {
-    await mongoose.connect(env.mongoUri, {
-      autoIndex: true,
-    });
-    await ensureAdminAccount();
-    console.log('MongoDB connection established');
-  } catch (error) {
-    console.error('MongoDB connection failed', error);
-    process.exit(1);
+  if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) {
+    return;
   }
+
+  if (activeConnectionPromise) {
+    return activeConnectionPromise;
+  }
+
+  activeConnectionPromise = mongoose
+    .connect(env.mongoUri, {
+      autoIndex: true,
+      serverSelectionTimeoutMS: 10000,
+    })
+    .then(async () => {
+      await ensureAdminAccount();
+    })
+    .catch((error) => {
+      lastConnectionError = error instanceof Error ? error.message : String(error);
+      throw error;
+    })
+    .finally(() => {
+      activeConnectionPromise = null;
+    });
+
+  return activeConnectionPromise;
 };
 
