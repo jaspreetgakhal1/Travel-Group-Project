@@ -19,7 +19,7 @@ const app = express();
 const clientDistPath = fileURLToPath(new URL('../../dist', import.meta.url));
 const clientIndexPath = fileURLToPath(new URL('../../dist/index.html', import.meta.url));
 const isProductionStart = process.env.npm_lifecycle_event === 'start:prod';
-const hasBuiltClient = isProductionStart && existsSync(clientIndexPath);
+const hasBuiltClient = existsSync(clientIndexPath);
 const databaseRetryDelayMs = 10000;
 const buildHealthPayload = () => {
     const database = getDatabaseHealth();
