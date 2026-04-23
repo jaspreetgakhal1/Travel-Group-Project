@@ -97,11 +97,13 @@ app.use('/api/expenses', expenseRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/wallet', walletRoutes);
 if (hasBuiltClient) {
-    // Production-only frontend hosting for AWS EC2: serve the built Vite app from Express
-    // so the browser UI and API can share the same public port without changing dev setup.
+    // Serve static files FIRST
     app.use(express.static(clientDistPath));
-    // Return the built SPA entry for any non-API route so client-side routing works after
-    // direct refreshes or deep links in a single-server deployment on AWS.
+
+    // Explicitly serve assets folder (VERY IMPORTANT FIX)
+    app.use('/assets', express.static(`${clientDistPath}/assets`));
+
+    // Catch-all AFTER static
     app.get(/^(?!\/api(?:\/|$)).*/, (_request, response) => {
         response.sendFile(clientIndexPath);
     });
