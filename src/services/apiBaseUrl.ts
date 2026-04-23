@@ -1,6 +1,17 @@
 const CONFIGURED_API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
 const isLoopbackHost = (hostname: string): boolean => hostname === 'localhost' || hostname === '127.0.0.1';
+const trimTrailingSlashes = (value: string): string => value.replace(/\/+$/, '');
+const normalizeRequestPath = (value: string): string => (value.startsWith('/') ? value : `/${value}`);
+const normalizeBaseForPath = (baseUrl: string, requestPath: string): string => {
+  const normalizedBaseUrl = trimTrailingSlashes(baseUrl);
+
+  if (!normalizedBaseUrl || !(requestPath === '/api' || requestPath.startsWith('/api/'))) {
+    return normalizedBaseUrl;
+  }
+
+  return normalizedBaseUrl.replace(/\/api$/i, '');
+};
 
 export const resolveApiBaseUrl = (): string => {
   if (!CONFIGURED_API_BASE_URL || typeof window === 'undefined') {
@@ -23,4 +34,9 @@ export const resolveApiBaseUrl = (): string => {
   return CONFIGURED_API_BASE_URL;
 };
 
-export const buildApiUrl = (path: string): string => `${resolveApiBaseUrl()}${path}`;
+export const buildApiUrl = (path: string): string => {
+  const normalizedPath = normalizeRequestPath(path);
+  const normalizedBaseUrl = normalizeBaseForPath(resolveApiBaseUrl(), normalizedPath);
+
+  return normalizedBaseUrl ? `${normalizedBaseUrl}${normalizedPath}` : normalizedPath;
+};
