@@ -1,13 +1,9 @@
 # High-Level Overview
-
 ## Project Name
 SplitNGo
-
 ## Project Purpose
 SplitNGo is an AI-assisted travel planning application designed to help users plan smarter and more organized trips. The main goal of the project is to reduce the stress of trip planning by allowing users to search travel information, explore destinations, manage trip details, and use AI-supported features to generate helpful travel suggestions.
-
 The application is useful for people who want a simple way to organize travel ideas, compare options, and build a clearer travel plan without switching between many different websites.
-
 ## Problem Being Solved
 Planning a trip can become difficult because users often need to search for flights, destinations, budgets, activities, and schedules across multiple platforms. This can lead to confusion, missed details, and poor organization. 
 
