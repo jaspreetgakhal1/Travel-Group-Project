@@ -9,7 +9,7 @@ SplitNGo is an AI-assisted travel planning application designed to help users pl
 The application is useful for people who want a simple way to organize travel ideas, compare options, and build a clearer travel plan without switching between many different websites.
 
 ## Problem Being Solved
-Planning a trip can become difficult because users often need to search for flights, destinations, budgets, activities, and schedules across multiple platforms. This can lead to confusion, missed details, and poor organization.
+Planning a trip can become difficult because users often need to search for flights, destinations, budgets, activities, and schedules across multiple platforms. This can lead to confusion, missed details, and poor organization. 
 
 SplitNGo solves this problem by bringing travel-related features into one application. It helps users organize travel information in a central place and supports decision-making with AI-assisted suggestions.
 
